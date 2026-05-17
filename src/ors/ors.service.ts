@@ -39,6 +39,7 @@ export class OrsService {
         path: string,
         query: Record<string, string | string[] | undefined>,
         authHeader?: string,
+        baseUrl?: string,
     ): Promise<unknown> {
         const params = new URLSearchParams();
         for (const [key, value] of Object.entries(query)) {
@@ -50,7 +51,7 @@ export class OrsService {
             }
         }
         const qs = params.toString();
-        const url = `${this.baseUrl}${path}${qs ? `?${qs}` : ''}`;
+        const url = `${baseUrl ?? this.baseUrl}${path}${qs ? `?${qs}` : ''}`;
 
         const headers: Record<string, string> = {
             Accept: 'application/json, application/geo+json, */*',
