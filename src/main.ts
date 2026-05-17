@@ -21,7 +21,10 @@ async function bootstrap() {
   const documentFactory = () => SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api-docs', app, documentFactory);
 
-
+  app.enableCors({
+    origin: process.env.CORS_DOMAIN?.split(',') ?? ['http://localhost:3000'],
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE'
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }),
