@@ -141,7 +141,7 @@ class DeliveryAfterCollectionConstraint implements ValidatorConstraintInterface 
         return receivers.every((r) => {
             const delivery = new Date(r.deliveryDate + 'T00:00:00Z');
             if (isNaN(delivery.getTime())) return true;
-            return delivery > collection;
+            return delivery >= collection;
         });
     }
 
