@@ -10,5 +10,6 @@ import { ServiceFeesService } from './service-fees.service';
     imports: [TypeOrmModule.forFeature([ServiceRate]), OrsModule],
     controllers: [ServiceFeesController],
     providers: [ServiceFeesService, AuthGuard],
+    exports: [ServiceFeesService],
 })
 export class ServiceFeesModule {}

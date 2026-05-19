@@ -9,6 +9,8 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { TasksModule } from './tasks/tasks.module';
 import { UsersModule } from './users/users.module';
 import { ServiceFeesModule } from './service-fees/service-fees.module';
+import { StripeModule } from './stripe/stripe.module';
+import { PaymentsModule } from './payments/payments.module';
 
 @Module({
   imports: [
@@ -27,6 +29,8 @@ import { ServiceFeesModule } from './service-fees/service-fees.module';
     DatabaseModule,
     UsersModule,
     ServiceFeesModule,
+    StripeModule,
+    PaymentsModule,
   ],
   controllers: [],
   providers: [],

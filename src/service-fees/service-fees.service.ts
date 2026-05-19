@@ -6,6 +6,7 @@ import type { DirectionsResponse } from 'src/ors/ors.types';
 import { ServiceRate } from './entities/service-rate.entity';
 import { CalculateServiceFeeDto, ReceiverDto } from './dto/calculate-service-fee.dto';
 import { ServiceFeeResponseDto, StorageReceiverDto } from './dto/service-fee-response.dto';
+import { fromStripeMinorUnits, toStripeMinorUnits } from 'src/common/money';
 
 @Injectable()
 export class ServiceFeesService {
@@ -40,11 +41,19 @@ export class ServiceFeesService {
             storagePerDay,
         );
 
-        const total = parseFloat((baseRate + distanceCost + signatureCost + totalStorageCost).toFixed(2));
+        // Quantise once to the currency's smallest unit. The charged value
+        // (amount_minor) and the displayed value (total) both derive from this
+        // single integer so they can never drift apart.
+        const amountMinor = toStripeMinorUnits(
+            baseRate + distanceCost + signatureCost + totalStorageCost,
+            rate.currency,
+        );
+        const total = fromStripeMinorUnits(amountMinor, rate.currency);
 
         return {
             currency: rate.currency,
             service_rate: { id: rate.id, name: rate.name },
+            amount_minor: amountMinor,
             breakdown: {
                 base_rate: parseFloat(baseRate.toFixed(2)),
                 distance: {

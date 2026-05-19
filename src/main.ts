@@ -11,6 +11,8 @@ async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter(),
+    // Preserve the unparsed body so the Stripe webhook can verify signatures.
+    { rawBody: true },
   );
   
   const config = new DocumentBuilder()

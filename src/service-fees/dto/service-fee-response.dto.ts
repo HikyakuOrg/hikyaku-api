@@ -43,5 +43,13 @@ export class ServiceFeeResponseDto {
     @ApiProperty() currency: string;
     @ApiProperty({ type: () => ServiceRateSummaryDto }) service_rate: ServiceRateSummaryDto;
     @ApiProperty({ type: () => FeeBreakdownDto }) breakdown: FeeBreakdownDto;
-    @ApiProperty() total: number;
+
+    @ApiProperty({ description: 'Total in major units, for display' })
+    total: number;
+
+    @ApiProperty({
+        description:
+            'Total in Stripe integer minor units (e.g. cents). Charge-authoritative value.',
+    })
+    amount_minor: number;
 }
