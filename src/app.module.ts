@@ -11,6 +11,8 @@ import { UsersModule } from './users/users.module';
 import { ServiceFeesModule } from './service-fees/service-fees.module';
 import { StripeModule } from './stripe/stripe.module';
 import { PaymentsModule } from './payments/payments.module';
+import { MailerModule } from './mailer/mailer.module';
+import { InvitationsModule } from './invitations/invitations.module';
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { PaymentsModule } from './payments/payments.module';
     ServiceFeesModule,
     StripeModule,
     PaymentsModule,
+    MailerModule,
+    InvitationsModule,
   ],
   controllers: [],
   providers: [],
