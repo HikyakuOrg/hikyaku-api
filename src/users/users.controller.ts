@@ -15,15 +15,21 @@ export class UsersController {
     @Post()
     @HttpCode(HttpStatus.CREATED)
     @RequirePermission('team_members.add')
-    createUser(@Body() dto: CreateUserDto) {
-        return this.usersService.createUser(dto);
+    createUser(
+        @Body() dto: CreateUserDto,
+        @Req() req: Request & { organisationId: string },
+    ) {
+        return this.usersService.createUser(dto, req.organisationId);
     }
 
     @Delete()
     @HttpCode(HttpStatus.OK)
     @RequirePermission('team_members.delete')
-    deactivateUsers(@Body() dto: DeactivateUsersDto, @Req() req: Request & { user: { id: string } }) {
-        return this.usersService.deactivateUsers(dto, req.user.id);
+    deactivateUsers(
+        @Body() dto: DeactivateUsersDto,
+        @Req() req: Request & { user: { id: string }; organisationId: string },
+    ) {
+        return this.usersService.deactivateUsers(dto, req.user.id, req.organisationId);
     }
 
     @Patch('reactivate')
@@ -36,7 +42,10 @@ export class UsersController {
     @Patch('role')
     @HttpCode(HttpStatus.OK)
     @RequirePermission('team_members.edit')
-    updateUserRole(@Body() dto: UpdateUserRoleDto) {
-        return this.usersService.updateUserRole(dto.user_id, dto.role_name);
+    updateUserRole(
+        @Body() dto: UpdateUserRoleDto,
+        @Req() req: Request & { organisationId: string },
+    ) {
+        return this.usersService.updateUserRole(dto.user_id, dto.role_name, req.organisationId);
     }
 }

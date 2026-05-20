@@ -56,7 +56,7 @@ export class UsersService {
         @InjectRepository(UserPermission) private readonly userPermissionRepo: Repository<UserPermission>,
     ) { }
 
-    async createUser(dto: CreateUserDto): Promise<CreateUserResult> {
+    async createUser(dto: CreateUserDto, organisationId: string): Promise<CreateUserResult> {
         // Look up the role by name. Fail fast before touching auth so there is
         // nothing to clean up if the caller passes a bad role.
         const role = await this.appRoleRepo.findOne({
@@ -120,7 +120,7 @@ export class UsersService {
 
         const runner = await this.db.beginTransaction();
         try {
-            await runner.manager.insert(TeamMember, { id: userId, roleId });
+            await runner.manager.insert(TeamMember, { organisationId, id: userId, roleId });
 
             if (isDriver) {
                 const meta = dto.user_metadata ?? {};
@@ -139,7 +139,7 @@ export class UsersService {
                     .createQueryBuilder()
                     .insert()
                     .into(UserPermission)
-                    .values(permissionIds.map((pid) => ({ userId, permissionId: pid })))
+                    .values(permissionIds.map((pid) => ({ organisationId, userId, permissionId: pid })))
                     .orIgnore()
                     .execute();
             }
@@ -206,6 +206,7 @@ export class UsersService {
     async deactivateUsers(
         dto: DeactivateUsersDto,
         callerUserId: string,
+        organisationId: string,
     ): Promise<DeactivateUsersResult> {
         const deactivated: string[] = [];
         const failed: DeactivateUsersResult['failed'] = [];
@@ -217,7 +218,7 @@ export class UsersService {
                 }
 
                 const [userPermCount, totalPermCount] = await Promise.all([
-                    this.userPermissionRepo.countBy({ userId }),
+                    this.userPermissionRepo.countBy({ organisationId, userId }),
                     this.appPermissionRepo.count(),
                 ]);
                 if (totalPermCount > 0 && userPermCount === totalPermCount) {
@@ -300,7 +301,7 @@ export class UsersService {
         return { reactivated, failed };
     }
 
-    async updateUserRole(userId: string, roleName: string): Promise<{ user_id: string; role: string }> {
+    async updateUserRole(userId: string, roleName: string, organisationId: string): Promise<{ user_id: string; role: string }> {
         const role = await this.appRoleRepo.findOne({
             where: { name: roleName },
             select: { id: true, name: true },
@@ -311,7 +312,7 @@ export class UsersService {
 
         const runner = await this.db.beginTransaction();
         try {
-            await runner.manager.update(TeamMember, { id: userId }, { roleId: role.id });
+            await runner.manager.update(TeamMember, { organisationId, id: userId }, { roleId: role.id });
             await runner.commitTransaction();
         } catch (dbError) {
             await runner.rollbackTransaction();
