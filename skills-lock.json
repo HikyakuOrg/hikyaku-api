@@ -7,6 +7,11 @@
       "skillPath": "skills/nestjs-dev-guidelines/SKILL.md",
       "computedHash": "3e54a0c1da7246cd785b5225fa18d5bb51950f8da87d0b763baeb32f6f358359"
     },
+    "stripe-best-practices": {
+      "source": "docs.stripe.com",
+      "sourceType": "well-known",
+      "computedHash": "4cedb294535650bd178718515c248d837325c4093d09b722bd748fc61834af69"
+    },
     "supabase-postgres-best-practices": {
       "source": "supabase/agent-skills",
       "sourceType": "github",
