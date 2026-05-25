@@ -20,12 +20,24 @@ describe('QueueService', () => {
         service = module.get<QueueService>(QueueService);
     });
 
-    it('ensureQueue calls pgmq.create', async () => {
-        await service.ensureQueue();
-        expect(dsQuery).toHaveBeenCalledWith(
-            expect.stringContaining('pgmq.create'),
-            expect.any(Array),
-        );
+    describe('ensureQueue', () => {
+        it('calls pgmq.create when the queue does not exist', async () => {
+            dsQuery.mockResolvedValueOnce([]); // list_queues() -> absent
+            await service.ensureQueue();
+            expect(dsQuery).toHaveBeenCalledWith(
+                expect.stringContaining('pgmq.create'),
+                expect.any(Array),
+            );
+        });
+
+        it('does not call pgmq.create when the queue already exists', async () => {
+            dsQuery.mockResolvedValueOnce([{ queue_name: 'warehouse-optimization' }]);
+            await service.ensureQueue();
+            const calledCreate = dsQuery.mock.calls.some(
+                ([sql]) => typeof sql === 'string' && sql.includes('pgmq.create'),
+            );
+            expect(calledCreate).toBe(false);
+        });
     });
 
     it('enqueue calls pgmq.send with the serialised message', async () => {

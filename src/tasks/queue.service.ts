@@ -19,12 +19,23 @@ export class QueueService {
     constructor(@InjectDataSource() private readonly dataSource: DataSource) { }
 
     /**
-     * Creates the pgmq queue if it does not already exist.
-     * Safe to call multiple times — pgmq.create() is idempotent.
+     * Creates the pgmq queue only if it does not already exist.
+     * pgmq.create() is NOT idempotent for queue names that require identifier
+     * quoting (e.g. the hyphen in "warehouse-optimization"): on a second call it
+     * re-runs ALTER EXTENSION ... ADD SEQUENCE and fails with SQLSTATE 55000.
+     * Guarding with an existence check avoids that path.
      */
     async ensureQueue(): Promise<void> {
-        await this.dataSource.query(`SELECT pgmq.create($1)`, [QUEUE_NAME]);
-        this.logger.log(`Queue "${QUEUE_NAME}" is ready.`);
+        const rows: { queue_name: string }[] = await this.dataSource.query(
+            `SELECT queue_name FROM pgmq.list_queues() WHERE queue_name = $1`,
+            [QUEUE_NAME],
+        );
+        if (rows.length === 0) {
+            await this.dataSource.query(`SELECT pgmq.create($1)`, [QUEUE_NAME]);
+            this.logger.log(`Queue "${QUEUE_NAME}" created.`);
+        } else {
+            this.logger.log(`Queue "${QUEUE_NAME}" already exists.`);
+        }
     }
 
     /**
