@@ -11,6 +11,7 @@ import { UsersModule } from './users/users.module';
 import { ServiceFeesModule } from './service-fees/service-fees.module';
 import { StripeModule } from './stripe/stripe.module';
 import { PaymentsModule } from './payments/payments.module';
+import { IssuingModule } from './issuing/issuing.module';
 import { MailerModule } from './mailer/mailer.module';
 import { InvitationsModule } from './invitations/invitations.module';
 
@@ -33,6 +34,7 @@ import { InvitationsModule } from './invitations/invitations.module';
     ServiceFeesModule,
     StripeModule,
     PaymentsModule,
+    IssuingModule,
     MailerModule,
     InvitationsModule,
   ],
