@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { OrganisationsModule } from 'src/organisations/organisations.module';
 import { IssuingCardholder } from './entities/issuing-cardholder.entity';
 import { IssuingCard } from './entities/issuing-card.entity';
 import { IssuingTransaction } from './entities/issuing-transaction.entity';
@@ -14,6 +15,7 @@ import { IssuingWebhookController } from './issuing-webhook.controller';
             IssuingCard,
             IssuingTransaction,
         ]),
+        OrganisationsModule,
     ],
     controllers: [IssuingController, IssuingWebhookController],
     providers: [IssuingService],

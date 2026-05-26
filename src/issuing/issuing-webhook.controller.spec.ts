@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException } from '@nestjs/common';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
+import { OrganisationsService } from 'src/organisations/organisations.service';
 import { IssuingWebhookController } from './issuing-webhook.controller';
 import { IssuingService } from './issuing.service';
 
@@ -8,22 +9,25 @@ describe('IssuingWebhookController', () => {
     let controller: IssuingWebhookController;
     let stripe: { webhooks: { constructEvent: jest.Mock } };
     let issuing: { recordTransaction: jest.Mock; syncCardStatus: jest.Mock };
+    let orgs: { updateConnectStatus: jest.Mock };
 
     const rawReq = { rawBody: Buffer.from('{}') };
 
     beforeEach(async () => {
-        process.env.STRIPE_ISSUING_WEBHOOK_SECRET = 'whsec_test';
+        process.env.STRIPE_CONNECT_WEBHOOK_SECRET = 'whsec_test';
         stripe = { webhooks: { constructEvent: jest.fn() } };
         issuing = {
             recordTransaction: jest.fn().mockResolvedValue(undefined),
             syncCardStatus: jest.fn().mockResolvedValue(undefined),
         };
+        orgs = { updateConnectStatus: jest.fn().mockResolvedValue(undefined) };
 
         const module: TestingModule = await Test.createTestingModule({
             controllers: [IssuingWebhookController],
             providers: [
                 { provide: STRIPE_CLIENT, useValue: stripe },
                 { provide: IssuingService, useValue: issuing },
+                { provide: OrganisationsService, useValue: orgs },
             ],
         }).compile();
 
@@ -52,6 +56,31 @@ describe('IssuingWebhookController', () => {
         await controller.handle(rawReq, 'sig');
 
         expect(issuing.syncCardStatus).toHaveBeenCalledWith('ic_1', 'inactive');
+    });
+
+    it('syncs the connected account state on account.updated', async () => {
+        stripe.webhooks.constructEvent.mockReturnValue({
+            type: 'account.updated',
+            account: 'acct_1',
+            data: {
+                object: {
+                    id: 'acct_1',
+                    details_submitted: true,
+                    charges_enabled: true,
+                    payouts_enabled: false,
+                    capabilities: { card_issuing: 'active' },
+                },
+            },
+        });
+
+        await controller.handle(rawReq, 'sig');
+
+        expect(orgs.updateConnectStatus).toHaveBeenCalledWith('acct_1', {
+            detailsSubmitted: true,
+            chargesEnabled: true,
+            payoutsEnabled: false,
+            cardIssuingStatus: 'active',
+        });
     });
 
     it('ignores unrelated event types', async () => {

@@ -3,6 +3,7 @@ import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import { SUPABASE_CLIENT } from 'src/supabase/supabase.provider';
 import { IssuingService } from './issuing.service';
+import { OrganisationsService } from 'src/organisations/organisations.service';
 import { IssuingCardholder } from './entities/issuing-cardholder.entity';
 import { IssuingCard } from './entities/issuing-card.entity';
 import { IssuingTransaction } from './entities/issuing-transaction.entity';
@@ -38,6 +39,7 @@ describe('IssuingService', () => {
     };
     let txnRepo: { createQueryBuilder: jest.Mock };
     let dataSource: { query: jest.Mock };
+    let orgs: { getOrFail: jest.Mock };
 
     beforeEach(async () => {
         stripe = {
@@ -62,6 +64,13 @@ describe('IssuingService', () => {
         };
         txnRepo = { createQueryBuilder: jest.fn() };
         dataSource = { query: jest.fn() };
+        orgs = {
+            getOrFail: jest.fn().mockResolvedValue({
+                id: 'org1',
+                stripeAccountId: 'acct_1',
+                cardIssuingStatus: 'active',
+            }),
+        };
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
@@ -72,6 +81,7 @@ describe('IssuingService', () => {
                 { provide: getRepositoryToken(IssuingCard), useValue: cardRepo },
                 { provide: getRepositoryToken(IssuingTransaction), useValue: txnRepo },
                 { provide: getDataSourceToken(), useValue: dataSource },
+                { provide: OrganisationsService, useValue: orgs },
             ],
         }).compile();
 
@@ -85,7 +95,7 @@ describe('IssuingService', () => {
                 stripeCardholderId: 'ich_existing',
             });
 
-            const result = await service.ensureCardholder('org1', 'd1');
+            const result = await service.ensureCardholder('org1', 'd1', 'acct_1');
 
             expect(result.stripeCardholderId).toBe('ich_existing');
             expect(stripe.issuing.cardholders.create).not.toHaveBeenCalled();
@@ -115,7 +125,7 @@ describe('IssuingService', () => {
             ]);
             stripe.issuing.cardholders.create.mockResolvedValue({ id: 'ich_new' });
 
-            const result = await service.ensureCardholder('org1', 'd1');
+            const result = await service.ensureCardholder('org1', 'd1', 'acct_1');
 
             expect(stripe.issuing.cardholders.create).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -130,6 +140,7 @@ describe('IssuingService', () => {
                         }),
                     },
                 }),
+                { stripeAccount: 'acct_1' },
             );
             expect(result.stripeCardholderId).toBe('ich_new');
         });
@@ -180,6 +191,7 @@ describe('IssuingService', () => {
                         ],
                     }),
                 }),
+                { stripeAccount: 'acct_1' },
             );
             expect(card.stripeCardId).toBe('ic_1');
             expect(card.last4).toBe('4242');
@@ -273,9 +285,11 @@ describe('IssuingService', () => {
 
             const result = await service.setCardStatus('org1', 'card1', 'inactive');
 
-            expect(stripe.issuing.cards.update).toHaveBeenCalledWith('ic_1', {
-                status: 'inactive',
-            });
+            expect(stripe.issuing.cards.update).toHaveBeenCalledWith(
+                'ic_1',
+                { status: 'inactive' },
+                { stripeAccount: 'acct_1' },
+            );
             expect(result.status).toBe('inactive');
         });
     });

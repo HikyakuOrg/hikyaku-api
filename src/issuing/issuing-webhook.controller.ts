@@ -10,6 +10,7 @@ import {
 import { ApiExcludeEndpoint } from '@nestjs/swagger';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
+import { OrganisationsService } from 'src/organisations/organisations.service';
 import { IssuingService } from './issuing.service';
 import type { StripeIssuingTransaction } from './issuing.service';
 
@@ -18,16 +19,27 @@ interface RawBodyRequest {
     rawBody?: Buffer;
 }
 
+/** Minimal shape of a Connect Account off the account.updated event. */
+interface StripeConnectAccount {
+    id: string;
+    details_submitted?: boolean | null;
+    charges_enabled?: boolean | null;
+    payouts_enabled?: boolean | null;
+    capabilities?: { card_issuing?: string | null } | null;
+}
+
 /**
- * Separate endpoint + signing secret from the payments webhook so the two
- * concerns stay decoupled. Subscribe this endpoint to `issuing.*` events in the
- * Stripe Dashboard / CLI. Unauthenticated by design — trust is the signature.
+ * Connect webhook: now that each org issues on its own connected account, the
+ * issuing_* events and account.updated arrive here with `event.account` set to
+ * the connected account. Register this endpoint as a **Connect** webhook in the
+ * Dashboard / CLI. Unauthenticated by design — trust is the signature.
  */
 @Controller('api/v1/stripe')
 export class IssuingWebhookController {
     constructor(
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
         private readonly issuing: IssuingService,
+        private readonly orgs: OrganisationsService,
     ) {}
 
     @Post('issuing-webhook')
@@ -37,9 +49,9 @@ export class IssuingWebhookController {
         @Req() req: RawBodyRequest,
         @Headers('stripe-signature') signature: string,
     ): Promise<{ received: boolean }> {
-        const secret = process.env.STRIPE_ISSUING_WEBHOOK_SECRET;
+        const secret = process.env.STRIPE_CONNECT_WEBHOOK_SECRET;
         if (!secret) {
-            throw new Error('STRIPE_ISSUING_WEBHOOK_SECRET is not set');
+            throw new Error('STRIPE_CONNECT_WEBHOOK_SECRET is not set');
         }
         if (!req.rawBody) {
             throw new BadRequestException('Missing raw request body');
@@ -70,6 +82,18 @@ export class IssuingWebhookController {
                     status: string;
                 };
                 await this.issuing.syncCardStatus(card.id, card.status);
+                break;
+            }
+            case 'account.updated': {
+                const account =
+                    event.data.object as unknown as StripeConnectAccount;
+                const accountId = event.account ?? account.id;
+                await this.orgs.updateConnectStatus(accountId, {
+                    detailsSubmitted: account.details_submitted ?? false,
+                    chargesEnabled: account.charges_enabled ?? false,
+                    payoutsEnabled: account.payouts_enabled ?? false,
+                    cardIssuingStatus: account.capabilities?.card_issuing ?? null,
+                });
                 break;
             }
         }

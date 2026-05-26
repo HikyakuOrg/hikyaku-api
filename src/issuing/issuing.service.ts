@@ -13,6 +13,7 @@ import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
 import { toStripeMinorUnits } from 'src/common/money';
 import { toE164OrNull } from 'src/common/phone';
+import { OrganisationsService } from 'src/organisations/organisations.service';
 import { IssuingCardholder } from './entities/issuing-cardholder.entity';
 import { IssuingCard } from './entities/issuing-card.entity';
 import { IssuingTransaction } from './entities/issuing-transaction.entity';
@@ -86,7 +87,23 @@ export class IssuingService {
         @InjectRepository(IssuingTransaction)
         private readonly txnRepo: Repository<IssuingTransaction>,
         @InjectDataSource() private readonly dataSource: DataSource,
+        private readonly orgs: OrganisationsService,
     ) {}
+
+    /**
+     * Resolve the org's connected account, asserting it can issue. Every Issuing
+     * API call must be scoped to this account (Stripe-Account header) so cards
+     * live on — and are funded by — the org, not the platform.
+     */
+    private async getStripeAccountId(organisationId: string): Promise<string> {
+        const org = await this.orgs.getOrFail(organisationId);
+        if (!org.stripeAccountId || org.cardIssuingStatus !== 'active') {
+            throw new BadRequestException(
+                'Card issuing is not active for this organisation. Set up payments in Settings → Payments first.',
+            );
+        }
+        return org.stripeAccountId;
+    }
 
     /**
      * Create (or return the existing) Stripe cardholder for a driver. Idempotent
@@ -95,6 +112,7 @@ export class IssuingService {
     async ensureCardholder(
         organisationId: string,
         driverId: string,
+        stripeAccount: string,
     ): Promise<IssuingCardholder> {
         const existing = await this.cardholderRepo.findOne({
             where: { organisationId, driverId },
@@ -107,13 +125,16 @@ export class IssuingService {
             driverId,
         );
 
-        const cardholder = await this.stripe.issuing.cardholders.create({
-            type: 'individual',
-            name: identity.name,
-            email: identity.email ?? undefined,
-            phone_number: identity.phone ?? undefined,
-            billing: { address: billing },
-        });
+        const cardholder = await this.stripe.issuing.cardholders.create(
+            {
+                type: 'individual',
+                name: identity.name,
+                email: identity.email ?? undefined,
+                phone_number: identity.phone ?? undefined,
+                billing: { address: billing },
+            },
+            { stripeAccount },
+        );
 
         return this.cardholderRepo.save(
             this.cardholderRepo.create({
@@ -134,9 +155,11 @@ export class IssuingService {
         organisationId: string,
         input: IssueCardInput,
     ): Promise<IssuingCard> {
+        const stripeAccount = await this.getStripeAccountId(organisationId);
         const cardholder = await this.ensureCardholder(
             organisationId,
             input.driverId,
+            stripeAccount,
         );
 
         if (input.vehicleId) {
@@ -169,7 +192,9 @@ export class IssuingService {
             },
         };
 
-        const card = await this.stripe.issuing.cards.create(params);
+        const card = await this.stripe.issuing.cards.create(params, {
+            stripeAccount,
+        });
 
         return this.cardRepo.save(
             this.cardRepo.create({
@@ -214,12 +239,17 @@ export class IssuingService {
         cardId: string,
         status: 'active' | 'inactive' | 'canceled',
     ): Promise<IssuingCard> {
+        const stripeAccount = await this.getStripeAccountId(organisationId);
         const card = await this.cardRepo.findOne({
             where: { id: cardId, organisationId },
         });
         if (!card) throw new NotFoundException('Card not found');
 
-        await this.stripe.issuing.cards.update(card.stripeCardId, { status });
+        await this.stripe.issuing.cards.update(
+            card.stripeCardId,
+            { status },
+            { stripeAccount },
+        );
         card.status = status;
         return this.cardRepo.save(card);
     }
@@ -234,6 +264,7 @@ export class IssuingService {
         nonce: string,
         apiVersion: string,
     ): Promise<{ ephemeralKeySecret: string }> {
+        const stripeAccount = await this.getStripeAccountId(organisationId);
         const card = await this.cardRepo.findOne({
             where: { id: cardId, organisationId },
         });
@@ -241,7 +272,7 @@ export class IssuingService {
 
         const key = await this.stripe.ephemeralKeys.create(
             { issuing_card: card.stripeCardId, nonce },
-            { apiVersion },
+            { apiVersion, stripeAccount },
         );
         if (!key.secret) {
             throw new Error('Stripe did not return an ephemeral key secret');
