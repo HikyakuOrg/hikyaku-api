@@ -78,17 +78,19 @@ export class ConnectService {
     ): Promise<string> {
         if (org.stripeAccountId) return org.stripeAccountId;
 
+        await this.assertPlatformIssuingEnabled();
+
         const params: AccountCreateParams = {
             country: country.toUpperCase(),
             controller: {
                 stripe_dashboard: { type: 'none' },
-                requirement_collection: 'application',
-                losses: { payments: 'application' },
-                fees: { payer: 'application' },
+                requirement_collection: 'stripe',
+                losses: { payments: 'stripe' },
+                fees: { payer: 'account' },
             },
             capabilities: {
-                card_issuing: { requested: true },
-                transfers: { requested: true },
+               card_issuing: { requested: true },
+               transfers: { requested: true },
             },
             metadata: { organisationId: org.id },
         };
@@ -104,6 +106,22 @@ export class ConnectService {
             `Created connected account ${account.id} for org ${org.id}`,
         );
         return account.id;
+    }
+
+    /**
+     * card_issuing can only be requested on a connected account once the
+     * platform itself is onboarded on Stripe Issuing. Surface a clear,
+     * actionable error rather than Stripe's opaque "...already" message.
+     */
+    private async assertPlatformIssuingEnabled(): Promise<void> {
+        // null id = the account the API key belongs to (GET /v1/account).
+        const platform = await this.stripe.accounts.retrieve(null);
+        if (platform.capabilities?.card_issuing !== 'active') {
+            throw new BadRequestException(
+                'Stripe Issuing is not activated on the platform account yet. ' +
+                    'Activate Issuing in the Stripe Dashboard (Issuing → Activate) before onboarding organisations.',
+            );
+        }
     }
 
     async getStatus(organisationId: string): Promise<ConnectStatus> {
