@@ -23,6 +23,7 @@ const MAX_RETRIES = 3;
 
 interface WarehouseTimezoneRow {
     id: string;
+    organisation_id: string;
     tzid: string | null;
 }
 
@@ -30,8 +31,8 @@ interface WarehouseTimezoneRow {
 export class TasksService implements OnApplicationBootstrap {
     private readonly logger = new Logger(TasksService.name);
 
-    /** In-memory cache: warehouse uuid → IANA tzid. Avoids spatial JOIN every tick. */
-    private warehouseTzCache: Map<string, string> = new Map();
+    /** In-memory cache: warehouse uuid → { tzid, organisationId }. Avoids spatial JOIN every tick. */
+    private warehouseTzCache: Map<string, { tzid: string; organisationId: string }> = new Map();
     private cacheBuiltAt: number = 0;
 
     constructor(
@@ -121,13 +122,13 @@ export class TasksService implements OnApplicationBootstrap {
      */
     private async refreshWarehouseCache(): Promise<void> {
         const rows: WarehouseTimezoneRow[] = await this.dataSource.query(`
-            SELECT w.id, tz.tzid
+            SELECT w.id, w.organisation_id, tz.tzid
             FROM   warehouse w
             LEFT   JOIN tzdata.timezone tz
-                   ON ST_Within(w.warehouse_location::geometry, tz.geom)
+                   ON ST_Within(ST_SetSRID(w.warehouse_location::geometry, 4326), tz.geom)
         `);
         this.warehouseTzCache = new Map(
-            rows.map(r => [r.id, r.tzid ?? 'UTC']),
+            rows.map(r => [r.id, { tzid: r.tzid ?? 'UTC', organisationId: r.organisation_id }]),
         );
         this.cacheBuiltAt = Date.now();
         this.logger.debug(`Warehouse timezone cache refreshed (${rows.length} warehouses).`);
@@ -145,10 +146,10 @@ export class TasksService implements OnApplicationBootstrap {
      * RETURNING row. All subsequent calls are no-ops for that warehouse+date.
      */
     private async checkAndRunOptimizations(trigger: 'cron' | 'boot'): Promise<void> {
-        const warehouses = [...this.warehouseTzCache.entries()].map(([id, tzid]) => ({ id, tzid }));
+        const warehouses = [...this.warehouseTzCache.entries()].map(([id, v]) => ({ id, ...v }));
 
         for (const warehouse of warehouses) {
-            const tzid = warehouse.tzid ?? 'UTC';
+            const tzid = warehouse.tzid;
             const now = new Date();
 
             const localHour = this.getLocalHour(now, tzid);
@@ -167,7 +168,7 @@ export class TasksService implements OnApplicationBootstrap {
                 .createQueryBuilder()
                 .insert()
                 .into(SchedulerRun)
-                .values({ warehouseId: warehouse.id, runDate: localDate })
+                .values({ organisationId: warehouse.organisationId, warehouseId: warehouse.id, runDate: localDate })
                 .orIgnore()
                 .returning('id')
                 .execute();

@@ -5,6 +5,9 @@ export class SchedulerRun {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ name: 'organisation_id', type: 'uuid' })
+    organisationId: string;
+
     @Column({ name: 'warehouse_id', type: 'uuid' })
     warehouseId: string;
 
