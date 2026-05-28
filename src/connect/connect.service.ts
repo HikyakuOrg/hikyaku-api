@@ -11,6 +11,8 @@ import { Organisation } from 'src/organisations/organisation.entity';
 
 type AccountCreateParams = Parameters<StripeClient['accounts']['create']>[0];
 
+const ISSUING_ELIGIBLE_COUNTRIES = ['US', 'GB', 'DE', 'FR', 'IE', 'NL', 'ES', 'IT'];
+
 /** issuing/funding_instructions isn't a typed SDK resource — call it raw. */
 type BankTransferType =
     | 'us_bank_transfer'
@@ -45,7 +47,6 @@ export class ConnectService {
     async createAccountSession(
         organisationId: string,
         country: string,
-        currency: string,
     ): Promise<{ clientSecret: string; publishableKey: string }> {
         const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY;
         if (!publishableKey) {
@@ -53,7 +54,7 @@ export class ConnectService {
         }
 
         const org = await this.orgs.getOrFail(organisationId);
-        const accountId = await this.ensureAccount(org, country, currency);
+        const accountId = await this.ensureAccount(org, country);
 
         const session = await this.stripe.accountSessions.create({
             account: accountId,
@@ -69,19 +70,19 @@ export class ConnectService {
      * Create the connected account if the org doesn't have one yet. Custom
      * account: no Stripe dashboard, platform collects requirements and holds
      * loss liability — the only model Issuing on Connect supports without
-     * Stripe approval. card_issuing + transfers capabilities are requested.
+     * Stripe approval. Only card_payments + transfers are requested here;
+     * card_issuing is requested later (see maybeRequestCardIssuing).
      */
     private async ensureAccount(
         org: Organisation,
         country: string,
-        currency: string,
     ): Promise<string> {
         if (org.stripeAccountId) return org.stripeAccountId;
 
-        await this.assertPlatformIssuingEnabled();
+        const countryUpper = country.toUpperCase();
 
         const params: AccountCreateParams = {
-            country: country.toUpperCase(),
+            country: countryUpper,
             controller: {
                 stripe_dashboard: { type: 'none' },
                 requirement_collection: 'stripe',
@@ -89,37 +90,56 @@ export class ConnectService {
                 fees: { payer: 'account' },
             },
             capabilities: {
-               card_issuing: { requested: true },
-               transfers: { requested: true },
+                card_payments: { requested: true },
+                transfers: { requested: true },
             },
             metadata: { organisationId: org.id },
         };
 
         const account = await this.stripe.accounts.create(params);
+        const currency = (account.default_currency ?? 'usd').toLowerCase();
+
         await this.orgs.setStripeAccount(
             org.id,
             account.id,
-            country.toUpperCase(),
-            currency.toLowerCase(),
+            countryUpper,
+            currency,
         );
         this.logger.log(
-            `Created connected account ${account.id} for org ${org.id}`,
+            `Created connected account ${account.id} for org ${org.id} (country=${countryUpper})`,
         );
+
         return account.id;
     }
 
     /**
-     * card_issuing can only be requested on a connected account once the
-     * platform itself is onboarded on Stripe Issuing. Surface a clear,
-     * actionable error rather than Stripe's opaque "...already" message.
+     * Request the card_issuing capability once the org has finished base
+     * onboarding (details_submitted). Driven by the account.updated webhook —
+     * deliberately NOT at account-creation time: Stripe rejects card_issuing on
+     * a brand-new account that has no verified details yet. Idempotent: once
+     * requested, the capability mirror (cardIssuingStatus) is non-null so we skip.
      */
-    private async assertPlatformIssuingEnabled(): Promise<void> {
-        // null id = the account the API key belongs to (GET /v1/account).
-        const platform = await this.stripe.accounts.retrieve(null);
-        if (platform.capabilities?.card_issuing !== 'active') {
-            throw new BadRequestException(
-                'Stripe Issuing is not activated on the platform account yet. ' +
-                    'Activate Issuing in the Stripe Dashboard (Issuing → Activate) before onboarding organisations.',
+    async maybeRequestCardIssuing(stripeAccountId: string): Promise<void> {
+        const org = await this.orgs.findByStripeAccountId(stripeAccountId);
+        if (!org?.stripeAccountId) return;
+        if (!org.detailsSubmitted) return;
+        if (org.cardIssuingStatus != null) return;
+
+        const country = (org.stripeAccountCountry ?? '').toUpperCase();
+        if (!ISSUING_ELIGIBLE_COUNTRIES.includes(country)) return;
+
+        try {
+            await this.stripe.accounts.update(org.stripeAccountId, {
+                capabilities: { card_issuing: { requested: true } },
+            });
+            this.logger.log(
+                `Requested card_issuing for ${org.stripeAccountId} after onboarding`,
+            );
+        } catch (err) {
+            // Never fail the webhook. If the platform isn't approved for Issuing
+            // it surfaces here and self-heals on the next account.updated event.
+            this.logger.error(
+                `Failed to request card_issuing for ${org.stripeAccountId}: ${String(err)}`,
             );
         }
     }
@@ -179,7 +199,7 @@ export class ConnectService {
         const org = await this.orgs.getOrFail(organisationId);
         if (!org.stripeAccountId) {
             throw new BadRequestException(
-                'No Stripe account yet. Set up payments in Settings → Payments first.',
+                'No Stripe account yet. Complete organisation onboarding first.',
             );
         }
         return org;

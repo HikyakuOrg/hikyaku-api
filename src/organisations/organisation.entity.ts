@@ -16,6 +16,10 @@ export class Organisation {
     @Column({ type: 'text' })
     name: string;
 
+    /** 'personal' | 'company' — determines whether Stripe Connect onboarding is required. */
+    @Column({ name: 'org_type', type: 'text', default: 'personal' })
+    orgType: string;
+
     @Column({ name: 'created_by', type: 'uuid' })
     createdBy: string;
 

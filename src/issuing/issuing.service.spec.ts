@@ -3,41 +3,21 @@ import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import { SUPABASE_CLIENT } from 'src/supabase/supabase.provider';
 import { IssuingService } from './issuing.service';
-import { OrganisationsService } from 'src/organisations/organisations.service';
-import { IssuingCardholder } from './entities/issuing-cardholder.entity';
 import { IssuingCard } from './entities/issuing-card.entity';
-import { IssuingTransaction } from './entities/issuing-transaction.entity';
-
-function makeInsertQb() {
-    const qb = {
-        insert: jest.fn().mockReturnThis(),
-        into: jest.fn().mockReturnThis(),
-        values: jest.fn().mockReturnThis(),
-        orIgnore: jest.fn().mockReturnThis(),
-        execute: jest.fn().mockResolvedValue({}),
-    };
-    return qb;
-}
+import { OrganisationsService } from 'src/organisations/organisations.service';
 
 describe('IssuingService', () => {
     let service: IssuingService;
     let stripe: {
         issuing: {
             cardholders: { create: jest.Mock };
-            cards: { create: jest.Mock; update: jest.Mock };
+            cards: { list: jest.Mock; create: jest.Mock; update: jest.Mock; retrieve: jest.Mock };
+            transactions: { list: jest.Mock };
         };
         ephemeralKeys: { create: jest.Mock };
     };
     let supabase: { auth: { admin: { getUserById: jest.Mock } } };
-    let cardholderRepo: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock };
-    let cardRepo: {
-        findOne: jest.Mock;
-        create: jest.Mock;
-        save: jest.Mock;
-        update: jest.Mock;
-        find: jest.Mock;
-    };
-    let txnRepo: { createQueryBuilder: jest.Mock };
+    let cardRepo: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock };
     let dataSource: { query: jest.Mock };
     let orgs: { getOrFail: jest.Mock };
 
@@ -45,24 +25,17 @@ describe('IssuingService', () => {
         stripe = {
             issuing: {
                 cardholders: { create: jest.fn() },
-                cards: { create: jest.fn(), update: jest.fn() },
+                cards: { list: jest.fn(), create: jest.fn(), update: jest.fn(), retrieve: jest.fn() },
+                transactions: { list: jest.fn() },
             },
             ephemeralKeys: { create: jest.fn() },
         };
         supabase = { auth: { admin: { getUserById: jest.fn() } } };
-        cardholderRepo = {
-            findOne: jest.fn(),
-            create: jest.fn().mockImplementation((v: unknown) => v),
-            save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
-        };
         cardRepo = {
             findOne: jest.fn(),
             create: jest.fn().mockImplementation((v: unknown) => v),
             save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
-            update: jest.fn().mockResolvedValue({}),
-            find: jest.fn().mockResolvedValue([]),
         };
-        txnRepo = { createQueryBuilder: jest.fn() };
         dataSource = { query: jest.fn() };
         orgs = {
             getOrFail: jest.fn().mockResolvedValue({
@@ -77,9 +50,7 @@ describe('IssuingService', () => {
                 IssuingService,
                 { provide: STRIPE_CLIENT, useValue: stripe },
                 { provide: SUPABASE_CLIENT, useValue: supabase },
-                { provide: getRepositoryToken(IssuingCardholder), useValue: cardholderRepo },
                 { provide: getRepositoryToken(IssuingCard), useValue: cardRepo },
-                { provide: getRepositoryToken(IssuingTransaction), useValue: txnRepo },
                 { provide: getDataSourceToken(), useValue: dataSource },
                 { provide: OrganisationsService, useValue: orgs },
             ],
@@ -89,20 +60,26 @@ describe('IssuingService', () => {
     });
 
     describe('ensureCardholder', () => {
-        it('returns the existing cardholder without calling Stripe', async () => {
-            cardholderRepo.findOne.mockResolvedValue({
-                id: 'ch1',
-                stripeCardholderId: 'ich_existing',
+        it('retrieves the existing card from Stripe to read back the cardholder id (DB hit)', async () => {
+            cardRepo.findOne.mockResolvedValue({ stripeCardId: 'ic_existing' });
+            stripe.issuing.cards.retrieve.mockResolvedValue({
+                id: 'ic_existing',
+                cardholder: 'ich_existing',
             });
 
             const result = await service.ensureCardholder('org1', 'd1', 'acct_1');
 
-            expect(result.stripeCardholderId).toBe('ich_existing');
+            expect(result).toBe('ich_existing');
+            expect(stripe.issuing.cards.retrieve).toHaveBeenCalledWith(
+                'ic_existing',
+                {},
+                { stripeAccount: 'acct_1' },
+            );
             expect(stripe.issuing.cardholders.create).not.toHaveBeenCalled();
         });
 
-        it('creates a Stripe cardholder using the driver identity + warehouse billing address', async () => {
-            cardholderRepo.findOne.mockResolvedValue(null);
+        it('creates a new Stripe cardholder with org+driver metadata when no DB row exists', async () => {
+            cardRepo.findOne.mockResolvedValue(null);
             supabase.auth.admin.getUserById.mockResolvedValue({
                 data: {
                     user: {
@@ -139,26 +116,44 @@ describe('IssuingService', () => {
                             country: 'MY',
                         }),
                     },
+                    metadata: { organisationId: 'org1', driverId: 'd1' },
                 }),
                 { stripeAccount: 'acct_1' },
             );
-            expect(result.stripeCardholderId).toBe('ich_new');
+            expect(result).toBe('ich_new');
         });
     });
 
     describe('issueCard', () => {
         beforeEach(() => {
-            cardholderRepo.findOne.mockResolvedValue({
-                id: 'ch1',
-                stripeCardholderId: 'ich_1',
+            // Driver already has a card row → DB returns existing card id,
+            // then we retrieve it from Stripe to get the cardholder id.
+            cardRepo.findOne.mockResolvedValue({ stripeCardId: 'ic_prev' });
+            stripe.issuing.cards.retrieve.mockResolvedValue({
+                id: 'ic_prev',
+                cardholder: 'ich_1',
             });
         });
 
-        it('restricts the card to fuel categories and applies the spend limit', async () => {
+        it('restricts the card to fuel categories, applies the spend limit, and tags org/driver/vehicle in metadata', async () => {
             dataSource.query.mockResolvedValue([{ id: 'v1' }]); // assertVehicleInOrg
             stripe.issuing.cards.create.mockResolvedValue({
                 id: 'ic_1',
                 last4: '4242',
+                cardholder: { id: 'ich_1' },
+                type: 'virtual',
+                currency: 'usd',
+                status: 'active',
+                created: 1_700_000_000,
+                spending_controls: {
+                    spending_limits: [
+                        {
+                            amount: 15000,
+                            interval: 'daily',
+                        },
+                    ],
+                },
+                metadata: { organisationId: 'org1', driverId: 'd1', vehicleId: 'v1' },
             });
 
             const card = await service.issueCard('org1', {
@@ -181,7 +176,7 @@ describe('IssuingService', () => {
                         ],
                         spending_limits: [
                             expect.objectContaining({
-                                amount: 15000, // $150.00 in minor units
+                                amount: 15000,
                                 interval: 'daily',
                                 categories: [
                                     'automated_fuel_dispensers',
@@ -190,16 +185,42 @@ describe('IssuingService', () => {
                             }),
                         ],
                     }),
+                    metadata: {
+                        organisationId: 'org1',
+                        driverId: 'd1',
+                        vehicleId: 'v1',
+                    },
                 }),
                 { stripeAccount: 'acct_1' },
             );
+            expect(card.id).toBe('ic_1');
             expect(card.stripeCardId).toBe('ic_1');
             expect(card.last4).toBe('4242');
+            expect(card.vehicleId).toBe('v1');
             expect(card.spendingLimitMinor).toBe(15000);
+            expect(card.spendingInterval).toBe('daily');
+
+            // mapping row persisted
+            expect(cardRepo.save).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    organisationId: 'org1',
+                    driverId: 'd1',
+                    stripeCardId: 'ic_1',
+                }),
+            );
         });
 
-        it('omits spending_limits when no limit is given', async () => {
-            stripe.issuing.cards.create.mockResolvedValue({ id: 'ic_2' });
+        it('omits spending_limits and vehicleId metadata when neither is provided', async () => {
+            stripe.issuing.cards.create.mockResolvedValue({
+                id: 'ic_2',
+                cardholder: 'ich_1',
+                type: 'virtual',
+                currency: 'usd',
+                status: 'active',
+                created: 1_700_000_000,
+                spending_controls: {},
+                metadata: { organisationId: 'org1', driverId: 'd1' },
+            });
 
             await service.issueCard('org1', { driverId: 'd1', currency: 'usd' });
 
@@ -209,81 +230,194 @@ describe('IssuingService', () => {
                 'automated_fuel_dispensers',
                 'service_stations',
             ]);
+            expect(params.metadata).toEqual({
+                organisationId: 'org1',
+                driverId: 'd1',
+            });
+            expect(cardRepo.save).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    organisationId: 'org1',
+                    driverId: 'd1',
+                    stripeCardId: 'ic_2',
+                }),
+            );
         });
     });
 
-    describe('recordTransaction', () => {
-        it('maps a settled transaction to the ledger with the magnitude amount and resolved driver', async () => {
-            cardRepo.findOne.mockResolvedValue({
-                id: 'card1',
-                cardholderId: 'ch1',
-                vehicleId: 'v1',
-                organisationId: 'org1',
-            });
-            cardholderRepo.findOne.mockResolvedValue({ id: 'ch1', driverId: 'd1' });
-            const qb = makeInsertQb();
-            txnRepo.createQueryBuilder.mockReturnValue(qb);
-
-            await service.recordTransaction({
-                id: 'ipi_1',
-                type: 'capture',
-                amount: -5000, // Issuing reports spend as negative
-                currency: 'usd',
-                card: 'ic_1',
-                authorization: 'iauth_1',
-                created: 1_700_000_000,
-                merchant_data: {
-                    name: 'Shell',
-                    category: 'service_stations',
-                    city: 'KL',
-                    country: 'MY',
-                },
+    describe('listCards', () => {
+        it('returns an empty array when the org has no active Stripe issuing', async () => {
+            orgs.getOrFail.mockResolvedValue({
+                id: 'org1',
+                stripeAccountId: null,
+                cardIssuingStatus: null,
             });
 
-            expect(qb.values).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    organisationId: 'org1',
-                    cardId: 'card1',
-                    cardholderId: 'ch1',
-                    vehicleId: 'v1',
-                    driverId: 'd1',
-                    stripeTransactionId: 'ipi_1',
-                    stripeAuthorizationId: 'iauth_1',
-                    type: 'capture',
-                    amountMinor: 5000,
-                    currency: 'usd',
-                    merchantName: 'Shell',
-                    merchantCategory: 'service_stations',
-                }),
-            );
-            expect(qb.orIgnore).toHaveBeenCalled(); // idempotent on stripe_transaction_id
-            expect(qb.execute).toHaveBeenCalled();
+            const result = await service.listCards('org1');
+
+            expect(result).toEqual([]);
+            expect(stripe.issuing.cards.list).not.toHaveBeenCalled();
         });
 
-        it('skips a transaction that references an unknown card', async () => {
-            cardRepo.findOne.mockResolvedValue(null);
-
-            await service.recordTransaction({
-                id: 'ipi_2',
-                amount: -100,
-                currency: 'usd',
-                card: 'ic_unknown',
+        it('maps each Stripe card to the wire DTO', async () => {
+            stripe.issuing.cards.list.mockResolvedValue({
+                data: [
+                    {
+                        id: 'ic_1',
+                        last4: '4242',
+                        cardholder: 'ich_1',
+                        type: 'virtual',
+                        currency: 'usd',
+                        status: 'active',
+                        created: 1_700_000_000,
+                        spending_controls: {
+                            spending_limits: [{ amount: 10000, interval: 'daily' }],
+                        },
+                        metadata: { vehicleId: 'v1' },
+                    },
+                ],
             });
 
-            expect(txnRepo.createQueryBuilder).not.toHaveBeenCalled();
+            const result = await service.listCards('org1');
+
+            expect(stripe.issuing.cards.list).toHaveBeenCalledWith(
+                { limit: 100 },
+                { stripeAccount: 'acct_1' },
+            );
+            expect(result).toHaveLength(1);
+            expect(result[0]).toMatchObject({
+                id: 'ic_1',
+                organisationId: 'org1',
+                stripeCardId: 'ic_1',
+                vehicleId: 'v1',
+                last4: '4242',
+                status: 'active',
+                spendingLimitMinor: 10000,
+                spendingInterval: 'daily',
+            });
+        });
+    });
+
+    describe('listTransactions', () => {
+        const txn = {
+            id: 'ipi_1',
+            type: 'capture',
+            amount: -5000, // Issuing reports spend as negative
+            currency: 'usd',
+            card: {
+                id: 'ic_1',
+                metadata: { vehicleId: 'v1' },
+            },
+            cardholder: {
+                id: 'ich_1',
+                metadata: { driverId: 'd1' },
+            },
+            authorization: 'iauth_1',
+            created: 1_700_000_000,
+            merchant_data: {
+                name: 'Shell',
+                category: 'service_stations',
+                city: 'KL',
+                country: 'MY',
+            },
+        };
+
+        it('returns an empty array when the org has no active Stripe issuing', async () => {
+            orgs.getOrFail.mockResolvedValue({
+                id: 'org1',
+                stripeAccountId: null,
+                cardIssuingStatus: null,
+            });
+
+            const result = await service.listTransactions('org1');
+
+            expect(result).toEqual([]);
+        });
+
+        it('maps each Stripe transaction to the wire DTO with magnitude amount and resolved driver/vehicle', async () => {
+            stripe.issuing.transactions.list.mockResolvedValue({ data: [txn] });
+
+            const result = await service.listTransactions('org1');
+
+            expect(stripe.issuing.transactions.list).toHaveBeenCalledWith(
+                {
+                    limit: 100,
+                    expand: ['data.card', 'data.cardholder'],
+                },
+                { stripeAccount: 'acct_1' },
+            );
+            expect(result).toHaveLength(1);
+            expect(result[0]).toMatchObject({
+                id: 'ipi_1',
+                organisationId: 'org1',
+                cardId: 'ic_1',
+                cardholderId: 'ich_1',
+                vehicleId: 'v1',
+                driverId: 'd1',
+                stripeAuthorizationId: 'iauth_1',
+                type: 'capture',
+                amountMinor: 5000,
+                currency: 'usd',
+                merchantName: 'Shell',
+                merchantCategory: 'service_stations',
+            });
+        });
+
+        it('filters by driverId via cardholder metadata', async () => {
+            stripe.issuing.transactions.list.mockResolvedValue({
+                data: [
+                    txn,
+                    {
+                        ...txn,
+                        id: 'ipi_2',
+                        cardholder: { id: 'ich_2', metadata: { driverId: 'd2' } },
+                    },
+                ],
+            });
+
+            const result = await service.listTransactions('org1', {
+                driverId: 'd1',
+            });
+
+            expect(result).toHaveLength(1);
+            expect(result[0].id).toBe('ipi_1');
+        });
+
+        it('filters by vehicleId via card metadata', async () => {
+            stripe.issuing.transactions.list.mockResolvedValue({
+                data: [
+                    txn,
+                    {
+                        ...txn,
+                        id: 'ipi_3',
+                        card: { id: 'ic_2', metadata: { vehicleId: 'v2' } },
+                    },
+                ],
+            });
+
+            const result = await service.listTransactions('org1', {
+                vehicleId: 'v1',
+            });
+
+            expect(result).toHaveLength(1);
+            expect(result[0].id).toBe('ipi_1');
         });
     });
 
     describe('setCardStatus', () => {
-        it('updates Stripe and persists the new status', async () => {
-            cardRepo.findOne.mockResolvedValue({
-                id: 'card1',
-                stripeCardId: 'ic_1',
-                organisationId: 'org1',
-                status: 'active',
+        it('updates Stripe with the new status and returns the mapped DTO', async () => {
+            stripe.issuing.cards.update.mockResolvedValue({
+                id: 'ic_1',
+                last4: '4242',
+                cardholder: 'ich_1',
+                type: 'virtual',
+                currency: 'usd',
+                status: 'inactive',
+                created: 1_700_000_000,
+                spending_controls: {},
+                metadata: {},
             });
 
-            const result = await service.setCardStatus('org1', 'card1', 'inactive');
+            const result = await service.setCardStatus('org1', 'ic_1', 'inactive');
 
             expect(stripe.issuing.cards.update).toHaveBeenCalledWith(
                 'ic_1',
@@ -291,6 +425,7 @@ describe('IssuingService', () => {
                 { stripeAccount: 'acct_1' },
             );
             expect(result.status).toBe('inactive');
+            expect(result.id).toBe('ic_1');
         });
     });
 });

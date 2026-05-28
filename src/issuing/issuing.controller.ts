@@ -5,7 +5,6 @@ import {
     HttpCode,
     HttpStatus,
     Param,
-    ParseUUIDPipe,
     Patch,
     Post,
     Query,
@@ -62,11 +61,12 @@ export class IssuingController {
         });
     }
 
+    // `:id` here is a Stripe card id (`ic_…`), not a local UUID — no ParseUUIDPipe.
     @Patch('cards/:id/status')
     @HttpCode(HttpStatus.OK)
     @RequirePermission('vehicles.update')
     setCardStatus(
-        @Param('id', ParseUUIDPipe) id: string,
+        @Param('id') id: string,
         @Body() dto: SetCardStatusDto,
         @Req() req: Request & { organisationId: string },
     ) {
@@ -77,7 +77,7 @@ export class IssuingController {
     @HttpCode(HttpStatus.OK)
     @RequirePermission('vehicles.view')
     createEphemeralKey(
-        @Param('id', ParseUUIDPipe) id: string,
+        @Param('id') id: string,
         @Body() dto: CreateEphemeralKeyDto,
         @Req() req: Request & { organisationId: string },
     ) {

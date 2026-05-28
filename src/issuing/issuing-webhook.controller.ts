@@ -11,8 +11,7 @@ import { ApiExcludeEndpoint } from '@nestjs/swagger';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
 import { OrganisationsService } from 'src/organisations/organisations.service';
-import { IssuingService } from './issuing.service';
-import type { StripeIssuingTransaction } from './issuing.service';
+import { ConnectService } from 'src/connect/connect.service';
 
 /** See stripe-webhook.controller.ts — `rawBody: true` (main.ts) populates this. */
 interface RawBodyRequest {
@@ -29,17 +28,20 @@ interface StripeConnectAccount {
 }
 
 /**
- * Connect webhook: now that each org issues on its own connected account, the
- * issuing_* events and account.updated arrive here with `event.account` set to
- * the connected account. Register this endpoint as a **Connect** webhook in the
- * Dashboard / CLI. Unauthenticated by design — trust is the signature.
+ * Connect webhook. Issuing cards/transactions are now fetched on demand from
+ * Stripe (no local DB), so `issuing_transaction.created` and `issuing_card.updated`
+ * are intentionally ignored — Stripe still sends them; we just no-op (200).
+ * `account.updated` is the one event we still care about: it keeps the
+ * organisation's Connect capability state in sync. Register this endpoint as a
+ * **Connect** webhook in the Dashboard / CLI. Unauthenticated by design — trust
+ * is the signature.
  */
 @Controller('api/v1/stripe')
 export class IssuingWebhookController {
     constructor(
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
-        private readonly issuing: IssuingService,
         private readonly orgs: OrganisationsService,
+        private readonly connect: ConnectService,
     ) {}
 
     @Post('issuing-webhook')
@@ -70,32 +72,18 @@ export class IssuingWebhookController {
             );
         }
 
-        switch (event.type) {
-            case 'issuing_transaction.created':
-                await this.issuing.recordTransaction(
-                    event.data.object as unknown as StripeIssuingTransaction,
-                );
-                break;
-            case 'issuing_card.updated': {
-                const card = event.data.object as unknown as {
-                    id: string;
-                    status: string;
-                };
-                await this.issuing.syncCardStatus(card.id, card.status);
-                break;
-            }
-            case 'account.updated': {
-                const account =
-                    event.data.object as unknown as StripeConnectAccount;
-                const accountId = event.account ?? account.id;
-                await this.orgs.updateConnectStatus(accountId, {
-                    detailsSubmitted: account.details_submitted ?? false,
-                    chargesEnabled: account.charges_enabled ?? false,
-                    payoutsEnabled: account.payouts_enabled ?? false,
-                    cardIssuingStatus: account.capabilities?.card_issuing ?? null,
-                });
-                break;
-            }
+        if (event.type === 'account.updated') {
+            const account = event.data.object as unknown as StripeConnectAccount;
+            const accountId = event.account ?? account.id;
+            await this.orgs.updateConnectStatus(accountId, {
+                detailsSubmitted: account.details_submitted ?? false,
+                chargesEnabled: account.charges_enabled ?? false,
+                payoutsEnabled: account.payouts_enabled ?? false,
+                cardIssuingStatus: account.capabilities?.card_issuing ?? null,
+            });
+            // Now that base onboarding state is persisted, request card_issuing
+            // if onboarding is complete and it hasn't been requested yet.
+            await this.connect.maybeRequestCardIssuing(accountId);
         }
 
         return { received: true };

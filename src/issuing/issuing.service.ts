@@ -2,7 +2,6 @@ import {
     BadRequestException,
     Inject,
     Injectable,
-    Logger,
     NotFoundException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
@@ -14,19 +13,30 @@ import type { StripeClient } from 'src/stripe/stripe.provider';
 import { toStripeMinorUnits } from 'src/common/money';
 import { toE164OrNull } from 'src/common/phone';
 import { OrganisationsService } from 'src/organisations/organisations.service';
-import { IssuingCardholder } from './entities/issuing-cardholder.entity';
 import { IssuingCard } from './entities/issuing-card.entity';
-import { IssuingTransaction } from './entities/issuing-transaction.entity';
 
 /**
- * Param types are derived from the Stripe instance (indexed access) rather than
- * the `Stripe.*` namespace — the namespace doesn't resolve under `module:
- * nodenext` (see stripe.provider.ts). This still type-checks the MCC literals.
+ * Param + result types are derived from the Stripe instance (indexed access)
+ * rather than the `Stripe.*` namespace — the namespace doesn't resolve under
+ * `module: nodenext` (see stripe.provider.ts).
  */
 type CardCreateParams = Parameters<StripeClient['issuing']['cards']['create']>[0];
 type AllowedCategory = NonNullable<
     NonNullable<CardCreateParams['spending_controls']>['allowed_categories']
 >[number];
+// Derive from `list().data[number]` rather than `retrieve()` so the types are
+// bare T (e.g. Stripe.Issuing.Card) rather than Stripe.Response<T> — list items
+// don't carry `lastResponse`, and `create()`/`update()` results (which DO carry
+// it) are still assignable to bare T since Response<T> extends T.
+type StripeCard = Awaited<
+    ReturnType<StripeClient['issuing']['cards']['list']>
+>['data'][number];
+type StripeCardholder = Awaited<
+    ReturnType<StripeClient['issuing']['cardholders']['list']>
+>['data'][number];
+type StripeTransaction = Awaited<
+    ReturnType<StripeClient['issuing']['transactions']['list']>
+>['data'][number];
 
 export const SPENDING_INTERVALS = [
     'per_authorization',
@@ -56,36 +66,54 @@ export interface IssueCardInput {
     currency: string;
 }
 
-/** Minimal shape of an Issuing Transaction off the webhook (see stripe-webhook pattern). */
-export interface StripeIssuingTransaction {
+/**
+ * Wire shape returned to the frontend. We keep the same field names as the
+ * pre-on-demand version so the client (lib/actions/issuing.ts → fuel-cards-client.tsx)
+ * needs no change. `id` is now the Stripe card id (`ic_…`) rather than a local UUID.
+ */
+export interface CardDto {
     id: string;
-    type?: string | null;
-    amount: number;
+    organisationId: string;
+    cardholderId: string;
+    vehicleId: string | null;
+    stripeCardId: string;
+    last4: string | null;
+    type: string;
     currency: string;
-    card?: string | { id: string } | null;
-    authorization?: string | { id: string } | null;
-    created?: number | null;
-    merchant_data?: {
-        name?: string | null;
-        category?: string | null;
-        city?: string | null;
-        country?: string | null;
-    } | null;
+    status: string;
+    spendingLimitMinor: number | null;
+    spendingInterval: string | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface TransactionDto {
+    id: string;
+    organisationId: string;
+    cardId: string | null;
+    cardholderId: string | null;
+    vehicleId: string | null;
+    driverId: string | null;
+    stripeTransactionId: string;
+    stripeAuthorizationId: string | null;
+    type: string;
+    amountMinor: number;
+    currency: string;
+    merchantName: string | null;
+    merchantCategory: string | null;
+    merchantCity: string | null;
+    merchantCountry: string | null;
+    authorizedAt: string | null;
+    createdAt: string;
 }
 
 @Injectable()
 export class IssuingService {
-    private readonly logger = new Logger(IssuingService.name);
-
     constructor(
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
         @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
-        @InjectRepository(IssuingCardholder)
-        private readonly cardholderRepo: Repository<IssuingCardholder>,
         @InjectRepository(IssuingCard)
         private readonly cardRepo: Repository<IssuingCard>,
-        @InjectRepository(IssuingTransaction)
-        private readonly txnRepo: Repository<IssuingTransaction>,
         @InjectDataSource() private readonly dataSource: DataSource,
         private readonly orgs: OrganisationsService,
     ) {}
@@ -93,7 +121,9 @@ export class IssuingService {
     /**
      * Resolve the org's connected account, asserting it can issue. Every Issuing
      * API call must be scoped to this account (Stripe-Account header) so cards
-     * live on — and are funded by — the org, not the platform.
+     * live on — and are funded by — the org, not the platform. Used by mutating
+     * calls; list endpoints use {@link getStripeAccountIdOrNull} so an org that
+     * hasn't completed onboarding sees an empty list rather than an error.
      */
     private async getStripeAccountId(organisationId: string): Promise<string> {
         const org = await this.orgs.getOrFail(organisationId);
@@ -105,19 +135,46 @@ export class IssuingService {
         return org.stripeAccountId;
     }
 
+    /** Lenient variant for read-only listings — returns null if the org has no
+     * connected account or issuing isn't active yet (callers should return []). */
+    private async getStripeAccountIdOrNull(
+        organisationId: string,
+    ): Promise<string | null> {
+        const org = await this.orgs.getOrFail(organisationId);
+        if (!org.stripeAccountId || org.cardIssuingStatus !== 'active') {
+            return null;
+        }
+        return org.stripeAccountId;
+    }
+
     /**
-     * Create (or return the existing) Stripe cardholder for a driver. Idempotent
-     * on (organisation, driver): a driver has exactly one cardholder.
+     * Return the Stripe cardholder id for a driver, creating one if needed.
+     *
+     * On first issue: creates the Stripe cardholder and returns its id.
+     * On subsequent issues: looks up any existing card for this driver in the
+     * local `issuing_cards` table, then retrieves that card from Stripe to read
+     * back its cardholder id (one extra Stripe call, acceptable given card
+     * issuance is infrequent).
      */
     async ensureCardholder(
         organisationId: string,
         driverId: string,
         stripeAccount: string,
-    ): Promise<IssuingCardholder> {
-        const existing = await this.cardholderRepo.findOne({
+    ): Promise<string> {
+        const existing = await this.cardRepo.findOne({
             where: { organisationId, driverId },
+            select: ['stripeCardId'],
         });
-        if (existing) return existing;
+        if (existing) {
+            const card = await this.stripe.issuing.cards.retrieve(
+                existing.stripeCardId,
+                {},
+                { stripeAccount },
+            );
+            return typeof card.cardholder === 'string'
+                ? card.cardholder
+                : card.cardholder.id;
+        }
 
         const identity = await this.getDriverIdentity(driverId);
         const billing = await this.getDriverBillingAddress(
@@ -132,31 +189,26 @@ export class IssuingService {
                 email: identity.email ?? undefined,
                 phone_number: identity.phone ?? undefined,
                 billing: { address: billing },
+                metadata: { organisationId, driverId },
             },
             { stripeAccount },
         );
-
-        return this.cardholderRepo.save(
-            this.cardholderRepo.create({
-                organisationId,
-                driverId,
-                stripeCardholderId: cardholder.id,
-                status: 'active',
-            }),
-        );
+        return cardholder.id;
     }
 
     /**
      * Issue a virtual fuel card to a driver: restricted to fuel MCCs and capped
      * by an optional spend limit. Stripe auto-declines anything else — no
-     * real-time authorization webhook needed.
+     * real-time authorization webhook needed. The driver/vehicle/org linkage is
+     * stored in the local `issuing_cards` table (fast lookup) and mirrored into
+     * Stripe card metadata (so `listTransactions` can filter without the DB).
      */
     async issueCard(
         organisationId: string,
         input: IssueCardInput,
-    ): Promise<IssuingCard> {
+    ): Promise<CardDto> {
         const stripeAccount = await this.getStripeAccountId(organisationId);
-        const cardholder = await this.ensureCardholder(
+        const stripeCardholderId = await this.ensureCardholder(
             organisationId,
             input.driverId,
             stripeAccount,
@@ -172,8 +224,14 @@ export class IssuingService {
                 ? toStripeMinorUnits(input.spendingLimitMajor, input.currency)
                 : null;
 
+        const metadata: Record<string, string> = {
+            organisationId,
+            driverId: input.driverId,
+        };
+        if (input.vehicleId) metadata.vehicleId = input.vehicleId;
+
         const params: CardCreateParams = {
-            cardholder: cardholder.stripeCardholderId,
+            cardholder: stripeCardholderId,
             currency: input.currency.toLowerCase(),
             type: 'virtual',
             status: 'active',
@@ -190,68 +248,84 @@ export class IssuingService {
                           ]
                         : undefined,
             },
+            metadata,
         };
 
         const card = await this.stripe.issuing.cards.create(params, {
             stripeAccount,
         });
 
-        return this.cardRepo.save(
+        await this.cardRepo.save(
             this.cardRepo.create({
                 organisationId,
-                cardholderId: cardholder.id,
-                vehicleId: input.vehicleId ?? null,
+                driverId: input.driverId,
                 stripeCardId: card.id,
-                last4: card.last4 ?? null,
-                type: 'virtual',
-                currency: input.currency.toLowerCase(),
-                status: 'active',
-                spendingLimitMinor: limitMinor,
-                spendingInterval: limitMinor != null ? interval : null,
             }),
         );
+
+        return this.toCardDto(card, organisationId);
     }
 
-    listCards(organisationId: string): Promise<IssuingCard[]> {
-        return this.cardRepo.find({
-            where: { organisationId },
-            order: { createdAt: 'DESC' },
-        });
+    async listCards(organisationId: string): Promise<CardDto[]> {
+        const stripeAccount = await this.getStripeAccountIdOrNull(organisationId);
+        if (!stripeAccount) return [];
+        const cards = await this.stripe.issuing.cards.list(
+            { limit: 100 },
+            { stripeAccount },
+        );
+        return cards.data.map((c) => this.toCardDto(c, organisationId));
     }
 
-    listTransactions(
+    /**
+     * List issuing transactions for the org. Filters by driver/vehicle are
+     * applied in memory after expanding `card` + `cardholder`, since neither
+     * Stripe's `card`/`cardholder` query params nor metadata search line up
+     * with our (driver, vehicle) inputs. At limit=100 this is cheap.
+     */
+    async listTransactions(
         organisationId: string,
         filters: { driverId?: string; vehicleId?: string } = {},
-    ): Promise<IssuingTransaction[]> {
-        const where: Record<string, string> = { organisationId };
-        if (filters.driverId) where.driverId = filters.driverId;
-        if (filters.vehicleId) where.vehicleId = filters.vehicleId;
-        return this.txnRepo.find({
-            where,
-            order: { createdAt: 'DESC' },
-            take: 500,
-        });
+    ): Promise<TransactionDto[]> {
+        const stripeAccount = await this.getStripeAccountIdOrNull(organisationId);
+        if (!stripeAccount) return [];
+
+        const txns = await this.stripe.issuing.transactions.list(
+            {
+                limit: 100,
+                expand: ['data.card', 'data.cardholder'],
+            },
+            { stripeAccount },
+        );
+
+        let data = txns.data;
+        if (filters.driverId) {
+            data = data.filter((t) => {
+                const ch = typeof t.cardholder === 'object' ? t.cardholder : null;
+                return ch?.metadata?.driverId === filters.driverId;
+            });
+        }
+        if (filters.vehicleId) {
+            data = data.filter((t) => {
+                const c = typeof t.card === 'object' ? t.card : null;
+                return c?.metadata?.vehicleId === filters.vehicleId;
+            });
+        }
+        return data.map((t) => this.toTransactionDto(t, organisationId));
     }
 
     /** Freeze ('inactive') or permanently cancel ('canceled') a card. */
     async setCardStatus(
         organisationId: string,
-        cardId: string,
+        stripeCardId: string,
         status: 'active' | 'inactive' | 'canceled',
-    ): Promise<IssuingCard> {
+    ): Promise<CardDto> {
         const stripeAccount = await this.getStripeAccountId(organisationId);
-        const card = await this.cardRepo.findOne({
-            where: { id: cardId, organisationId },
-        });
-        if (!card) throw new NotFoundException('Card not found');
-
-        await this.stripe.issuing.cards.update(
-            card.stripeCardId,
+        const card = await this.stripe.issuing.cards.update(
+            stripeCardId,
             { status },
             { stripeAccount },
         );
-        card.status = status;
-        return this.cardRepo.save(card);
+        return this.toCardDto(card, organisationId);
     }
 
     /**
@@ -260,18 +334,13 @@ export class IssuingService {
      */
     async createEphemeralKey(
         organisationId: string,
-        cardId: string,
+        stripeCardId: string,
         nonce: string,
         apiVersion: string,
     ): Promise<{ ephemeralKeySecret: string }> {
         const stripeAccount = await this.getStripeAccountId(organisationId);
-        const card = await this.cardRepo.findOne({
-            where: { id: cardId, organisationId },
-        });
-        if (!card) throw new NotFoundException('Card not found');
-
         const key = await this.stripe.ephemeralKeys.create(
-            { issuing_card: card.stripeCardId, nonce },
+            { issuing_card: stripeCardId, nonce },
             { apiVersion, stripeAccount },
         );
         if (!key.secret) {
@@ -280,71 +349,73 @@ export class IssuingService {
         return { ephemeralKeySecret: key.secret };
     }
 
-    /**
-     * Idempotently record a settled Issuing transaction from the webhook,
-     * resolving card -> cardholder -> driver/vehicle. One transaction per
-     * Stripe transaction id (unique constraint backs the ON CONFLICT no-op).
-     */
-    async recordTransaction(txn: StripeIssuingTransaction): Promise<void> {
-        const stripeCardId = this.idOf(txn.card);
-        if (!stripeCardId) {
-            this.logger.warn(`Issuing transaction ${txn.id} has no card — skipped`);
-            return;
-        }
-
-        const card = await this.cardRepo.findOne({
-            where: { stripeCardId },
-        });
-        if (!card) {
-            this.logger.warn(
-                `Issuing transaction ${txn.id} references unknown card ${stripeCardId} — skipped`,
-            );
-            return;
-        }
-
-        const cardholder = await this.cardholderRepo.findOne({
-            where: { id: card.cardholderId },
-        });
-
-        await this.txnRepo
-            .createQueryBuilder()
-            .insert()
-            .into(IssuingTransaction)
-            .values({
-                organisationId: card.organisationId,
-                cardId: card.id,
-                cardholderId: card.cardholderId,
-                vehicleId: card.vehicleId,
-                driverId: cardholder?.driverId ?? null,
-                stripeTransactionId: txn.id,
-                stripeAuthorizationId: this.idOf(txn.authorization),
-                type: txn.type === 'refund' ? 'refund' : 'capture',
-                // Issuing reports spend as a negative amount; store the magnitude.
-                amountMinor: Math.abs(txn.amount),
-                currency: txn.currency,
-                merchantName: txn.merchant_data?.name ?? null,
-                merchantCategory: txn.merchant_data?.category ?? null,
-                merchantCity: txn.merchant_data?.city ?? null,
-                merchantCountry: txn.merchant_data?.country ?? null,
-                authorizedAt: txn.created
-                    ? new Date(txn.created * 1000)
-                    : null,
-                raw: txn,
-            })
-            .orIgnore()
-            .execute();
+    private toCardDto(card: StripeCard, organisationId: string): CardDto {
+        const limit = card.spending_controls?.spending_limits?.[0];
+        const cardholderId =
+            typeof card.cardholder === 'string'
+                ? card.cardholder
+                : (card.cardholder?.id ?? '');
+        const createdIso = new Date(card.created * 1000).toISOString();
+        return {
+            id: card.id,
+            organisationId,
+            cardholderId,
+            vehicleId: card.metadata?.vehicleId ?? null,
+            stripeCardId: card.id,
+            last4: card.last4 ?? null,
+            type: card.type ?? 'virtual',
+            currency: card.currency,
+            status: card.status,
+            spendingLimitMinor: limit?.amount ?? null,
+            spendingInterval: limit?.interval ?? null,
+            createdAt: createdIso,
+            // Stripe doesn't expose an updated_at on cards; the frontend doesn't
+            // display it, so we mirror created to keep the shape stable.
+            updatedAt: createdIso,
+        };
     }
 
-    /** Keep the local card status in sync with Stripe (issuing_card.updated). */
-    async syncCardStatus(stripeCardId: string, status: string): Promise<void> {
-        await this.cardRepo.update({ stripeCardId }, { status });
-    }
-
-    private idOf(
-        ref: string | { id: string } | null | undefined,
-    ): string | null {
-        if (!ref) return null;
-        return typeof ref === 'string' ? ref : ref.id;
+    private toTransactionDto(
+        txn: StripeTransaction,
+        organisationId: string,
+    ): TransactionDto {
+        const card = typeof txn.card === 'object' ? txn.card : null;
+        const cardholder =
+            typeof txn.cardholder === 'object' ? txn.cardholder : null;
+        const createdIso = txn.created
+            ? new Date(txn.created * 1000).toISOString()
+            : new Date().toISOString();
+        return {
+            id: txn.id,
+            organisationId,
+            cardId:
+                typeof txn.card === 'string'
+                    ? txn.card
+                    : (txn.card?.id ?? null),
+            cardholderId:
+                typeof txn.cardholder === 'string'
+                    ? txn.cardholder
+                    : (txn.cardholder?.id ?? null),
+            vehicleId: card?.metadata?.vehicleId ?? null,
+            driverId: cardholder?.metadata?.driverId ?? null,
+            stripeTransactionId: txn.id,
+            stripeAuthorizationId:
+                typeof txn.authorization === 'string'
+                    ? txn.authorization
+                    : (txn.authorization?.id ?? null),
+            type: txn.type === 'refund' ? 'refund' : 'capture',
+            // Issuing reports spend as a negative amount; expose the magnitude.
+            amountMinor: Math.abs(txn.amount),
+            currency: txn.currency,
+            merchantName: txn.merchant_data?.name ?? null,
+            merchantCategory: txn.merchant_data?.category ?? null,
+            merchantCity: txn.merchant_data?.city ?? null,
+            merchantCountry: txn.merchant_data?.country ?? null,
+            authorizedAt: txn.created
+                ? new Date(txn.created * 1000).toISOString()
+                : null,
+            createdAt: createdIso,
+        };
     }
 
     private async getDriverIdentity(

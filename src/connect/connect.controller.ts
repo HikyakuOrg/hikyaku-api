@@ -32,7 +32,6 @@ export class ConnectController {
         return this.connect.createAccountSession(
             req.organisationId,
             dto.country,
-            dto.currency,
         );
     }
 

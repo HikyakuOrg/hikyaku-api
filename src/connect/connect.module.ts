@@ -7,5 +7,6 @@ import { ConnectController } from './connect.controller';
     imports: [OrganisationsModule],
     controllers: [ConnectController],
     providers: [ConnectService],
+    exports: [ConnectService],
 })
 export class ConnectModule {}
