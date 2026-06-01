@@ -126,13 +126,13 @@ export class IssuingService {
      * hasn't completed onboarding sees an empty list rather than an error.
      */
     private async getStripeAccountId(organisationId: string): Promise<string> {
-        const org = await this.orgs.getOrFail(organisationId);
-        if (!org.stripeAccountId || org.cardIssuingStatus !== 'active') {
+        const stripe = await this.orgs.getStripeAccount(organisationId);
+        if (!stripe?.stripeAccountId || stripe.cardIssuingStatus !== 'active') {
             throw new BadRequestException(
                 'Card issuing is not active for this organisation. Set up payments in Settings → Payments first.',
             );
         }
-        return org.stripeAccountId;
+        return stripe.stripeAccountId;
     }
 
     /** Lenient variant for read-only listings — returns null if the org has no
@@ -140,11 +140,11 @@ export class IssuingService {
     private async getStripeAccountIdOrNull(
         organisationId: string,
     ): Promise<string | null> {
-        const org = await this.orgs.getOrFail(organisationId);
-        if (!org.stripeAccountId || org.cardIssuingStatus !== 'active') {
+        const stripe = await this.orgs.getStripeAccount(organisationId);
+        if (!stripe?.stripeAccountId || stripe.cardIssuingStatus !== 'active') {
             return null;
         }
-        return org.stripeAccountId;
+        return stripe.stripeAccountId;
     }
 
     /**

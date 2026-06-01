@@ -11,7 +11,7 @@ import {
  * it is fetched on demand from Stripe. This table exists so we know which
  * Stripe card belongs to which driver without querying Stripe.
  */
-@Entity('issuing_cards')
+@Entity({ schema: 'stripe', name: 'issuing_cards' })
 export class IssuingCard {
     @PrimaryGeneratedColumn('uuid')
     id: string;

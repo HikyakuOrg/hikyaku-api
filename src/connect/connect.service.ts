@@ -6,8 +6,8 @@ import {
 } from '@nestjs/common';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
-import { OrganisationsService } from 'src/organisations/organisations.service';
-import { Organisation } from 'src/organisations/organisation.entity';
+import { OrganisationsService, OrgIssuingStatus } from 'src/organisations/organisations.service';
+import { OrganisationStripeAccount } from 'src/organisations/organisation-stripe-account.entity';
 
 type AccountCreateParams = Parameters<StripeClient['accounts']['create']>[0];
 
@@ -53,8 +53,8 @@ export class ConnectService {
             throw new Error('STRIPE_PUBLISHABLE_KEY is not set');
         }
 
-        const org = await this.orgs.getOrFail(organisationId);
-        const accountId = await this.ensureAccount(org, country);
+        await this.orgs.getOrFail(organisationId);
+        const accountId = await this.ensureAccount(organisationId, country);
 
         const session = await this.stripe.accountSessions.create({
             account: accountId,
@@ -74,10 +74,11 @@ export class ConnectService {
      * card_issuing is requested later (see maybeRequestCardIssuing).
      */
     private async ensureAccount(
-        org: Organisation,
+        organisationId: string,
         country: string,
     ): Promise<string> {
-        if (org.stripeAccountId) return org.stripeAccountId;
+        const stripe = await this.orgs.getStripeAccount(organisationId);
+        if (stripe?.stripeAccountId) return stripe.stripeAccountId;
 
         const countryUpper = country.toUpperCase();
 
@@ -93,20 +94,20 @@ export class ConnectService {
                 card_payments: { requested: true },
                 transfers: { requested: true },
             },
-            metadata: { organisationId: org.id },
+            metadata: { organisationId },
         };
 
         const account = await this.stripe.accounts.create(params);
         const currency = (account.default_currency ?? 'usd').toLowerCase();
 
         await this.orgs.setStripeAccount(
-            org.id,
+            organisationId,
             account.id,
             countryUpper,
             currency,
         );
         this.logger.log(
-            `Created connected account ${account.id} for org ${org.id} (country=${countryUpper})`,
+            `Created connected account ${account.id} for org ${organisationId} (country=${countryUpper})`,
         );
 
         return account.id;
@@ -120,41 +121,47 @@ export class ConnectService {
      * requested, the capability mirror (cardIssuingStatus) is non-null so we skip.
      */
     async maybeRequestCardIssuing(stripeAccountId: string): Promise<void> {
-        const org = await this.orgs.findByStripeAccountId(stripeAccountId);
-        if (!org?.stripeAccountId) return;
-        if (!org.detailsSubmitted) return;
-        if (org.cardIssuingStatus != null) return;
+        const stripe = await this.orgs.findByStripeAccountId(stripeAccountId);
+        if (!stripe?.stripeAccountId) return;
+        if (!stripe.detailsSubmitted) return;
+        if (stripe.cardIssuingStatus != null) return;
 
-        const country = (org.stripeAccountCountry ?? '').toUpperCase();
+        const country = (stripe.stripeAccountCountry ?? '').toUpperCase();
         if (!ISSUING_ELIGIBLE_COUNTRIES.includes(country)) return;
 
         try {
-            await this.stripe.accounts.update(org.stripeAccountId, {
+            await this.stripe.accounts.update(stripe.stripeAccountId, {
                 capabilities: { card_issuing: { requested: true } },
             });
             this.logger.log(
-                `Requested card_issuing for ${org.stripeAccountId} after onboarding`,
+                `Requested card_issuing for ${stripe.stripeAccountId} after onboarding`,
             );
         } catch (err) {
             // Never fail the webhook. If the platform isn't approved for Issuing
             // it surfaces here and self-heals on the next account.updated event.
             this.logger.error(
-                `Failed to request card_issuing for ${org.stripeAccountId}: ${String(err)}`,
+                `Failed to request card_issuing for ${stripe.stripeAccountId}: ${String(err)}`,
             );
         }
     }
 
     async getStatus(organisationId: string): Promise<ConnectStatus> {
-        const org = await this.orgs.getOrFail(organisationId);
+        await this.orgs.getOrFail(organisationId);
+        const stripe = await this.orgs.getStripeAccount(organisationId);
         return {
-            accountId: org.stripeAccountId,
-            detailsSubmitted: org.detailsSubmitted,
-            chargesEnabled: org.chargesEnabled,
-            payoutsEnabled: org.payoutsEnabled,
-            cardIssuingStatus: org.cardIssuingStatus,
-            country: org.stripeAccountCountry,
-            currency: org.stripeDefaultCurrency,
+            accountId: stripe?.stripeAccountId ?? null,
+            detailsSubmitted: stripe?.detailsSubmitted ?? false,
+            chargesEnabled: stripe?.chargesEnabled ?? false,
+            payoutsEnabled: stripe?.payoutsEnabled ?? false,
+            cardIssuingStatus: stripe?.cardIssuingStatus ?? null,
+            country: stripe?.stripeAccountCountry ?? null,
+            currency: stripe?.stripeDefaultCurrency ?? null,
         };
+    }
+
+    /** Issuing-status flags for all orgs the user belongs to — powers the org switcher. */
+    getAllIssuingStatuses(userId: string): Promise<OrgIssuingStatus[]> {
+        return this.orgs.getAllIssuingStatuses(userId);
     }
 
     /**
@@ -163,8 +170,8 @@ export class ConnectService {
      * money is at risk for card spend — not the platform's.
      */
     async getFundingInstructions(organisationId: string): Promise<unknown> {
-        const org = await this.requireOnboardedAccount(organisationId);
-        const currency = (org.stripeDefaultCurrency ?? 'usd').toLowerCase();
+        const stripe = await this.requireOnboardedAccount(organisationId);
+        const currency = (stripe.stripeDefaultCurrency ?? 'usd').toLowerCase();
 
         return this.stripe.rawRequest(
             'POST',
@@ -174,7 +181,7 @@ export class ConnectService {
                 funding_type: 'bank_transfer',
                 bank_transfer: { type: this.bankTransferType(currency) },
             },
-            { stripeAccount: org.stripeAccountId as string },
+            { stripeAccount: stripe.stripeAccountId as string },
         );
     }
 
@@ -182,10 +189,10 @@ export class ConnectService {
     async getIssuingBalance(
         organisationId: string,
     ): Promise<{ amount: number; currency: string }[]> {
-        const org = await this.requireOnboardedAccount(organisationId);
+        const stripe = await this.requireOnboardedAccount(organisationId);
         const balance = await this.stripe.balance.retrieve(
             {},
-            { stripeAccount: org.stripeAccountId as string },
+            { stripeAccount: stripe.stripeAccountId as string },
         );
         return (balance.issuing?.available ?? []).map((b) => ({
             amount: b.amount,
@@ -195,14 +202,15 @@ export class ConnectService {
 
     private async requireOnboardedAccount(
         organisationId: string,
-    ): Promise<Organisation> {
-        const org = await this.orgs.getOrFail(organisationId);
-        if (!org.stripeAccountId) {
+    ): Promise<OrganisationStripeAccount> {
+        await this.orgs.getOrFail(organisationId);
+        const stripe = await this.orgs.getStripeAccount(organisationId);
+        if (!stripe?.stripeAccountId) {
             throw new BadRequestException(
                 'No Stripe account yet. Complete organisation onboarding first.',
             );
         }
-        return org;
+        return stripe;
     }
 
     private bankTransferType(currency: string): BankTransferType {

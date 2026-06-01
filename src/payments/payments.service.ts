@@ -124,7 +124,7 @@ export class PaymentsService {
             const rows: { id: string; status: string; booking_details: PayServiceFeeDto }[] =
                 await runner.query(
                     `SELECT id, status, booking_details
-                     FROM payments
+                     FROM stripe.payments
                      WHERE stripe_checkout_session_id = $1
                      FOR UPDATE`,
                     [session.id],
@@ -213,7 +213,7 @@ export class PaymentsService {
                     : (session.payment_intent?.id ?? null);
 
             await runner.query(
-                `UPDATE payments
+                `UPDATE stripe.payments
                  SET status = 'completed',
                      package_id = $1,
                      stripe_payment_intent_id = $2,

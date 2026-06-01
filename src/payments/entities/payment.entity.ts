@@ -17,7 +17,7 @@ const bigintAsNumber = {
         value == null ? null : Number(value),
 };
 
-@Entity('payments')
+@Entity({ schema: 'stripe', name: 'payments' })
 export class Payment {
     @PrimaryGeneratedColumn('uuid')
     id: string;
