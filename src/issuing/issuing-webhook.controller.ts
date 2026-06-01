@@ -21,9 +21,6 @@ interface RawBodyRequest {
 /** Minimal shape of a Connect Account off the account.updated event. */
 interface StripeConnectAccount {
     id: string;
-    details_submitted?: boolean | null;
-    charges_enabled?: boolean | null;
-    payouts_enabled?: boolean | null;
     capabilities?: { card_issuing?: string | null } | null;
 }
 
@@ -31,10 +28,10 @@ interface StripeConnectAccount {
  * Connect webhook. Issuing cards/transactions are now fetched on demand from
  * Stripe (no local DB), so `issuing_transaction.created` and `issuing_card.updated`
  * are intentionally ignored — Stripe still sends them; we just no-op (200).
- * `account.updated` is the one event we still care about: it keeps the
- * organisation's Connect capability state in sync. Register this endpoint as a
- * **Connect** webhook in the Dashboard / CLI. Unauthenticated by design — trust
- * is the signature.
+ * `account.updated` is the one event we still care about: it stamps onboarded_at
+ * when card_issuing first becomes active, then triggers maybeRequestCardIssuing.
+ * Register this endpoint as a **Connect** webhook in the Dashboard / CLI.
+ * Unauthenticated by design — trust is the signature.
  */
 @Controller('api/v1/stripe')
 export class IssuingWebhookController {
@@ -75,14 +72,10 @@ export class IssuingWebhookController {
         if (event.type === 'account.updated') {
             const account = event.data.object as unknown as StripeConnectAccount;
             const accountId = event.account ?? account.id;
-            await this.orgs.updateConnectStatus(accountId, {
-                detailsSubmitted: account.details_submitted ?? false,
-                chargesEnabled: account.charges_enabled ?? false,
-                payoutsEnabled: account.payouts_enabled ?? false,
-                cardIssuingStatus: account.capabilities?.card_issuing ?? null,
-            });
-            // Now that base onboarding state is persisted, request card_issuing
-            // if onboarding is complete and it hasn't been requested yet.
+            await this.orgs.stampOnboardedAt(
+                accountId,
+                account.capabilities?.card_issuing ?? null,
+            );
             await this.connect.maybeRequestCardIssuing(accountId);
         }
 

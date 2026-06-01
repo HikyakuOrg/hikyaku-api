@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
-import { OrganisationsService, OrgIssuingStatus } from 'src/organisations/organisations.service';
+import { OrganisationsService } from 'src/organisations/organisations.service';
 import { OrganisationStripeAccount } from 'src/organisations/organisation-stripe-account.entity';
 
 type AccountCreateParams = Parameters<StripeClient['accounts']['create']>[0];
@@ -27,6 +27,12 @@ export interface ConnectStatus {
     cardIssuingStatus: string | null;
     country: string | null;
     currency: string | null;
+}
+
+export interface OrgIssuingStatus {
+    slug: string;
+    cardIssuingStatus: string | null;
+    detailsSubmitted: boolean;
 }
 
 @Injectable()
@@ -99,14 +105,8 @@ export class ConnectService {
         };
 
         const account = await this.stripe.accounts.create(params);
-        const currency = (account.default_currency ?? 'usd').toLowerCase();
 
-        await this.orgs.setStripeAccount(
-            organisationId,
-            account.id,
-            countryUpper,
-            currency,
-        );
+        await this.orgs.setStripeAccount(organisationId, account.id);
         this.logger.log(
             `Created connected account ${account.id} for org ${organisationId} (country=${countryUpper})`,
         );
@@ -119,15 +119,17 @@ export class ConnectService {
      * onboarding (details_submitted). Driven by the account.updated webhook —
      * deliberately NOT at account-creation time: Stripe rejects card_issuing on
      * a brand-new account that has no verified details yet. Idempotent: once
-     * requested, the capability mirror (cardIssuingStatus) is non-null so we skip.
+     * requested, the capability status from Stripe is non-null so we skip.
      */
     async maybeRequestCardIssuing(stripeAccountId: string): Promise<void> {
         const stripe = await this.orgs.findByStripeAccountId(stripeAccountId);
         if (!stripe?.stripeAccountId) return;
-        if (!stripe.detailsSubmitted) return;
-        if (stripe.cardIssuingStatus != null) return;
 
-        const country = (stripe.stripeAccountCountry ?? '').toUpperCase();
+        const account = await this.stripe.accounts.retrieve(stripeAccountId);
+        if (!account.details_submitted) return;
+        if (account.capabilities?.card_issuing != null) return;
+
+        const country = (account.country ?? '').toUpperCase();
         if (!ISSUING_ELIGIBLE_COUNTRIES.includes(country)) return;
 
         try {
@@ -148,21 +150,46 @@ export class ConnectService {
 
     async getStatus(organisationId: string): Promise<ConnectStatus> {
         await this.orgs.getOrFail(organisationId);
-        const stripe = await this.orgs.getStripeAccount(organisationId);
+        const stripeAccount = await this.orgs.getStripeAccount(organisationId);
+        if (!stripeAccount?.stripeAccountId) {
+            return {
+                accountId: null,
+                detailsSubmitted: false,
+                chargesEnabled: false,
+                payoutsEnabled: false,
+                cardIssuingStatus: null,
+                country: null,
+                currency: null,
+            };
+        }
+        const account = await this.stripe.accounts.retrieve(stripeAccount.stripeAccountId);
         return {
-            accountId: stripe?.stripeAccountId ?? null,
-            detailsSubmitted: stripe?.detailsSubmitted ?? false,
-            chargesEnabled: stripe?.chargesEnabled ?? false,
-            payoutsEnabled: stripe?.payoutsEnabled ?? false,
-            cardIssuingStatus: stripe?.cardIssuingStatus ?? null,
-            country: stripe?.stripeAccountCountry ?? null,
-            currency: stripe?.stripeDefaultCurrency ?? null,
+            accountId: stripeAccount.stripeAccountId,
+            detailsSubmitted: account.details_submitted ?? false,
+            chargesEnabled: account.charges_enabled ?? false,
+            payoutsEnabled: account.payouts_enabled ?? false,
+            cardIssuingStatus: account.capabilities?.card_issuing ?? null,
+            country: account.country ?? null,
+            currency: account.default_currency ?? null,
         };
     }
 
     /** Issuing-status flags for all orgs the user belongs to — powers the org switcher. */
-    getAllIssuingStatuses(userId: string): Promise<OrgIssuingStatus[]> {
-        return this.orgs.getAllIssuingStatuses(userId);
+    async getAllIssuingStatuses(userId: string): Promise<OrgIssuingStatus[]> {
+        const accounts = await this.orgs.getAccountsForUser(userId);
+        return Promise.all(
+            accounts.map(async ({ slug, stripeAccountId }) => {
+                if (!stripeAccountId) {
+                    return { slug, cardIssuingStatus: null, detailsSubmitted: false };
+                }
+                const account = await this.stripe.accounts.retrieve(stripeAccountId);
+                return {
+                    slug,
+                    cardIssuingStatus: account.capabilities?.card_issuing ?? null,
+                    detailsSubmitted: account.details_submitted ?? false,
+                };
+            }),
+        );
     }
 
     /**
@@ -172,7 +199,8 @@ export class ConnectService {
      */
     async getFundingInstructions(organisationId: string): Promise<unknown> {
         const stripe = await this.requireOnboardedAccount(organisationId);
-        const currency = (stripe.stripeDefaultCurrency ?? 'usd').toLowerCase();
+        const account = await this.stripe.accounts.retrieve(stripe.stripeAccountId as string);
+        const currency = (account.default_currency ?? 'usd').toLowerCase();
 
         return this.stripe.rawRequest(
             'POST',

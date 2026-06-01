@@ -127,7 +127,13 @@ export class IssuingService {
      */
     private async getStripeAccountId(organisationId: string): Promise<string> {
         const stripe = await this.orgs.getStripeAccount(organisationId);
-        if (!stripe?.stripeAccountId || stripe.cardIssuingStatus !== 'active') {
+        if (!stripe?.stripeAccountId) {
+            throw new BadRequestException(
+                'Card issuing is not active for this organisation. Set up payments in Settings → Payments first.',
+            );
+        }
+        const account = await this.stripe.accounts.retrieve(stripe.stripeAccountId);
+        if (account.capabilities?.card_issuing !== 'active') {
             throw new BadRequestException(
                 'Card issuing is not active for this organisation. Set up payments in Settings → Payments first.',
             );
@@ -141,9 +147,9 @@ export class IssuingService {
         organisationId: string,
     ): Promise<string | null> {
         const stripe = await this.orgs.getStripeAccount(organisationId);
-        if (!stripe?.stripeAccountId || stripe.cardIssuingStatus !== 'active') {
-            return null;
-        }
+        if (!stripe?.stripeAccountId) return null;
+        const account = await this.stripe.accounts.retrieve(stripe.stripeAccountId);
+        if (account.capabilities?.card_issuing !== 'active') return null;
         return stripe.stripeAccountId;
     }
 
