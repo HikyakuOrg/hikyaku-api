@@ -41,6 +41,9 @@ export class ServiceRate {
     @Column({ name: 'out_of_area_rate', type: 'numeric', precision: 10, scale: 2, nullable: true })
     outOfAreaRate: number | null;
 
+    @Column({ name: 'organisation_id', type: 'uuid' })
+    organisationId: string;
+
     @CreateDateColumn({ name: 'created_at' })
     createdAt: Date;
 

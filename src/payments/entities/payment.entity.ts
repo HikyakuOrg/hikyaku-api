@@ -34,6 +34,9 @@ export class Payment {
     @Column({ type: 'text', default: 'pending' })
     status: string;
 
+    @Column({ name: 'organisation_id', type: 'uuid', nullable: true })
+    organisationId: string | null;
+
     @Column({ name: 'stripe_checkout_session_id', type: 'text', nullable: true })
     stripeCheckoutSessionId: string | null;
 

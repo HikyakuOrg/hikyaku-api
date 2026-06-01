@@ -16,6 +16,7 @@ import { MailerModule } from './mailer/mailer.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { OrganisationsModule } from './organisations/organisations.module';
 import { ConnectModule } from './connect/connect.module';
+import { CustomersModule } from './customers/customers.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { ConnectModule } from './connect/connect.module';
     InvitationsModule,
     OrganisationsModule,
     ConnectModule,
+    CustomersModule,
   ],
   controllers: [],
   providers: [],

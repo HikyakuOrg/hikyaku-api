@@ -84,11 +84,12 @@ export class ConnectService {
 
         const params: AccountCreateParams = {
             country: countryUpper,
+
             controller: {
                 stripe_dashboard: { type: 'none' },
-                requirement_collection: 'stripe',
-                losses: { payments: 'stripe' },
-                fees: { payer: 'account' },
+                requirement_collection: 'application',
+                losses: { payments: 'application' },
+                fees: { payer: 'application' },
             },
             capabilities: {
                 card_payments: { requested: true },

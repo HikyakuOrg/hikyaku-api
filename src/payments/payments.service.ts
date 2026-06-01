@@ -13,6 +13,7 @@ import { AddressDto } from 'src/service-fees/dto/calculate-service-fee.dto';
 import { toE164OrNull } from 'src/common/phone';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
+import { CustomersService } from 'src/customers/customers.service';
 import { PayServiceFeeDto } from './dto/pay-service-fee.dto';
 import { Payment } from './entities/payment.entity';
 
@@ -42,6 +43,7 @@ export class PaymentsService {
         @InjectRepository(Payment) private readonly paymentRepo: Repository<Payment>,
         @InjectDataSource() private readonly dataSource: DataSource,
         private readonly serviceFeesService: ServiceFeesService,
+        private readonly customersService: CustomersService,
     ) {}
 
     /**
@@ -58,6 +60,10 @@ export class PaymentsService {
         // E.164, and a bad number must fail here (no charge) rather than during
         // post-payment fulfillment (charged, stranded).
         const booking = this.normalizeBookingPhones(dto);
+
+        // Resolve the org so fulfillment can scope Stripe customers to the
+        // right connected account. Nullable: booking flow is public (no auth).
+        const rateOrg = await this.resolveServiceRateOrg(dto.serviceRateId);
 
         const paymentId = randomUUID();
         const successUrl =
@@ -97,6 +103,7 @@ export class PaymentsService {
 
         await this.paymentRepo.insert({
             id: paymentId,
+            organisationId: rateOrg,
             packageId: null,
             amountMinor: fee.amount_minor,
             currency: fee.currency,
@@ -110,99 +117,119 @@ export class PaymentsService {
 
     /**
      * Idempotently turn a paid Checkout Session into a customer + package.
-     * Everything is one transaction: any failure rolls back and is rethrown so
-     * the webhook responds non-2xx and Stripe re-delivers (up to ~3 days).
+     *
+     * Stripe customers are created first (outside any DB transaction) so we
+     * never hold an open connection across a network call. The package
+     * insertion runs in a separate short transaction, re-locking the payment
+     * row to guard against concurrent webhook retries.
      */
-    async fulfillCheckoutSession(
-        session: FulfillableCheckoutSession,
-    ): Promise<void> {
+    async fulfillCheckoutSession(session: FulfillableCheckoutSession): Promise<void> {
+        // ── Step 1: Read payment (no lock — optimistic check) ─────────────────
+        const paymentRows: {
+            id: string;
+            status: string;
+            booking_details: PayServiceFeeDto;
+            organisation_id: string | null;
+        }[] = await this.dataSource.query(
+            `SELECT id, status, booking_details, organisation_id
+             FROM stripe.payments
+             WHERE stripe_checkout_session_id = $1`,
+            [session.id],
+        );
+
+        if (paymentRows.length === 0) {
+            // Webhook arrived before our own DB insert — Stripe will retry.
+            throw new NotFoundException(`No payment for checkout session ${session.id}`);
+        }
+
+        const payment = paymentRows[0];
+        if (payment.status === 'completed') {
+            this.logger.log(`Payment ${payment.id} already fulfilled — no-op`);
+            return;
+        }
+
+        const booking = payment.booking_details;
+
+        // ── Step 2: Create Stripe customers + thin DB rows (outside any tx) ───
+        const stripeAccountId = payment.organisation_id
+            ? await this.customersService.resolveStripeAccount(payment.organisation_id)
+            : null;
+
+        const fromCustomerId = await this.customersService.upsertFromBooking(
+            {
+                name: booking.sender.name,
+                phone: booking.sender.phoneNumber,
+                address: this.toBookingAddress(booking.sender.address),
+            },
+            stripeAccountId,
+            payment.organisation_id,
+            `${session.id}:sender`,
+        );
+
+        const receiverCustomerIds = await Promise.all(
+            booking.receiver.map((r, i) =>
+                this.customersService.upsertFromBooking(
+                    {
+                        name: r.name,
+                        phone: r.phoneNumber,
+                        address: this.toBookingAddress(r.address),
+                    },
+                    stripeAccountId,
+                    payment.organisation_id,
+                    `${session.id}:receiver:${i}`,
+                ),
+            ),
+        );
+
+        // ── Step 3: Insert packages + mark payment completed (transactional) ──
         const runner = this.dataSource.createQueryRunner();
         await runner.connect();
         await runner.startTransaction();
 
         try {
-            const rows: { id: string; status: string; booking_details: PayServiceFeeDto }[] =
-                await runner.query(
-                    `SELECT id, status, booking_details
-                     FROM stripe.payments
-                     WHERE stripe_checkout_session_id = $1
-                     FOR UPDATE`,
-                    [session.id],
-                );
+            // Re-lock and re-check — guards against concurrent retries that both
+            // passed the optimistic check above.
+            const lockRows: { id: string; status: string }[] = await runner.query(
+                `SELECT id, status FROM stripe.payments
+                 WHERE stripe_checkout_session_id = $1 FOR UPDATE`,
+                [session.id],
+            );
 
-            if (rows.length === 0) {
-                // Likely the webhook beat our own DB insert; throw so Stripe retries.
-                throw new NotFoundException(
-                    `No payment for checkout session ${session.id}`,
-                );
-            }
-
-            const payment = rows[0];
-            if (payment.status === 'completed') {
+            if (lockRows[0]?.status === 'completed') {
                 await runner.commitTransaction();
-                this.logger.log(`Payment ${payment.id} already fulfilled — no-op`);
+                this.logger.log(`Payment ${payment.id} already fulfilled — no-op (retry)`);
                 return;
             }
 
-            const booking = payment.booking_details;
             const pendingStatusId = await this.getPendingStatusId(runner);
-            const fromCustomerId = await this.upsertCustomer(runner, {
-                name: booking.sender.name,
-                phone: booking.sender.phoneNumber,
-                address: booking.sender.address,
-            });
-
             let firstPackageId: string | null = null;
 
-            for (const receiver of booking.receiver) {
-                const toCustomerId = await this.upsertCustomer(runner, {
-                    name: receiver.name,
-                    phone: receiver.phoneNumber,
-                    address: receiver.address,
-                });
+            for (let i = 0; i < booking.receiver.length; i++) {
+                const receiver = booking.receiver[i];
+                const toCustomerId = receiverCustomerIds[i];
 
                 const packageRows: { id: string }[] = await runner.query(
-                    `INSERT INTO packages
-                         (from_customer, to_customer, tracking_number, delivery_notes)
-                     VALUES ($1, $2, $3, $4)
-                     RETURNING id`,
-                    [
-                        fromCustomerId,
-                        toCustomerId,
-                        this.generateTrackingNumber(),
-                        booking.deliveryNotes ?? null,
-                    ],
+                    `INSERT INTO packages (from_customer, to_customer, tracking_number, delivery_notes)
+                     VALUES ($1, $2, $3, $4) RETURNING id`,
+                    [fromCustomerId, toCustomerId, this.generateTrackingNumber(), booking.deliveryNotes ?? null],
                 );
                 const packageId = packageRows[0].id;
                 firstPackageId ??= packageId;
 
                 await runner.query(
-                    `INSERT INTO package_dimensions
-                         (package_id, weight_kg, length_cm, width_cm, height_cm)
+                    `INSERT INTO package_dimensions (package_id, weight_kg, length_cm, width_cm, height_cm)
                      VALUES ($1, $2, $3, $4, $5)`,
-                    [
-                        packageId,
-                        booking.sender.parcel.weight,
-                        booking.sender.parcel.length,
-                        booking.sender.parcel.width,
-                        booking.sender.parcel.height,
-                    ],
+                    [packageId, booking.sender.parcel.weight, booking.sender.parcel.length, booking.sender.parcel.width, booking.sender.parcel.height],
                 );
 
                 await runner.query(
-                    `INSERT INTO package_delivery_window
-                         (package_id, scheduled_departure, scheduled_arrival)
+                    `INSERT INTO package_delivery_window (package_id, scheduled_departure, scheduled_arrival)
                      VALUES ($1, $2::timestamptz, $3::timestamptz)`,
-                    [
-                        packageId,
-                        `${booking.sender.collectionDate}T00:00:00Z`,
-                        `${receiver.deliveryDate}T00:00:00Z`,
-                    ],
+                    [packageId, `${booking.sender.collectionDate}T00:00:00Z`, `${receiver.deliveryDate}T00:00:00Z`],
                 );
 
                 await runner.query(
-                    `INSERT INTO package_timeline (package_id, package_status)
-                     VALUES ($1, $2)`,
+                    `INSERT INTO package_timeline (package_id, package_status) VALUES ($1, $2)`,
                     [packageId, pendingStatusId],
                 );
             }
@@ -214,94 +241,57 @@ export class PaymentsService {
 
             await runner.query(
                 `UPDATE stripe.payments
-                 SET status = 'completed',
-                     package_id = $1,
-                     stripe_payment_intent_id = $2,
-                     updated_at = now()
+                 SET status = 'completed', package_id = $1,
+                     stripe_payment_intent_id = $2, updated_at = now()
                  WHERE id = $3`,
                 [firstPackageId, paymentIntentId, payment.id],
             );
 
             await runner.commitTransaction();
-            this.logger.log(
-                `Fulfilled payment ${payment.id} (session ${session.id})`,
-            );
+            this.logger.log(`Fulfilled payment ${payment.id} (session ${session.id})`);
         } catch (err) {
             await runner.rollbackTransaction();
-            this.logger.error(
-                `Fulfillment failed for session ${session.id}: ${String(err)}`,
-            );
+            this.logger.error(`Fulfillment failed for session ${session.id}: ${String(err)}`);
             throw err;
         } finally {
             await runner.release();
         }
     }
 
+    private toBookingAddress(address: AddressDto): {
+        lon: number; lat: number; street: string; suburb: string; state: string; country: string;
+    } {
+        return {
+            lon: address.lon,
+            lat: address.lat,
+            street: address.street,
+            suburb: address.suburb,
+            state: address.state,
+            country: address.country,
+        };
+    }
+
+    private async resolveServiceRateOrg(serviceRateId: string): Promise<string | null> {
+        const rows: { organisation_id: string }[] = await this.dataSource.query(
+            `SELECT organisation_id FROM service_rates WHERE id = $1`,
+            [serviceRateId],
+        );
+        return rows[0]?.organisation_id ?? null;
+    }
+
     private normalizeBookingPhones(dto: PayServiceFeeDto): PayServiceFeeDto {
         const senderPhone = toE164OrNull(dto.sender.phoneNumber);
         if (!senderPhone) {
-            throw new BadRequestException(
-                'sender.phoneNumber must be a valid E.164 phone number',
-            );
+            throw new BadRequestException('sender.phoneNumber must be a valid E.164 phone number');
         }
         const receiver = dto.receiver.map((r, i) => {
             const phone = toE164OrNull(r.phoneNumber);
             if (!phone) {
-                throw new BadRequestException(
-                    `receiver[${i}].phoneNumber must be a valid E.164 phone number`,
-                );
+                throw new BadRequestException(`receiver[${i}].phoneNumber must be a valid E.164 phone number`);
             }
             return { ...r, phoneNumber: phone };
         });
-        return {
-            ...dto,
-            sender: { ...dto.sender, phoneNumber: senderPhone },
-            receiver,
-        };
-    }
-
-    private async upsertCustomer(
-        runner: QueryRunner,
-        c: { name: string; phone: string; address: AddressDto },
-    ): Promise<string> {
-        const composedAddress = [
-            c.address.street,
-            c.address.suburb,
-            c.address.state,
-            c.address.country,
-        ]
-            .filter(Boolean)
-            .join(', ');
-
-        const rows: { id: string }[] = await runner.query(
-            `INSERT INTO customer
-                 (customer_name, customer_phone, customer_address, customer_location,
-                  customer_postcode, customer_country, customer_suburb, customer_state)
-             VALUES
-                 ($1, $2, $3, ST_SetSRID(ST_Point($4, $5), 4326), $6, $7, $8, $9)
-             ON CONFLICT (customer_name, customer_phone) DO UPDATE SET
-                 customer_address  = EXCLUDED.customer_address,
-                 customer_location = EXCLUDED.customer_location,
-                 customer_postcode = EXCLUDED.customer_postcode,
-                 customer_country  = EXCLUDED.customer_country,
-                 customer_suburb   = EXCLUDED.customer_suburb,
-                 customer_state    = EXCLUDED.customer_state
-             RETURNING id`,
-            [
-                c.name,
-                c.phone,
-                composedAddress,
-                c.address.lon,
-                c.address.lat,
-                // Booking flow does not collect a postcode; column is NOT NULL
-                // with no check constraint, so an empty string is acceptable.
-                '',
-                c.address.country,
-                c.address.suburb,
-                c.address.state,
-            ],
-        );
-        return rows[0].id;
+        return { ...dto, sender: { ...dto.sender, phoneNumber: senderPhone }, receiver };
     }
 
     private async getPendingStatusId(runner: QueryRunner): Promise<string> {
@@ -309,9 +299,7 @@ export class PaymentsService {
         const rows: { id: string }[] = await runner.query(
             `SELECT id FROM package_status WHERE enums = 'PENDING' LIMIT 1`,
         );
-        if (rows.length === 0) {
-            throw new Error("package_status row with enums = 'PENDING' not found");
-        }
+        if (rows.length === 0) throw new Error("package_status row with enums = 'PENDING' not found");
         this.pendingStatusId = String(rows[0].id);
         return this.pendingStatusId;
     }
