@@ -66,6 +66,7 @@ export class ConnectService {
             account: accountId,
             components: {
                 account_onboarding: { enabled: true },
+                account_management: { enabled: true },
             },
         });
 
