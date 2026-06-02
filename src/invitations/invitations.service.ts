@@ -288,7 +288,10 @@ export class InvitationsService {
             // Atomic claim — only succeeds if invitation is still pending and the
             // email matches the authenticated user. The email column is stored
             // lowercased (CHECK constraint), so compare with lower($2).
-            const claimed = (await runner.query(
+            // useStructuredResult=true is required here: TypeORM returns
+            // [rows, rowCount] for UPDATE queries by default, so without it
+            // claimed[0] would be the rows array, not a row object.
+            const claimResult = await runner.query(
                 `UPDATE organisation_invitations
                     SET status = 'accepted',
                         decided_at = now()
@@ -297,7 +300,9 @@ export class InvitationsService {
                     AND email = lower($2)
               RETURNING organisation_id, role_id`,
                 [id, user.email],
-            )) as { organisation_id: string; role_id: string }[];
+                true,
+            );
+            const claimed = (claimResult.records ?? []) as { organisation_id: string; role_id: string }[];
 
             if (!claimed || claimed.length === 0) {
                 throw new NotFoundException(
