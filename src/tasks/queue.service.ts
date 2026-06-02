@@ -65,7 +65,7 @@ export class QueueService {
      * long-term retention. Prefer this over delete() for audit purposes.
      */
     async archive(msgId: bigint): Promise<void> {
-        await this.dataSource.query(`SELECT pgmq.archive($1, $2)`, [QUEUE_NAME, msgId]);
+        await this.dataSource.query(`SELECT pgmq.archive($1::text, $2::bigint)`, [QUEUE_NAME, msgId]);
     }
 
     /**
@@ -73,6 +73,6 @@ export class QueueService {
      * prevent a poison-pill message from cycling indefinitely.
      */
     async deleteMsg(msgId: bigint): Promise<void> {
-        await this.dataSource.query(`SELECT pgmq.delete($1, $2)`, [QUEUE_NAME, msgId]);
+        await this.dataSource.query(`SELECT pgmq.delete($1::text, $2::bigint)`, [QUEUE_NAME, msgId]);
     }
 }
