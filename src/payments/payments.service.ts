@@ -159,6 +159,7 @@ export class PaymentsService {
             {
                 name: booking.sender.name,
                 phone: booking.sender.phoneNumber,
+                email: booking.sender.email,
                 address: this.toBookingAddress(booking.sender.address),
             },
             stripeAccountId,
@@ -172,6 +173,7 @@ export class PaymentsService {
                     {
                         name: r.name,
                         phone: r.phoneNumber,
+                        email: r.email,
                         address: this.toBookingAddress(r.address),
                     },
                     stripeAccountId,
