@@ -1,36 +1,43 @@
-import { randomBytes, randomUUID } from 'crypto';
-import {
-    BadRequestException,
-    Inject,
-    Injectable,
-    Logger,
-    NotFoundException,
-} from '@nestjs/common';
-import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, QueryRunner, Repository } from 'typeorm';
-import { ServiceFeesService } from 'src/service-fees/service-fees.service';
-import { AddressDto } from 'src/service-fees/dto/calculate-service-fee.dto';
-import { toE164OrNull } from 'src/common/phone';
-import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
-import type { StripeClient } from 'src/stripe/stripe.provider';
+import { randomBytes } from 'crypto';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource, QueryRunner } from 'typeorm';
 import { CustomersService } from 'src/customers/customers.service';
-import { PayServiceFeeDto } from './dto/pay-service-fee.dto';
-import { Payment } from './entities/payment.entity';
-
-export interface CheckoutResult {
-    checkoutUrl: string;
-    sessionId: string;
-}
 
 /**
  * The only fields of a Checkout Session our fulfillment touches. Declared
- * explicitly rather than using `Stripe.Checkout.Session` (see StripeClient
- * for why) — and it keeps fulfillment decoupled from the SDK's wide union type.
+ * explicitly (not `Stripe.Checkout.Session`) so it is decoupled from the SDK's
+ * wide union type — and so a connected-account event (which carries the same
+ * session shape) fulfils identically.
  */
 export interface FulfillableCheckoutSession {
     id: string;
     payment_status?: string | null;
     payment_intent?: string | { id: string } | null;
+}
+
+/** Shape of the booking persisted at /pay time (services/booking.service). */
+interface BookingAddress {
+    lon: number;
+    lat: number;
+    street: string;
+    suburb: string;
+    state: string;
+    country: string;
+}
+interface BookingParty {
+    name: string;
+    phoneNumber: string;
+    email: string;
+    address: BookingAddress;
+}
+interface BookingDetails {
+    sender: BookingParty & {
+        parcel: { weight: number; height: number; width: number; length: number };
+        collectionDate: string;
+    };
+    receiver: (BookingParty & { deliveryDate: string })[];
+    deliveryNotes?: string | null;
 }
 
 @Injectable()
@@ -39,81 +46,9 @@ export class PaymentsService {
     private pendingStatusId: string | null = null;
 
     constructor(
-        @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
-        @InjectRepository(Payment) private readonly paymentRepo: Repository<Payment>,
         @InjectDataSource() private readonly dataSource: DataSource,
-        private readonly serviceFeesService: ServiceFeesService,
         private readonly customersService: CustomersService,
     ) {}
-
-    /**
-     * Recompute the price server-side (never trust the client), create a
-     * Stripe-hosted Checkout Session, and persist a `pending` payment carrying
-     * the full booking so the webhook can fulfil it after payment.
-     */
-    async createCheckoutSession(dto: PayServiceFeeDto): Promise<CheckoutResult> {
-        // calculate() also validates the service rate exists (404) BEFORE we
-        // ever create a Stripe session or take money.
-        const fee = await this.serviceFeesService.calculate(dto);
-
-        // Normalise + validate phones up front: the customer table enforces
-        // E.164, and a bad number must fail here (no charge) rather than during
-        // post-payment fulfillment (charged, stranded).
-        const booking = this.normalizeBookingPhones(dto);
-
-        // Resolve the org so fulfillment can scope Stripe customers to the
-        // right connected account. Nullable: booking flow is public (no auth).
-        const rateOrg = await this.resolveServiceRateOrg(dto.serviceRateId);
-
-        const paymentId = randomUUID();
-        const successUrl =
-            process.env.FRONTEND_SUCCESS_URL ??
-            'http://localhost:3000/booking/success';
-        const cancelUrl =
-            process.env.FRONTEND_CANCEL_URL ??
-            'http://localhost:3000/booking/cancel';
-
-        const session = await this.stripe.checkout.sessions.create(
-            {
-                mode: 'payment',
-                line_items: [
-                    {
-                        quantity: 1,
-                        price_data: {
-                            currency: fee.currency.toLowerCase(),
-                            unit_amount: fee.amount_minor,
-                            product_data: {
-                                name: `Delivery — ${fee.service_rate.name}`,
-                            },
-                        },
-                    },
-                ],
-                success_url: `${successUrl}?session_id={CHECKOUT_SESSION_ID}`,
-                cancel_url: cancelUrl,
-                client_reference_id: paymentId,
-                customer_email: booking.sender.email,
-                metadata: { payment_id: paymentId },
-            },
-            { idempotencyKey: paymentId },
-        );
-
-        if (!session.url) {
-            throw new Error('Stripe did not return a Checkout URL');
-        }
-
-        await this.paymentRepo.insert({
-            id: paymentId,
-            organisationId: rateOrg,
-            packageId: null,
-            amountMinor: fee.amount_minor,
-            currency: fee.currency,
-            status: 'pending',
-            stripeCheckoutSessionId: session.id,
-            bookingDetails: booking,
-        });
-
-        return { checkoutUrl: session.url, sessionId: session.id };
-    }
 
     /**
      * Idempotently turn a paid Checkout Session into a customer + package.
@@ -128,7 +63,7 @@ export class PaymentsService {
         const paymentRows: {
             id: string;
             status: string;
-            booking_details: PayServiceFeeDto;
+            booking_details: BookingDetails;
             organisation_id: string | null;
         }[] = await this.dataSource.query(
             `SELECT id, status, booking_details, organisation_id
@@ -160,7 +95,7 @@ export class PaymentsService {
                 name: booking.sender.name,
                 phone: booking.sender.phoneNumber,
                 email: booking.sender.email,
-                address: this.toBookingAddress(booking.sender.address),
+                address: booking.sender.address,
             },
             stripeAccountId,
             payment.organisation_id,
@@ -174,7 +109,7 @@ export class PaymentsService {
                         name: r.name,
                         phone: r.phoneNumber,
                         email: r.email,
-                        address: this.toBookingAddress(r.address),
+                        address: r.address,
                     },
                     stripeAccountId,
                     payment.organisation_id,
@@ -258,42 +193,6 @@ export class PaymentsService {
         } finally {
             await runner.release();
         }
-    }
-
-    private toBookingAddress(address: AddressDto): {
-        lon: number; lat: number; street: string; suburb: string; state: string; country: string;
-    } {
-        return {
-            lon: address.lon,
-            lat: address.lat,
-            street: address.street,
-            suburb: address.suburb,
-            state: address.state,
-            country: address.country,
-        };
-    }
-
-    private async resolveServiceRateOrg(serviceRateId: string): Promise<string | null> {
-        const rows: { organisation_id: string }[] = await this.dataSource.query(
-            `SELECT organisation_id FROM service_rates WHERE id = $1`,
-            [serviceRateId],
-        );
-        return rows[0]?.organisation_id ?? null;
-    }
-
-    private normalizeBookingPhones(dto: PayServiceFeeDto): PayServiceFeeDto {
-        const senderPhone = toE164OrNull(dto.sender.phoneNumber);
-        if (!senderPhone) {
-            throw new BadRequestException('sender.phoneNumber must be a valid E.164 phone number');
-        }
-        const receiver = dto.receiver.map((r, i) => {
-            const phone = toE164OrNull(r.phoneNumber);
-            if (!phone) {
-                throw new BadRequestException(`receiver[${i}].phoneNumber must be a valid E.164 phone number`);
-            }
-            return { ...r, phoneNumber: phone };
-        });
-        return { ...dto, sender: { ...dto.sender, phoneNumber: senderPhone }, receiver };
     }
 
     private async getPendingStatusId(runner: QueryRunner): Promise<string> {

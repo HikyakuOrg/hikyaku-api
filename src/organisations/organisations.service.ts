@@ -18,6 +18,11 @@ export class OrganisationsService {
         return this.orgRepo.findOne({ where: { id } });
     }
 
+    /** Resolve an org by its public slug — used by the public booking endpoints. */
+    findBySlug(slug: string): Promise<Organisation | null> {
+        return this.orgRepo.findOne({ where: { slug } });
+    }
+
     async getOrFail(id: string): Promise<Organisation> {
         const org = await this.findById(id);
         if (!org) throw new NotFoundException('Organisation not found');

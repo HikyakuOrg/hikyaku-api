@@ -63,7 +63,20 @@ export class StripeWebhookController {
             );
         }
 
-        if (event.type === 'checkout.session.completed') {
+        // Catalog payments are DIRECT charges on the org's connected account, so
+        // the completion event is delivered with `event.account` set — this
+        // endpoint MUST be subscribed to connected-account events in the Stripe
+        // dashboard (R1) or it simply won't fire. The handler keys off the session
+        // id, so no code change is needed for `event.account`.
+        //
+        // We omit `payment_method_types` (dynamic methods), so a delayed/async
+        // method can settle later: fulfil on async_payment_succeeded too. The
+        // failure/expiry events are deliberately ignored — fulfillment is gated on
+        // `payment_status === 'paid'`, so a non-successful payment creates nothing.
+        if (
+            event.type === 'checkout.session.completed' ||
+            event.type === 'checkout.session.async_payment_succeeded'
+        ) {
             const session =
                 event.data.object as unknown as FulfillableCheckoutSession;
             if (session.payment_status === 'paid') {

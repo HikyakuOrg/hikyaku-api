@@ -1,16 +1,11 @@
 import {
-    ArrayMinSize,
-    IsDefined,
-    IsArray,
     IsDateString,
     IsEmail,
     IsNotEmpty,
     IsNumber,
     IsString,
-    IsUUID,
     Max,
     Min,
-    Validate,
     ValidateNested,
     ValidatorConstraint,
     ValidatorConstraintInterface,
@@ -19,6 +14,12 @@ import {
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 
+/**
+ * Booking party DTOs shared by the quote + pay endpoints. Lifted verbatim from
+ * the retired service-fees module — the booking still collects sender/recipient
+ * addresses, the parcel, and pickup/delivery dates because fulfillment needs
+ * them AND they are the quantity source for per-distance / per-weight pricing.
+ */
 export class AddressDto {
     @ApiProperty()
     @IsString()
@@ -54,6 +55,7 @@ export class AddressDto {
 }
 
 export class ParcelDto {
+    /** Weight in kilograms (canonical). per_lb items convert from this. */
     @ApiProperty({ minimum: 0 })
     @IsNumber()
     @Min(0)
@@ -130,10 +132,13 @@ export class ReceiverDto {
     deliveryDate: string;
 }
 
+/** Each receiver's deliveryDate must be on/after the sender's collectionDate. */
 @ValidatorConstraint({ name: 'DeliveryAfterCollection', async: false })
-class DeliveryAfterCollectionConstraint implements ValidatorConstraintInterface {
+export class DeliveryAfterCollectionConstraint
+    implements ValidatorConstraintInterface
+{
     validate(value: unknown, args: ValidationArguments): boolean {
-        const dto = args.object as CalculateServiceFeeDto;
+        const dto = args.object as { sender?: { collectionDate?: string } };
         const receivers = value as ReceiverDto[];
         if (!dto.sender?.collectionDate || !receivers?.length) return true;
         const collection = new Date(dto.sender.collectionDate + 'T00:00:00Z');
@@ -148,24 +153,4 @@ class DeliveryAfterCollectionConstraint implements ValidatorConstraintInterface 
     defaultMessage(): string {
         return 'Each receiver deliveryDate must be after sender collectionDate';
     }
-}
-
-export class CalculateServiceFeeDto {
-    @ApiProperty({ description: 'UUID of the service rate to apply' })
-    @IsUUID()
-    serviceRateId: string;
-
-    @ApiProperty({ type: () => SenderDto })
-    @IsDefined()
-    @ValidateNested()
-    @Type(() => SenderDto)
-    sender: SenderDto;
-
-    @ApiProperty({ type: [ReceiverDto], minItems: 1 })
-    @IsArray()
-    @ArrayMinSize(1)
-    @ValidateNested({ each: true })
-    @Type(() => ReceiverDto)
-    @Validate(DeliveryAfterCollectionConstraint)
-    receiver: ReceiverDto[];
 }

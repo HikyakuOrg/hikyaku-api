@@ -8,7 +8,6 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TasksModule } from './tasks/tasks.module';
 import { UsersModule } from './users/users.module';
-import { ServiceFeesModule } from './service-fees/service-fees.module';
 import { StripeModule } from './stripe/stripe.module';
 import { PaymentsModule } from './payments/payments.module';
 import { IssuingModule } from './issuing/issuing.module';
@@ -17,6 +16,7 @@ import { InvitationsModule } from './invitations/invitations.module';
 import { OrganisationsModule } from './organisations/organisations.module';
 import { ConnectModule } from './connect/connect.module';
 import { CustomersModule } from './customers/customers.module';
+import { ServicesModule } from './services/services.module';
 
 @Module({
   imports: [
@@ -34,7 +34,6 @@ import { CustomersModule } from './customers/customers.module';
     OrsModule,
     DatabaseModule,
     UsersModule,
-    ServiceFeesModule,
     StripeModule,
     PaymentsModule,
     IssuingModule,
@@ -43,6 +42,7 @@ import { CustomersModule } from './customers/customers.module';
     OrganisationsModule,
     ConnectModule,
     CustomersModule,
+    ServicesModule,
   ],
   controllers: [],
   providers: [],

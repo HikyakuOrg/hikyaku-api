@@ -33,6 +33,8 @@ export interface OrgIssuingStatus {
     slug: string;
     cardIssuingStatus: string | null;
     detailsSubmitted: boolean;
+    /** Whether the connected account can accept payments — gates "Service Rates". */
+    chargesEnabled: boolean;
 }
 
 @Injectable()
@@ -181,13 +183,19 @@ export class ConnectService {
         return Promise.all(
             accounts.map(async ({ slug, stripeAccountId }) => {
                 if (!stripeAccountId) {
-                    return { slug, cardIssuingStatus: null, detailsSubmitted: false };
+                    return {
+                        slug,
+                        cardIssuingStatus: null,
+                        detailsSubmitted: false,
+                        chargesEnabled: false,
+                    };
                 }
                 const account = await this.stripe.accounts.retrieve(stripeAccountId);
                 return {
                     slug,
                     cardIssuingStatus: account.capabilities?.card_issuing ?? null,
                     detailsSubmitted: account.details_submitted ?? false,
+                    chargesEnabled: account.charges_enabled ?? false,
                 };
             }),
         );
