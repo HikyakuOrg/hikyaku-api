@@ -3,8 +3,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrganisationsModule } from 'src/organisations/organisations.module';
 import { OrsModule } from 'src/ors/ors.module';
 import { Payment } from 'src/payments/entities/payment.entity';
-import { Service } from './entities/service.entity';
-import { ServiceAddon } from './entities/service-addon.entity';
 import { ServicesService } from './services.service';
 import { BookingService } from './booking.service';
 import { ServicesController } from './services.controller';
@@ -12,7 +10,7 @@ import { ServicesPublicController } from './services-public.controller';
 
 @Module({
     imports: [
-        TypeOrmModule.forFeature([Service, ServiceAddon, Payment]),
+        TypeOrmModule.forFeature([Payment]),
         OrganisationsModule,
         OrsModule,
     ],

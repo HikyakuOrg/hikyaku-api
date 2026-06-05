@@ -5,6 +5,7 @@ import {
     HttpCode,
     HttpStatus,
     Param,
+    Patch,
     Post,
     Req,
     UseGuards,
@@ -15,6 +16,8 @@ import { RequirePermission } from 'src/auth/decorators/required-permission.decor
 import { ServicesService } from './services.service';
 import { CreateServiceDto } from './dto/create-service.dto';
 import { CreateAddonDto } from './dto/create-addon.dto';
+import { UpdateServiceDto } from './dto/update-service.dto';
+import { UpdateAddonDto } from './dto/update-addon.dto';
 
 /**
  * Admin CRUD for the service catalog. Org-admin function, so it reuses the same
@@ -38,6 +41,16 @@ export class ServicesController {
         return this.services.createService(req.organisationId, dto);
     }
 
+    @Patch(':id')
+    @RequirePermission('vehicles.add')
+    update(
+        @Param('id') id: string,
+        @Body() dto: UpdateServiceDto,
+        @Req() req: Request & { organisationId: string },
+    ) {
+        return this.services.updateService(req.organisationId, id, dto);
+    }
+
     @Delete(':id')
     @RequirePermission('vehicles.add')
     remove(
@@ -56,6 +69,16 @@ export class ServicesController {
         @Req() req: Request & { organisationId: string },
     ) {
         return this.services.createAddon(req.organisationId, id, dto);
+    }
+
+    @Patch('addons/:addonId')
+    @RequirePermission('vehicles.add')
+    updateAddon(
+        @Param('addonId') addonId: string,
+        @Body() dto: UpdateAddonDto,
+        @Req() req: Request & { organisationId: string },
+    ) {
+        return this.services.updateAddon(req.organisationId, addonId, dto);
     }
 
     @Delete('addons/:addonId')

@@ -5,24 +5,57 @@ import {
     Logger,
     NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
 import { OrganisationsService } from 'src/organisations/organisations.service';
 import { toStripeMinorUnits } from 'src/common/money';
-import { Service } from './entities/service.entity';
-import { ServiceAddon } from './entities/service-addon.entity';
 import { CreateServiceDto } from './dto/create-service.dto';
 import { CreateAddonDto } from './dto/create-addon.dto';
+import { UpdateServiceDto } from './dto/update-service.dto';
+import { UpdateAddonDto } from './dto/update-addon.dto';
 
-/** A single live price + product fetched from the connected account. */
-export interface LivePrice {
+// Stripe param/return types are derived from the client methods rather than the
+// `Stripe.*` namespace, which doesn't resolve cleanly under `module: nodenext`
+// (see stripe.provider.ts).
+type ProductUpdateParams = NonNullable<
+    Parameters<StripeClient['products']['update']>[1]
+>;
+
+/** The product fields we read off a Stripe product (expanded default price). */
+interface RawProduct {
+    id: string;
+    name: string;
+    created: number;
+    metadata: Record<string, string> | null;
+    default_price?:
+        | string
+        | {
+              id: string;
+              unit_amount: number | null;
+              currency: string;
+              active: boolean;
+          }
+        | null;
+}
+
+/**
+ * A catalog item resolved entirely from Stripe — no DB row. The Stripe product is
+ * the source of truth: `pricing_unit`, `kind` (service|addon) and an addon's
+ * `parent` product id live in product `metadata`; price/currency come from the
+ * product's `default_price`. The product id is the stable public identifier.
+ */
+export interface CatalogProduct {
+    productId: string;
     name: string;
     amountMinor: number;
     currency: string;
     /** Stripe `created` epoch — used to order the catalog. */
     created: number;
+    pricingUnit: string;
+    kind: 'service' | 'addon';
+    /** Parent service's product id (addons only). */
+    parentProductId: string | null;
+    defaultPriceId: string;
 }
 
 export interface CatalogAddon {
@@ -41,14 +74,25 @@ export interface CatalogResponse {
     services: CatalogService[];
 }
 
-/** Read the (possibly expanded) product name off a Stripe price. */
-function priceProductName(price: { product?: unknown }): string {
-    const product = price.product;
-    if (product && typeof product === 'object' && 'name' in product) {
-        const name = (product as { name?: unknown }).name;
-        return typeof name === 'string' ? name : '';
-    }
-    return '';
+/** Project a Stripe product into a {@link CatalogProduct}, or null if it isn't a
+ *  catalog item (missing/foreign `kind`, or no active default price). */
+function readProduct(product: RawProduct): CatalogProduct | null {
+    const kind = product.metadata?.kind;
+    if (kind !== 'service' && kind !== 'addon') return null;
+    const price = product.default_price;
+    if (!price || typeof price === 'string' || !price.active) return null;
+    return {
+        productId: product.id,
+        name: product.name,
+        amountMinor: price.unit_amount ?? 0,
+        currency: price.currency,
+        created: product.created,
+        pricingUnit: product.metadata?.pricing_unit ?? 'per_delivery',
+        kind,
+        parentProductId:
+            kind === 'addon' ? (product.metadata?.parent ?? null) : null,
+        defaultPriceId: price.id,
+    };
 }
 
 @Injectable()
@@ -57,10 +101,6 @@ export class ServicesService {
 
     constructor(
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
-        @InjectRepository(Service)
-        private readonly serviceRepo: Repository<Service>,
-        @InjectRepository(ServiceAddon)
-        private readonly addonRepo: Repository<ServiceAddon>,
         private readonly orgs: OrganisationsService,
     ) {}
 
@@ -79,7 +119,7 @@ export class ServicesService {
 
     /**
      * Assert the connected account can accept payments and return its default
-     * currency (lowercased, Stripe-style). Checked live on every write so a
+     * currency (lowercased, Stripe-style). Checked live on every create so a
      * service is never created on an account that can't be charged.
      */
     async requireChargesEnabled(stripeAccountId: string): Promise<string> {
@@ -103,188 +143,220 @@ export class ServicesService {
         const currency = (dto.currency ?? accountCurrency).toLowerCase();
         const unitAmount = toStripeMinorUnits(dto.amountMajor, currency);
 
+        // Product + its default price in one call; metadata carries everything we
+        // used to keep in the DB row.
         const product = await this.stripe.products.create(
-            { name: dto.name },
+            {
+                name: dto.name,
+                metadata: { kind: 'service', pricing_unit: dto.pricingUnit },
+                default_price_data: { unit_amount: unitAmount, currency },
+            },
             { stripeAccount },
         );
-        const price = await this.stripe.prices.create(
-            { product: product.id, unit_amount: unitAmount, currency },
-            { stripeAccount, idempotencyKey: `service-price:${product.id}` },
-        );
-
-        const row = this.serviceRepo.create({
-            organisationId,
-            stripeProductId: product.id,
-            stripePriceId: price.id,
-            pricingUnit: dto.pricingUnit,
-        });
-        await this.serviceRepo.save(row);
-        return { id: row.id };
-    }
-
-    async deleteService(organisationId: string, id: string): Promise<void> {
-        const service = await this.serviceRepo.findOne({
-            where: { id, organisationId },
-            relations: ['addons'],
-        });
-        if (!service) throw new NotFoundException('Service not found');
-
-        const stripeAccount = (await this.orgs.getStripeAccount(organisationId))
-            ?.stripeAccountId;
-        if (stripeAccount) {
-            for (const item of [...(service.addons ?? []), service]) {
-                await this.archive(
-                    stripeAccount,
-                    item.stripeProductId,
-                    item.stripePriceId,
-                );
-            }
-        }
-        // FK cascade removes the add-on rows.
-        await this.serviceRepo.remove(service);
+        return { id: product.id };
     }
 
     async createAddon(
         organisationId: string,
-        serviceId: string,
+        serviceProductId: string,
         dto: CreateAddonDto,
     ): Promise<{ id: string }> {
-        const service = await this.serviceRepo.findOne({
-            where: { id: serviceId, organisationId },
-        });
-        if (!service) throw new NotFoundException('Service not found');
-
         const stripeAccount = await this.requireConnectedAccount(organisationId);
-        // Inherit the parent service's currency (read live from its Stripe price).
-        const servicePrice = await this.stripe.prices.retrieve(
-            service.stripePriceId,
-            undefined,
-            { stripeAccount },
-        );
-        const currency = servicePrice.currency;
+        const map = await this.fetchActiveProductMap(stripeAccount);
+        const parent = map.get(serviceProductId);
+        if (!parent || parent.kind !== 'service') {
+            throw new NotFoundException('Service not found');
+        }
+        // Inherit the parent service's currency.
+        const currency = parent.currency;
         const unitAmount = toStripeMinorUnits(dto.amountMajor, currency);
 
         const product = await this.stripe.products.create(
-            { name: dto.name },
+            {
+                name: dto.name,
+                metadata: {
+                    kind: 'addon',
+                    pricing_unit: dto.pricingUnit,
+                    parent: serviceProductId,
+                },
+                default_price_data: { unit_amount: unitAmount, currency },
+            },
             { stripeAccount },
         );
-        const price = await this.stripe.prices.create(
-            { product: product.id, unit_amount: unitAmount, currency },
-            { stripeAccount, idempotencyKey: `addon-price:${product.id}` },
-        );
-
-        const row = this.addonRepo.create({
-            serviceId,
-            stripeProductId: product.id,
-            stripePriceId: price.id,
-            pricingUnit: dto.pricingUnit,
-        });
-        await this.addonRepo.save(row);
-        return { id: row.id };
+        return { id: product.id };
     }
 
-    async deleteAddon(organisationId: string, addonId: string): Promise<void> {
-        const addon = await this.addonRepo.findOne({
-            where: { id: addonId },
-            relations: ['service'],
-        });
-        if (!addon || addon.service.organisationId !== organisationId) {
+    async updateService(
+        organisationId: string,
+        productId: string,
+        dto: UpdateServiceDto,
+    ): Promise<{ id: string }> {
+        const stripeAccount = await this.requireConnectedAccount(organisationId);
+        const map = await this.fetchActiveProductMap(stripeAccount);
+        const product = map.get(productId);
+        if (!product || product.kind !== 'service') {
+            throw new NotFoundException('Service not found');
+        }
+        await this.applyProductUpdate(stripeAccount, product, dto);
+        return { id: product.productId };
+    }
+
+    async updateAddon(
+        organisationId: string,
+        productId: string,
+        dto: UpdateAddonDto,
+    ): Promise<{ id: string }> {
+        const stripeAccount = await this.requireConnectedAccount(organisationId);
+        const map = await this.fetchActiveProductMap(stripeAccount);
+        const product = map.get(productId);
+        if (!product || product.kind !== 'addon') {
             throw new NotFoundException('Add-on not found');
         }
+        await this.applyProductUpdate(stripeAccount, product, dto);
+        return { id: product.productId };
+    }
 
+    async deleteService(organisationId: string, productId: string): Promise<void> {
         const stripeAccount = (await this.orgs.getStripeAccount(organisationId))
             ?.stripeAccountId;
-        if (stripeAccount) {
-            await this.archive(
-                stripeAccount,
-                addon.stripeProductId,
-                addon.stripePriceId,
-            );
+        if (!stripeAccount) throw new NotFoundException('Service not found');
+
+        const map = await this.fetchActiveProductMap(stripeAccount);
+        const service = map.get(productId);
+        if (!service || service.kind !== 'service') {
+            throw new NotFoundException('Service not found');
         }
-        await this.addonRepo.remove(addon);
+        // Archive child addons first (replaces the old FK cascade), then the service.
+        for (const item of map.values()) {
+            if (item.kind === 'addon' && item.parentProductId === productId) {
+                await this.archive(stripeAccount, item.productId, item.defaultPriceId);
+            }
+        }
+        await this.archive(stripeAccount, service.productId, service.defaultPriceId);
+    }
+
+    async deleteAddon(organisationId: string, productId: string): Promise<void> {
+        const stripeAccount = (await this.orgs.getStripeAccount(organisationId))
+            ?.stripeAccountId;
+        if (!stripeAccount) throw new NotFoundException('Add-on not found');
+
+        const map = await this.fetchActiveProductMap(stripeAccount);
+        const addon = map.get(productId);
+        if (!addon || addon.kind !== 'addon') {
+            throw new NotFoundException('Add-on not found');
+        }
+        await this.archive(stripeAccount, addon.productId, addon.defaultPriceId);
+    }
+
+    /**
+     * Apply the supplied (partial) edits to a catalog product. Name and
+     * `pricing_unit` are patched in place; Stripe merges metadata keys, so `kind`
+     * and `parent` are preserved. A price change creates a new price, points the
+     * product's `default_price` at it, and archives the old one (the product id —
+     * the public handle — is unchanged). Currency is not editable.
+     */
+    private async applyProductUpdate(
+        stripeAccount: string,
+        product: CatalogProduct,
+        dto: { name?: string; pricingUnit?: string; amountMajor?: number },
+    ): Promise<void> {
+        const productUpdate: ProductUpdateParams = {};
+        if (dto.name !== undefined) productUpdate.name = dto.name;
+        if (dto.pricingUnit !== undefined) {
+            productUpdate.metadata = { pricing_unit: dto.pricingUnit };
+        }
+        if (productUpdate.name !== undefined || productUpdate.metadata !== undefined) {
+            await this.stripe.products.update(product.productId, productUpdate, {
+                stripeAccount,
+            });
+        }
+
+        if (dto.amountMajor !== undefined) {
+            const unitAmount = toStripeMinorUnits(dto.amountMajor, product.currency);
+            const newPrice = await this.stripe.prices.create(
+                {
+                    product: product.productId,
+                    unit_amount: unitAmount,
+                    currency: product.currency,
+                },
+                { stripeAccount },
+            );
+            await this.stripe.products.update(
+                product.productId,
+                { default_price: newPrice.id },
+                { stripeAccount },
+            );
+            if (product.defaultPriceId !== newPrice.id) {
+                await this.stripe.prices.update(
+                    product.defaultPriceId,
+                    { active: false },
+                    { stripeAccount },
+                );
+            }
+        }
     }
 
     // ── Catalog (read) ────────────────────────────────────────────────────────
 
     /**
-     * The org's catalog with prices read LIVE from Stripe (one batched list call,
-     * not N retrieves). `name`, `amount_minor` and `currency` all come from
-     * Stripe; only ids + pricing_unit are local. Returns `{ services: [] }` when
-     * the org has no connected account.
+     * The org's catalog, read entirely from Stripe (one paged product list). The
+     * product id is the item id; addons are nested under their parent service via
+     * `metadata.parent`. Returns `{ services: [] }` when the org has no connected
+     * account.
      */
     async getCatalog(organisationId: string): Promise<CatalogResponse> {
         const stripeAccount = (await this.orgs.getStripeAccount(organisationId))
             ?.stripeAccountId;
         if (!stripeAccount) return { services: [] };
 
-        const services = await this.serviceRepo.find({
-            where: { organisationId },
-            relations: ['addons'],
+        const map = await this.fetchActiveProductMap(stripeAccount);
+        const products = [...map.values()];
+
+        const addonsByParent = new Map<string, CatalogProduct[]>();
+        for (const p of products) {
+            if (p.kind === 'addon' && p.parentProductId) {
+                const list = addonsByParent.get(p.parentProductId) ?? [];
+                list.push(p);
+                addonsByParent.set(p.parentProductId, list);
+            }
+        }
+
+        const toAddon = (p: CatalogProduct): CatalogAddon => ({
+            id: p.productId,
+            name: p.name,
+            pricing_unit: p.pricingUnit,
+            amount_minor: p.amountMinor,
+            currency: p.currency,
         });
-        if (services.length === 0) return { services: [] };
 
-        const priceMap = await this.fetchActivePriceMap(stripeAccount);
-
-        const withCreated = services
-            .map((service) => {
-                const sp = priceMap.get(service.stripePriceId);
-                if (!sp) return null;
-                const addons = (service.addons ?? [])
-                    .map((addon) => {
-                        const ap = priceMap.get(addon.stripePriceId);
-                        if (!ap) return null;
-                        return {
-                            created: ap.created,
-                            value: {
-                                id: addon.id,
-                                name: ap.name,
-                                pricing_unit: addon.pricingUnit,
-                                amount_minor: ap.amountMinor,
-                                currency: ap.currency,
-                            },
-                        };
-                    })
-                    .filter((a): a is NonNullable<typeof a> => a !== null)
-                    .sort((a, b) => a.created - b.created)
-                    .map((a) => a.value);
-                return {
-                    created: sp.created,
-                    value: {
-                        id: service.id,
-                        name: sp.name,
-                        pricing_unit: service.pricingUnit,
-                        amount_minor: sp.amountMinor,
-                        currency: sp.currency,
-                        addons,
-                    },
-                };
-            })
-            .filter((s): s is NonNullable<typeof s> => s !== null)
+        const services = products
+            .filter((p) => p.kind === 'service')
             .sort((a, b) => a.created - b.created)
-            .map((s) => s.value);
+            .map((service) => ({
+                ...toAddon(service),
+                addons: (addonsByParent.get(service.productId) ?? [])
+                    .sort((a, b) => a.created - b.created)
+                    .map(toAddon),
+            }));
 
-        return { services: withCreated };
+        return { services };
     }
 
     /**
-     * All active prices on the connected account, mapped by price id, with their
-     * product name expanded. One call (limit 100) — reused by catalog + booking.
+     * All active catalog products on the connected account, keyed by product id,
+     * with their `default_price` expanded. Auto-paginates so catalogs over 100
+     * items still resolve fully. Reused by catalog reads + booking.
      */
-    async fetchActivePriceMap(
+    async fetchActiveProductMap(
         stripeAccount: string,
-    ): Promise<Map<string, LivePrice>> {
-        const prices = await this.stripe.prices.list(
-            { active: true, limit: 100, expand: ['data.product'] },
+    ): Promise<Map<string, CatalogProduct>> {
+        const map = new Map<string, CatalogProduct>();
+        for await (const product of this.stripe.products.list(
+            { active: true, limit: 100, expand: ['data.default_price'] },
             { stripeAccount },
-        );
-        const map = new Map<string, LivePrice>();
-        for (const price of prices.data) {
-            map.set(price.id, {
-                name: priceProductName(price),
-                amountMinor: price.unit_amount ?? 0,
-                currency: price.currency,
-                created: price.created,
-            });
+        )) {
+            const parsed = readProduct(product);
+            if (parsed) map.set(parsed.productId, parsed);
         }
         return map;
     }

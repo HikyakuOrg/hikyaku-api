@@ -7,7 +7,7 @@ import {
     ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
 import { OrsService } from 'src/ors/ors.service';
@@ -15,9 +15,8 @@ import type { DirectionsResponse } from 'src/ors/ors.types';
 import { fromStripeMinorUnits } from 'src/common/money';
 import { toE164OrNull } from 'src/common/phone';
 import { Payment } from 'src/payments/entities/payment.entity';
-import { Service } from './entities/service.entity';
-import { ServiceAddon } from './entities/service-addon.entity';
 import { ServicesService } from './services.service';
+import type { CatalogProduct } from './services.service';
 import {
     isIntegerUnit,
     quantityForUnit,
@@ -68,10 +67,6 @@ interface ComputedLine extends QuoteLine {
 export class BookingService {
     constructor(
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
-        @InjectRepository(Service)
-        private readonly serviceRepo: Repository<Service>,
-        @InjectRepository(ServiceAddon)
-        private readonly addonRepo: Repository<ServiceAddon>,
         @InjectRepository(Payment)
         private readonly paymentRepo: Repository<Payment>,
         private readonly services: ServicesService,
@@ -85,9 +80,7 @@ export class BookingService {
             dto.serviceId,
             dto.addonIds ?? [],
         );
-        const stripeAccount = await this.services.requireConnectedAccount(organisationId);
-        const priceMap = await this.services.fetchActivePriceMap(stripeAccount);
-        const lines = await this.computeLines(service, addons, priceMap, dto);
+        const lines = await this.computeLines(service, addons, dto);
 
         const currency = lines[0]?.currency ?? 'usd';
         const totalMinor = lines.reduce((sum, l) => sum + l.amount_minor, 0);
@@ -113,14 +106,12 @@ export class BookingService {
      * customer is created here.
      */
     async pay(organisationId: string, dto: PayBookingDto): Promise<CheckoutResult> {
-        const { service, addons } = await this.loadItems(
+        const { service, addons, stripeAccount } = await this.loadItems(
             organisationId,
             dto.serviceId,
             dto.addonIds ?? [],
         );
-        const stripeAccount = await this.services.requireConnectedAccount(organisationId);
-        const priceMap = await this.services.fetchActivePriceMap(stripeAccount);
-        const lines = await this.computeLines(service, addons, priceMap, dto);
+        const lines = await this.computeLines(service, addons, dto);
 
         // Normalise + validate phones BEFORE creating the session — a bad number
         // must fail here (no charge), not during post-payment fulfillment.
@@ -187,35 +178,45 @@ export class BookingService {
         organisationId: string,
         serviceId: string,
         addonIds: string[],
-    ): Promise<{ service: Service; addons: ServiceAddon[] }> {
-        const service = await this.serviceRepo.findOne({
-            where: { id: serviceId, organisationId },
-        });
-        if (!service) throw new NotFoundException('Service not found');
+    ): Promise<{
+        service: CatalogProduct;
+        addons: CatalogProduct[];
+        stripeAccount: string;
+    }> {
+        const stripeAccount =
+            await this.services.requireConnectedAccount(organisationId);
+        const map = await this.services.fetchActiveProductMap(stripeAccount);
 
-        if (addonIds.length === 0) return { service, addons: [] };
-
-        const found = await this.addonRepo.find({
-            where: { id: In(addonIds), serviceId: service.id },
-        });
-        if (found.length !== addonIds.length) {
-            throw new BadRequestException('One or more add-ons are not valid for this service.');
+        const service = map.get(serviceId);
+        if (!service || service.kind !== 'service') {
+            throw new NotFoundException('Service not found');
         }
-        // Preserve the order the client selected.
-        const byId = new Map(found.map((a) => [a.id, a]));
-        const addons = addonIds
-            .map((id) => byId.get(id))
-            .filter((a): a is ServiceAddon => a !== undefined);
-        return { service, addons };
+
+        // Resolve add-ons in the order the client selected, validating each one
+        // belongs to this service (its product `metadata.parent`).
+        const addons = addonIds.map((id) => {
+            const addon = map.get(id);
+            if (
+                !addon ||
+                addon.kind !== 'addon' ||
+                addon.parentProductId !== service.productId
+            ) {
+                throw new BadRequestException(
+                    'One or more add-ons are not valid for this service.',
+                );
+            }
+            return addon;
+        });
+
+        return { service, addons, stripeAccount };
     }
 
     private async computeLines(
-        service: Service,
-        addons: ServiceAddon[],
-        priceMap: Map<string, { name: string; amountMinor: number; currency: string }>,
+        service: CatalogProduct,
+        addons: CatalogProduct[],
         dto: QuoteBookingDto,
     ): Promise<ComputedLine[]> {
-        const items: (Service | ServiceAddon)[] = [service, ...addons];
+        const items: CatalogProduct[] = [service, ...addons];
         const needsDistance = items.some(
             (i) => i.pricingUnit === 'per_km' || i.pricingUnit === 'per_mi',
         );
@@ -227,31 +228,25 @@ export class BookingService {
         };
 
         return items.map((item) => {
-            const price = priceMap.get(item.stripePriceId);
-            if (!price) {
-                throw new BadRequestException(
-                    'Pricing is unavailable for this service. Please try again.',
-                );
-            }
             const quantity = quantityForUnit(item.pricingUnit, ctx);
-            const amountMinor = Math.round(price.amountMinor * quantity);
-            const rate = fromStripeMinorUnits(price.amountMinor, price.currency);
+            const amountMinor = Math.round(item.amountMinor * quantity);
+            const rate = fromStripeMinorUnits(item.amountMinor, item.currency);
             return {
-                id: item.id,
-                name: price.name,
+                id: item.productId,
+                name: item.name,
                 pricing_unit: item.pricingUnit,
                 rate,
                 quantity,
                 amount_minor: amountMinor,
-                currency: price.currency,
-                stripePriceId: item.stripePriceId,
+                currency: item.currency,
+                stripePriceId: item.defaultPriceId,
                 isInteger: isIntegerUnit(item.pricingUnit),
                 lineLabel: this.buildLineLabel(
-                    price.name,
+                    item.name,
                     item.pricingUnit,
                     quantity,
                     rate,
-                    price.currency,
+                    item.currency,
                 ),
             };
         });
