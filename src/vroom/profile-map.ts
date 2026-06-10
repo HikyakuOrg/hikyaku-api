@@ -4,8 +4,8 @@
  * with the Valhalla router, so vehicle profiles must match the costing keys
  * configured under routingServers.valhalla in vroom-conf/config.yml.
  *
- * The same table is duplicated in the frontend at whendan/lib/maps/valhalla.ts
- * — keep both in sync.
+ * Also used by ValhallaService.route() — the routing endpoint the frontend
+ * calls so it never has to know about Valhalla costing.
  */
 export function orsProfileToValhallaCosting(orsType: string): string {
     if (orsType === 'driving-hgv') return 'truck';
