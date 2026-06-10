@@ -14,9 +14,8 @@ services:
       DB_URL: ${DB_URL}
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
-      ORS_BASE_URL: ${ORS_BASE_URL:-https://api.openrouteservice.org}
-      ORS_API_KEY: ${ORS_API_KEY}
-      VROOM_BASE_URL: ${VROOM_BASE_URL:-http://localhost:3000}
+      VALHALLA_URL: ${VALHALLA_URL:-http://100.106.172.94:8002}
+      VROOM_URL: ${VROOM_URL:-http://localhost:3000}
     restart: unless-stopped
   vroom:
     image: ghcr.io/vroom-project/vroom-docker:v1.15.0
@@ -24,17 +23,4 @@ services:
     volumes:
       - ./vroom-conf/:/conf
     environment:
-      - VROOM_ROUTER=ors
-  # For more information: https://github.com/GIScience/openrouteservice/blob/main/docker-compose.yml
-  ors-app:
-    image: openrouteservice/openrouteservice:v9.8.0
-    volumes: 
-      - ./ors-docker:/home/ors 
-      - ./graphs:/home/ors/graphs
-    environment:
-      REBUILD_GRAPHS: False  
-      CONTAINER_LOG_LEVEL: INFO 
-      XMS: 1g  # start RAM assigned to java
-      XMX: 2g  # max RAM assigned to java. Rule of Thumb: <PBF-size> * <profiles> * 2
-      # Example: 1.5 GB pbf size, two profiles (car and foot-walking)
-      # -> 1.5 * 2 * 2 = 6. Set xmx to be AT LEAST `-Xmx6g`
+      - VROOM_ROUTER=valhalla

@@ -2,7 +2,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SupabaseModule } from './supabase/supabase.module';
-import { OrsModule } from './ors/ors.module';
+import { GeocodeModule } from './geocode/geocode.module';
 import { DatabaseModule } from './database/database.module';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -31,7 +31,7 @@ import { ServicesModule } from './services/services.module';
       url: process.env.DB_URL,
       autoLoadEntities: true,
     }),
-    OrsModule,
+    GeocodeModule,
     DatabaseModule,
     UsersModule,
     StripeModule,

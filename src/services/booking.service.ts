@@ -10,8 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
-import { OrsService } from 'src/ors/ors.service';
-import type { DirectionsResponse } from 'src/ors/ors.types';
+import { ValhallaService } from 'src/valhalla/valhalla.service';
 import { fromStripeMinorUnits } from 'src/common/money';
 import { toE164OrNull } from 'src/common/phone';
 import { Payment } from 'src/payments/entities/payment.entity';
@@ -70,7 +69,7 @@ export class BookingService {
         @InjectRepository(Payment)
         private readonly paymentRepo: Repository<Payment>,
         private readonly services: ServicesService,
-        private readonly ors: OrsService,
+        private readonly valhalla: ValhallaService,
     ) {}
 
     /** Itemised, server-authoritative quote. No charge. */
@@ -271,19 +270,16 @@ export class BookingService {
             ...dto.receiver.map((r) => [r.address.lon, r.address.lat]),
         ];
 
-        let result: DirectionsResponse;
+        let distanceKm: number;
         try {
-            result = (await this.ors.proxyPost('/v2/directions/driving-car', {
-                coordinates,
-                units: 'km',
-            })) as DirectionsResponse;
+            distanceKm = await this.valhalla.routeDistanceKm(coordinates);
         } catch {
             throw new ServiceUnavailableException('Distance calculation unavailable');
         }
-        if (!result?.routes?.length) {
+        if (!Number.isFinite(distanceKm)) {
             throw new ServiceUnavailableException('Distance calculation unavailable');
         }
-        return result.routes[0].summary.distance;
+        return distanceKm;
     }
 
     private normalizeBookingPhones(dto: PayBookingDto): PayBookingDto {

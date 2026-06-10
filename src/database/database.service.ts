@@ -7,7 +7,8 @@ import { PackageStatus } from 'src/entities/package-status.entity';
 import { VrpOptimization } from 'src/entities/vrp-optimization.entity';
 import { VrpRoute } from 'src/entities/vrp-route.entity';
 import { VrpSolution } from 'src/entities/vrp-solution.entity';
-import type { OptimizationResponse } from '../ors/ors.types';
+import type { OptimizationResponse } from '../vroom/vroom.types';
+import { orsProfileToValhallaCosting } from '../vroom/profile-map';
 import type {
     AssignmentRow,
     BuildResult,
@@ -60,7 +61,7 @@ export class DatabaseService implements OnApplicationBootstrap {
 
     /**
      * Fetches pending unassigned packages and active driver–vehicle assignments,
-     * returning a ready-to-send ORS OptimizationRequest plus the lookup maps
+     * returning a ready-to-send VROOM optimization request plus the lookup maps
      * needed by insertOptimisedRoutes.
      *
      * The SELECT on packages uses FOR UPDATE OF p SKIP LOCKED so that concurrent
@@ -172,7 +173,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                 typeof a.vehicle_gross_limits === 'number' ? a.vehicle_gross_limits : 1000;
             vehicles.push({
                 id: vehicleNumericId,
-                profile: a.ors_vehicle_type,
+                profile: orsProfileToValhallaCosting(a.ors_vehicle_type),
                 start: warehouseCoords!,
                 end: warehouseCoords!,
                 capacity: [capacity],
@@ -190,7 +191,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         packages.forEach((pkg, index) => {
             if (pkg.customer_lon == null || pkg.customer_lat == null) return;
 
-            // ORS expects weight in grams for capacity matching.
+            // VROOM expects weight in grams for capacity matching.
             const weight =
                 typeof pkg.weight_kg === 'number' ? pkg.weight_kg * 1000 : 1;
 
@@ -230,7 +231,7 @@ export class DatabaseService implements OnApplicationBootstrap {
     }
 
     /**
-     * Persists the ORS optimisation result atomically inside `runner`.
+     * Persists the VROOM optimisation result atomically inside `runner`.
      *
      * Insert sequence (mirrors the original database.ts, now fully transactional):
      *   1. vrp_optimization   — raw request / response snapshot
@@ -261,13 +262,13 @@ export class DatabaseService implements OnApplicationBootstrap {
 
         // 1. vrp_optimization — store raw request/response for auditability.
         const optResult = await runner.manager.insert(VrpOptimization, {
-            provider: 'openrouteservice',
+            provider: 'vroom',
             request: requestPayload,
             response: optimisationResponse,
         });
         const optimizationId: string = optResult.identifiers[0].id;
 
-        // 2. vrp_solution — summary stats from the ORS response.
+        // 2. vrp_solution — summary stats from the VROOM response.
         const summary = optimisationResponse.summary ?? {};
         // computing_times is returned by VROOM but absent from the typed interface.
         const computingTimes =
@@ -360,7 +361,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                     setup: step.setup ?? null,
                     service: step.service ?? null,
                     waiting_time: step.waiting_time ?? null,
-                    // step.load is typed as number in ors.types but VROOM returns an
+                    // step.load is typed as number in vroom.types but VROOM returns an
                     // array; store it directly — the column is int4[].
                     load:
                         step.load != null

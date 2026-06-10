@@ -1,8 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { getDataSourceToken } from '@nestjs/typeorm';
+import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { TasksService } from './tasks.service';
 import { DatabaseService } from 'src/database/database.service';
-import { OrsService } from 'src/ors/ors.service';
+import { VroomService } from 'src/vroom/vroom.service';
+import { SchedulerRun } from 'src/entities/scheduler-run.entity';
 import { QueueService } from './queue.service';
 
 type MockRunner = {
@@ -21,17 +22,22 @@ function makeRunner(queryImpl?: jest.Mock): MockRunner {
     };
 }
 
-const WAREHOUSE_ROWS = [{ id: 'wh-1', tzid: 'UTC' }];
+const WAREHOUSE_ROWS = [{ id: 'wh-1', organisation_id: 'org-1', tzid: 'UTC' }];
 
 describe('TasksService', () => {
     let service: TasksService;
     let dsQuery: jest.Mock;
+    /** execute() of the scheduler_runs atomic-claim INSERT query builder. */
+    let claimExecute: jest.Mock;
+    /** execute() of the scheduler_runs retry_count UPDATE query builder. */
+    let retryExecute: jest.Mock;
+    let schedulerRunRepo: { update: jest.Mock; createQueryBuilder: jest.Mock };
     let dbService: {
         beginTransaction: jest.Mock;
         buildOptimizationRequest: jest.Mock;
         insertOptimisedRoutes: jest.Mock;
     };
-    let orsService: { proxyPost: jest.Mock };
+    let vroomService: { solve: jest.Mock };
     let queueService: {
         ensureQueue: jest.Mock;
         enqueue: jest.Mock;
@@ -42,6 +48,33 @@ describe('TasksService', () => {
 
     beforeEach(async () => {
         dsQuery = jest.fn().mockResolvedValue(WAREHOUSE_ROWS);
+
+        // DataSource.createQueryBuilder() — atomic scheduler_runs claim. Default:
+        // claim loses (no identifiers) so time-of-day never triggers an enqueue.
+        claimExecute = jest.fn().mockResolvedValue({ identifiers: [] });
+        const claimQb = {
+            insert: jest.fn().mockReturnThis(),
+            into: jest.fn().mockReturnThis(),
+            values: jest.fn().mockReturnThis(),
+            orIgnore: jest.fn().mockReturnThis(),
+            returning: jest.fn().mockReturnThis(),
+            execute: claimExecute,
+        };
+
+        // SchedulerRun repository — retry_count UPDATE ... RETURNING builder.
+        retryExecute = jest.fn().mockResolvedValue({ raw: [] });
+        const retryQb = {
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            returning: jest.fn().mockReturnThis(),
+            execute: retryExecute,
+        };
+        schedulerRunRepo = {
+            update: jest.fn().mockResolvedValue(undefined),
+            createQueryBuilder: jest.fn().mockReturnValue(retryQb),
+        };
+
         queueService = {
             ensureQueue: jest.fn().mockResolvedValue(undefined),
             enqueue: jest.fn().mockResolvedValue(undefined),
@@ -54,14 +87,18 @@ describe('TasksService', () => {
             buildOptimizationRequest: jest.fn(),
             insertOptimisedRoutes: jest.fn().mockResolvedValue(undefined),
         };
-        orsService = { proxyPost: jest.fn() };
+        vroomService = { solve: jest.fn() };
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
                 TasksService,
-                { provide: getDataSourceToken(), useValue: { query: dsQuery } },
+                {
+                    provide: getDataSourceToken(),
+                    useValue: { query: dsQuery, createQueryBuilder: jest.fn(() => claimQb) },
+                },
+                { provide: getRepositoryToken(SchedulerRun), useValue: schedulerRunRepo },
                 { provide: DatabaseService, useValue: dbService },
-                { provide: OrsService, useValue: orsService },
+                { provide: VroomService, useValue: vroomService },
                 { provide: QueueService, useValue: queueService },
             ],
         }).compile();
@@ -100,8 +137,7 @@ describe('TasksService', () => {
             const callCountAfterBoot = dsQuery.mock.calls.length;
             // handleCron within the same second — TTL (1hr) has not expired.
             await service.handleCron();
-            // At most one additional query may occur (scheduler_runs insert), but the
-            // warehouse refresh SQL should NOT be called again.
+            // The warehouse refresh SQL should NOT be called again.
             const newCalls = dsQuery.mock.calls
                 .slice(callCountAfterBoot)
                 .filter((c: unknown[]) => String(c[0]).includes('warehouse w'));
@@ -135,12 +171,11 @@ describe('TasksService', () => {
                 jobMap: {},
                 driverMap: {},
             });
-            // scheduler_runs UPDATE after success
-            dsQuery.mockResolvedValue([]);
 
             await service.handleQueue();
 
             expect(runner.rollbackTransaction).toHaveBeenCalled();
+            expect(vroomService.solve).not.toHaveBeenCalled();
             expect(queueService.archive).toHaveBeenCalledWith(BigInt(1));
         });
 
@@ -154,24 +189,26 @@ describe('TasksService', () => {
             });
             const runner = makeRunner();
             dbService.beginTransaction.mockResolvedValueOnce(runner);
+            const request = {
+                jobs: [{ id: 1, service: 900, location: [151.2, -33.8], amount: [2000], priority: 50 }],
+                vehicles: [
+                    {
+                        id: 1,
+                        profile: 'auto',
+                        start: [151.0, -33.7],
+                        end: [151.0, -33.7],
+                        capacity: [5000],
+                    },
+                ],
+            };
             dbService.buildOptimizationRequest.mockResolvedValueOnce({
-                request: {
-                    jobs: [{ id: 1, service: 900, location: [151.2, -33.8], amount: [2000], priority: 50 }],
-                    vehicles: [
-                        {
-                            id: 1,
-                            profile: 'driving-car',
-                            start: [151.0, -33.7],
-                            end: [151.0, -33.7],
-                            capacity: [5000],
-                        },
-                    ],
-                },
+                request,
                 vehicleMap: { 1: 'veh-1' },
                 jobMap: { 1: 'pkg-1' },
                 driverMap: { 1: 'drv-1' },
             });
-            orsService.proxyPost.mockResolvedValueOnce({
+            vroomService.solve.mockResolvedValueOnce({
+                code: 0,
                 summary: { cost: 100, routes: 1, unassigned: 0 },
                 routes: [
                     {
@@ -187,12 +224,17 @@ describe('TasksService', () => {
                 ],
                 unassigned: [],
             });
-            dsQuery.mockResolvedValue([]);
 
             await service.handleQueue();
 
+            expect(vroomService.solve).toHaveBeenCalledTimes(1);
+            expect(vroomService.solve).toHaveBeenCalledWith(request);
             expect(runner.commitTransaction).toHaveBeenCalled();
             expect(queueService.archive).toHaveBeenCalledWith(BigInt(2));
+            expect(schedulerRunRepo.update).toHaveBeenCalledWith(
+                { warehouseId: 'wh-1', runDate: '2026-05-09' },
+                { status: 'completed' },
+            );
         });
 
         it('increments retry count and does NOT delete before MAX_RETRIES', async () => {
@@ -205,7 +247,7 @@ describe('TasksService', () => {
             });
             dbService.beginTransaction.mockRejectedValueOnce(new Error('DB connection lost'));
             // UPDATE scheduler_runs SET retry_count = retry_count + 1 → below MAX_RETRIES
-            dsQuery.mockResolvedValue([{ retry_count: 1 }]);
+            retryExecute.mockResolvedValueOnce({ raw: [{ retry_count: 1 }] });
 
             await service.handleQueue();
 
@@ -223,11 +265,15 @@ describe('TasksService', () => {
             });
             dbService.beginTransaction.mockRejectedValueOnce(new Error('Persistent failure'));
             // retry_count has reached MAX_RETRIES (3)
-            dsQuery.mockResolvedValue([{ retry_count: 3 }]);
+            retryExecute.mockResolvedValueOnce({ raw: [{ retry_count: 3 }] });
 
             await service.handleQueue();
 
             expect(queueService.deleteMsg).toHaveBeenCalledWith(BigInt(4));
+            expect(schedulerRunRepo.update).toHaveBeenCalledWith(
+                { warehouseId: 'wh-1', runDate: '2026-05-09' },
+                { status: 'failed' },
+            );
         });
 
         it('falls back to MAX_RETRIES when scheduler_runs UPDATE returns no rows', async () => {
@@ -239,64 +285,13 @@ describe('TasksService', () => {
                 message: { warehouseId: 'wh-1', runDate: '2026-05-09' },
             });
             dbService.beginTransaction.mockRejectedValueOnce(new Error('Connection lost'));
-            // UPDATE returned no rows — rows[0] is undefined, falls back to MAX_RETRIES
-            dsQuery.mockResolvedValue([]);
+            // UPDATE returned no rows — raw[0] is undefined, falls back to MAX_RETRIES
+            retryExecute.mockResolvedValueOnce({ raw: [] });
 
             await service.handleQueue();
 
             // MAX_RETRIES fallback means permanent failure path is taken
             expect(queueService.deleteMsg).toHaveBeenCalledWith(BigInt(5));
-        });
-
-        it('calls GeoJSON directions when route has at least two distinct step locations', async () => {
-            queueService.readOne.mockResolvedValueOnce({
-                msg_id: BigInt(6),
-                read_ct: 0,
-                enqueued_at: new Date(),
-                vt: new Date(),
-                message: { warehouseId: 'wh-1', runDate: '2026-05-09' },
-            });
-            const runner = makeRunner();
-            dbService.beginTransaction.mockResolvedValueOnce(runner);
-            dbService.buildOptimizationRequest.mockResolvedValueOnce({
-                request: {
-                    jobs: [{ id: 1, service: 900, location: [151.2, -33.8], amount: [1000], priority: 50 }],
-                    vehicles: [{ id: 1, profile: 'driving-car', start: [151.0, -33.7], end: [151.0, -33.7], capacity: [5000] }],
-                },
-                vehicleMap: { 1: 'veh-1' },
-                jobMap: { 1: 'pkg-1' },
-                driverMap: { 1: 'drv-1' },
-            });
-            // First call: optimization response with steps containing two distinct locations.
-            orsService.proxyPost.mockResolvedValueOnce({
-                summary: { cost: 200 },
-                routes: [
-                    {
-                        vehicle: 1,
-                        cost: 200,
-                        delivery: [0],
-                        pickup: [0],
-                        service: 0,
-                        duration: 3600,
-                        waiting_time: 0,
-                        steps: [
-                            { type: 'start', location: [151.0, -33.7] },
-                            { type: 'job', id: 1, location: [151.2, -33.8] },
-                            { type: 'end', location: [151.0, -33.7] },
-                        ],
-                    },
-                ],
-                unassigned: [],
-            });
-            // Second call: GeoJSON directions response (any value is fine).
-            orsService.proxyPost.mockResolvedValueOnce({ type: 'FeatureCollection', features: [] });
-            dsQuery.mockResolvedValue([]);
-
-            await service.handleQueue();
-
-            // proxyPost should have been called twice: once for optimization and once for GeoJSON.
-            expect(orsService.proxyPost).toHaveBeenCalledTimes(2);
-            expect(runner.commitTransaction).toHaveBeenCalled();
         });
     });
 });

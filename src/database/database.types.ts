@@ -1,3 +1,5 @@
+import type { VroomJob, VroomVehicle } from '../vroom/vroom.types';
+
 /**
  * Raw row shape returned by the unassigned-packages SELECT query.
  * Geometry columns are projected as scalar lon/lat via ST_X / ST_Y.
@@ -58,37 +60,15 @@ export interface StepInsertRow {
 
 /** Return type of DatabaseService.buildOptimizationRequest. */
 export interface BuildResult {
-  /** Ready-to-send body for the ORS /optimization endpoint. */
+  /** Ready-to-send body for the VROOM solver. */
   request: {
     jobs: VroomJob[];
     vehicles: VroomVehicle[];
   };
-  /** Maps numeric vehicle id (used by ORS) → DB uuid */
+  /** Maps numeric vehicle id (used by VROOM) → DB uuid */
   vehicleMap: Record<number, string>;
-  /** Maps numeric job id (used by ORS) → package uuid */
+  /** Maps numeric job id (used by VROOM) → package uuid */
   jobMap: Record<number, string>;
   /** Maps numeric vehicle id → driver uuid */
   driverMap: Record<number, string>;
-}
-
-/**
- * VROOM job. Extends the ORS type definition with `amount`, which VROOM
- * uses for capacity-constrained routing but is absent from some typed clients.
- */
-export interface VroomJob {
-  id: number;
-  service?: number;
-  location?: number[];
-  /** Capacity consumed by this job — sent to ORS in grams. */
-  amount?: number[];
-  priority?: number;
-}
-
-/** Minimal vehicle shape passed to ORS. */
-export interface VroomVehicle {
-  id: number;
-  profile?: string;
-  start?: number[];
-  end?: number[];
-  capacity?: number[];
 }

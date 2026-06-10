@@ -4,9 +4,7 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { DatabaseService } from '../database/database.service';
 import { SchedulerRun } from 'src/entities/scheduler-run.entity';
-import type { BuildResult } from '../database/database.types';
-import { OrsService } from '../ors/ors.service';
-import type { DirectionsRequest, OptimizationResponse, OptimizationRoute } from '../ors/ors.types';
+import { VroomService } from '../vroom/vroom.service';
 import { QueueService } from './queue.service';
 
 /** Target local hour at which nightly optimization runs. */
@@ -39,7 +37,7 @@ export class TasksService implements OnApplicationBootstrap {
         @InjectDataSource() private readonly dataSource: DataSource,
         @InjectRepository(SchedulerRun) private readonly schedulerRunRepo: Repository<SchedulerRun>,
         private readonly databaseService: DatabaseService,
-        private readonly orsService: OrsService,
+        private readonly vroomService: VroomService,
         private readonly queueService: QueueService,
     ) { }
 
@@ -69,7 +67,7 @@ export class TasksService implements OnApplicationBootstrap {
     /**
      * Consumer: polls the pgmq queue every 30 seconds and processes one message
      * at a time. Concurrency of 1 eliminates thundering-herd pressure on the
-     * database and ORS. Messages that fail are retried automatically when the
+     * database and VROOM. Messages that fail are retried automatically when the
      * visibility timeout expires; after MAX_RETRIES the message is deleted and
      * the run is marked failed.
      */
@@ -194,17 +192,12 @@ export class TasksService implements OnApplicationBootstrap {
                 await this.databaseService.buildOptimizationRequest(runner);
 
             if (request.jobs.length === 0) {
-                this.logger.log(`Warehouse ${warehouseId}: no eligible packages, skipping ORS call.`);
+                this.logger.log(`Warehouse ${warehouseId}: no eligible packages, skipping VROOM call.`);
                 await runner.rollbackTransaction();
                 return;
             }
 
-            const response = (await this.orsService.proxyPost(
-                '/optimization',
-                request,
-                process.env.ORS_API_KEY ? `Bearer ${process.env.ORS_API_KEY}` : undefined,
-            )) as OptimizationResponse;
-
+            const response = await this.vroomService.solve(request);
 
             await this.databaseService.insertOptimisedRoutes(
                 runner, request, response, vehicleMap, jobMap, driverMap,
@@ -239,91 +232,5 @@ export class TasksService implements OnApplicationBootstrap {
      */
     private getLocalDate(date: Date, tzid: string): string {
         return new Intl.DateTimeFormat('en-CA', { timeZone: tzid }).format(date);
-    }
-
-    private async requestRouteGeoJsons(
-        request: BuildResult['request'],
-        response: OptimizationResponse,
-        warehouseId: string,
-    ): Promise<DirectionsRequest | null> {
-        const authHeader = process.env.ORS_API_KEY ? `Bearer ${process.env.ORS_API_KEY}` : undefined;
-        let primaryRouteRequest: DirectionsRequest | null = null;
-
-        const directionRequests = (response.routes ?? [])
-            .map((route) => {
-                const profile = request.vehicles.find((vehicle) => vehicle.id === route.vehicle)?.profile;
-                if (!profile) {
-                    this.logger.warn(
-                        `Warehouse ${warehouseId}: skipping GeoJSON directions for vehicle ${route.vehicle} because no ORS profile was found.`,
-                    );
-                    return null;
-                }
-
-                const body = this.buildDirectionsGeoJsonRequest(route);
-                if (!body) {
-                    this.logger.debug(
-                        `Warehouse ${warehouseId}: skipping GeoJSON directions for vehicle ${route.vehicle} because fewer than two route coordinates were available.`,
-                    );
-                    return null;
-                }
-
-                primaryRouteRequest ??= body;
-
-                return this.orsService.proxyPost(
-                    `/v2/directions/${profile}/geojson`,
-                    body,
-                    authHeader,
-                );
-            })
-            .filter((promise): promise is Promise<unknown> => promise !== null);
-
-        if (directionRequests.length === 0) {
-            return null;
-        }
-
-        const results = await Promise.allSettled(directionRequests);
-        const failures = results.filter((result) => result.status === 'rejected');
-
-        if (failures.length > 0) {
-            this.logger.warn(
-                `Warehouse ${warehouseId}: ${failures.length} GeoJSON directions request(s) failed after optimization completed.`,
-            );
-
-            failures.forEach((failure) => {
-                this.logger.warn(String(failure.reason));
-            });
-            return primaryRouteRequest;
-        }
-
-        this.logger.debug(
-            `Warehouse ${warehouseId}: fetched ${results.length} GeoJSON route(s) after optimization.`,
-        );
-
-        return primaryRouteRequest;
-    }
-
-    private buildDirectionsGeoJsonRequest(route: OptimizationRoute): DirectionsRequest | null {
-        const coordinates = route.steps
-            .map((step) => step.location)
-            .filter((location): location is number[] => Array.isArray(location) && location.length >= 2)
-            .reduce<number[][]>((accumulator, location) => {
-                const [lon, lat] = location;
-                const previous = accumulator[accumulator.length - 1];
-
-                if (!previous || previous[0] !== lon || previous[1] !== lat) {
-                    accumulator.push([lon, lat]);
-                }
-
-                return accumulator;
-            }, []);
-
-        if (coordinates.length < 2) {
-            return null;
-        }
-
-        return {
-            coordinates,
-            instructions: false,
-        };
     }
 }

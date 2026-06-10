@@ -1,23 +1,21 @@
 import { Controller, Get, Query, Headers, UseGuards } from '@nestjs/common';
-import { AuthGuard } from '../../auth/guards/auth.guard';
-import { OrsService } from '../ors.service';
+import { AuthGuard } from '../auth/guards/auth.guard';
+import { GeocodeService } from './geocode.service';
 
 //@UseGuards(AuthGuard)
 @Controller('geocode')
 export class GeocodeController {
-    constructor(private readonly orsService: OrsService) { }
+    constructor(private readonly geocodeService: GeocodeService) { }
 
     /**
      * Forward Geocode Service – text search returning a list of location objects.
-     * Pass `api_key` as a query parameter when using the public ORS API.
      */
     @Get('search')
     search(
         @Query() query: Record<string, string>,
         @Headers('authorization') auth?: string,
     ): Promise<unknown> {
-        const enrichedQuery = { api_key: process.env.PELIAS_API_KEY ?? '', ...query };
-        return this.orsService.proxyGet('/search', enrichedQuery, auth, process.env.PELIAS_BASE_URL);
+        return this.geocodeService.get('/search', query, auth);
     }
 
     /**
@@ -29,8 +27,7 @@ export class GeocodeController {
         @Query() query: Record<string, string>,
         @Headers('authorization') auth?: string,
     ): Promise<unknown> {
-        const enrichedQuery = { api_key: process.env.PELIAS_API_KEY ?? '', ...query };
-        return this.orsService.proxyGet('/search/structured', enrichedQuery, auth, process.env.PELIAS_BASE_URL);
+        return this.geocodeService.get('/search/structured', query, auth);
     }
 
     /**
@@ -41,8 +38,7 @@ export class GeocodeController {
         @Query() query: Record<string, string>,
         @Headers('authorization') auth?: string,
     ): Promise<unknown> {
-        const enrichedQuery = { api_key: process.env.PELIAS_API_KEY ?? '', ...query };
-        return this.orsService.proxyGet('/autocomplete', enrichedQuery, auth, process.env.PELIAS_BASE_URL);
+        return this.geocodeService.get('/autocomplete', query, auth);
     }
 
     /**
@@ -54,7 +50,6 @@ export class GeocodeController {
         @Query() query: Record<string, string>,
         @Headers('authorization') auth?: string,
     ): Promise<unknown> {
-        const enrichedQuery = { api_key: process.env.PELIAS_API_KEY ?? '', ...query };
-        return this.orsService.proxyGet('/reverse', enrichedQuery, auth, process.env.PELIAS_BASE_URL);
+        return this.geocodeService.get('/reverse', query, auth);
     }
 }
