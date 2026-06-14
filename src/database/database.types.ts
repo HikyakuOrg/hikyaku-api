@@ -58,6 +58,35 @@ export interface StepInsertRow {
   load: number[] | null;
 }
 
+/** A dispatcher-supplied departure time for one vehicle. */
+export interface SetOffOverride {
+  vehicleId: string;
+  /** ISO timestamp the vehicle should set off. */
+  setOffAt: string;
+}
+
+/** Options for DatabaseService.buildOptimizationRequest. */
+export interface BuildOptions {
+  /**
+   * Restrict the run to a single warehouse (packages + driver/vehicle pairs).
+   * Both the nightly per-warehouse job and the on-demand trigger pass this.
+   * When omitted the legacy global behaviour is used.
+   */
+  warehouseId?: string;
+  /** Stamped onto vrp_optimization; derived from the warehouse when omitted. */
+  organisationId?: string;
+  /**
+   * On-demand only: emit per-vehicle VROOM time_window (set-off times) so
+   * returning vehicles can be re-dispatched for a later wave. When false the
+   * arrivals stay relative-from-0 (nightly behaviour, unchanged).
+   */
+  useTimeWindows?: boolean;
+  /** Per-vehicle departure overrides (on-demand). */
+  setOffOverrides?: SetOffOverride[];
+  /** Reference "now"; defaults to new Date(). */
+  now?: Date;
+}
+
 /** Return type of DatabaseService.buildOptimizationRequest. */
 export interface BuildResult {
   /** Ready-to-send body for the VROOM solver. */
@@ -71,4 +100,8 @@ export interface BuildResult {
   jobMap: Record<number, string>;
   /** Maps numeric vehicle id → driver uuid */
   driverMap: Record<number, string>;
+  /** Org owning this run (null for legacy global runs). */
+  organisationId: string | null;
+  /** True when vehicle time_windows were emitted (arrivals are absolute epoch). */
+  timeWindowed: boolean;
 }

@@ -11,6 +11,7 @@ import type { OptimizationResponse } from '../vroom/vroom.types';
 import { orsProfileToValhallaCosting } from '../vroom/profile-map';
 import type {
     AssignmentRow,
+    BuildOptions,
     BuildResult,
     PackageRow,
     StepInsertRow,
@@ -18,6 +19,12 @@ import type {
 
 /** Service time per delivery stop, in seconds (15 minutes). Hardcoded for now. */
 const TIME_PER_STOP = 900;
+
+/** Reload/turnaround buffer added after a vehicle returns, in seconds (30 min). */
+const SETOFF_BUFFER_SECONDS = 1800;
+
+/** Width of the vehicle operating window once it has set off, in seconds (12h). */
+const SHIFT_WINDOW_SECONDS = 12 * 60 * 60;
 
 @Injectable()
 export class DatabaseService implements OnApplicationBootstrap {
@@ -68,14 +75,56 @@ export class DatabaseService implements OnApplicationBootstrap {
      * scheduler workers never process the same packages simultaneously — this
      * addresses the race-condition TODO in the original Deno implementation.
      *
+     * When `opts.warehouseId` is set the run is scoped to that warehouse (the
+     * cross-org leak fix); when `opts.useTimeWindows` is set each vehicle gets a
+     * VROOM time_window encoding its earliest set-off, so returning vehicles can
+     * be planned for a later wave (on-demand multi-wave dispatch).
+     *
      * @param runner  Must already have an open transaction (beginTransaction).
      */
-    async buildOptimizationRequest(runner: QueryRunner): Promise<BuildResult> {
-        const now = new Date();
+    async buildOptimizationRequest(
+        runner: QueryRunner,
+        opts: BuildOptions = {},
+    ): Promise<BuildResult> {
+        const now = opts.now ?? new Date();
         const startOfDay = new Date(now);
         startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date(now);
         endOfDay.setHours(23, 59, 59, 999);
+
+        // 0. Resolve the warehouse (coords + owning org) up front when scoped.
+        let warehouseCoords: [number, number] | null = null;
+        let organisationId: string | null = opts.organisationId ?? null;
+
+        if (opts.warehouseId) {
+            const whRows: {
+                organisation_id: string;
+                warehouse_lon: number | null;
+                warehouse_lat: number | null;
+            }[] = await runner.query(
+                `
+        SELECT
+          w.organisation_id,
+          ST_X(w.warehouse_location::geometry) AS warehouse_lon,
+          ST_Y(w.warehouse_location::geometry) AS warehouse_lat
+        FROM warehouse w
+        WHERE w.id = $1
+        `,
+                [opts.warehouseId],
+            );
+            const wh = whRows[0];
+            if (!wh) {
+                throw new Error(`Warehouse ${opts.warehouseId} not found.`);
+            }
+            // Security: a passed organisationId must own the warehouse.
+            if (organisationId && organisationId !== wh.organisation_id) {
+                throw new Error('Warehouse does not belong to the requesting organisation.');
+            }
+            organisationId = wh.organisation_id;
+            if (wh.warehouse_lon != null && wh.warehouse_lat != null) {
+                warehouseCoords = [wh.warehouse_lon, wh.warehouse_lat];
+            }
+        }
 
         // 1. Fetch unassigned pending packages — locked for this transaction so
         //    a second concurrent worker will SKIP these rows entirely.
@@ -110,9 +159,10 @@ export class DatabaseService implements OnApplicationBootstrap {
       WHERE  latest_status.package_status = $1
         AND  p.optimisation_id   IS NULL
         AND  pa.package_id       IS NULL
+        AND  ($2::uuid IS NULL OR p.warehouse_id = $2)
       FOR UPDATE OF p SKIP LOCKED
       `,
-            [this.pendingStatusId],
+            [this.pendingStatusId, opts.warehouseId ?? null],
         );
 
         this.logger.debug(`Found ${packages.length} unassigned pending packages.`);
@@ -131,18 +181,22 @@ export class DatabaseService implements OnApplicationBootstrap {
       JOIN  vehicles                  v   ON v.id  = dva.vehicle_id
       JOIN  vehicle_type              vt  ON vt.id = v.vehicle_type
       LEFT  JOIN warehouse            w   ON w.id  = v.warehouse_id
+      WHERE v.is_deleted = false
+        AND ($1::uuid IS NULL OR v.warehouse_id = $1)
       `,
+            [opts.warehouseId ?? null],
         );
 
         this.logger.debug(`Found ${assignments.length} driver–vehicle assignments.`);
 
-        // 3. Resolve warehouse coordinates: prefer packages, fall back to vehicles.
-        let warehouseCoords: [number, number] | null = null;
-
-        for (const pkg of packages) {
-            if (pkg.warehouse_lon != null && pkg.warehouse_lat != null) {
-                warehouseCoords = [pkg.warehouse_lon, pkg.warehouse_lat];
-                break;
+        // 3. Resolve warehouse coordinates: prefer the scoped warehouse, then
+        //    packages, then vehicles.
+        if (!warehouseCoords) {
+            for (const pkg of packages) {
+                if (pkg.warehouse_lon != null && pkg.warehouse_lat != null) {
+                    warehouseCoords = [pkg.warehouse_lon, pkg.warehouse_lat];
+                    break;
+                }
             }
         }
 
@@ -162,6 +216,16 @@ export class DatabaseService implements OnApplicationBootstrap {
             );
         }
 
+        // 3b. On-demand: compute each vehicle's earliest set-off (epoch seconds).
+        const setOffByVehicle = opts.useTimeWindows
+            ? await this.computeVehicleSetOffs(
+                runner,
+                assignments.map((a) => a.vehicle_id),
+                opts.setOffOverrides ?? [],
+                now,
+            )
+            : {};
+
         // 4. Build vehicles array.
         const vehicles: BuildResult['request']['vehicles'] = [];
         const vehicleMap: Record<number, string> = {};
@@ -171,13 +235,18 @@ export class DatabaseService implements OnApplicationBootstrap {
             const vehicleNumericId = index + 1;
             const capacity =
                 typeof a.vehicle_gross_limits === 'number' ? a.vehicle_gross_limits : 1000;
-            vehicles.push({
+            const vehicle: BuildResult['request']['vehicles'][number] = {
                 id: vehicleNumericId,
                 profile: orsProfileToValhallaCosting(a.ors_vehicle_type),
                 start: warehouseCoords!,
                 end: warehouseCoords!,
                 capacity: [capacity],
-            });
+            };
+            if (opts.useTimeWindows) {
+                const setOff = setOffByVehicle[a.vehicle_id] ?? Math.floor(now.getTime() / 1000);
+                vehicle.time_window = [setOff, setOff + SHIFT_WINDOW_SECONDS];
+            }
+            vehicles.push(vehicle);
             vehicleMap[vehicleNumericId] = a.vehicle_id;
             if (a.driver_id) {
                 driverMap[vehicleNumericId] = a.driver_id;
@@ -227,26 +296,127 @@ export class DatabaseService implements OnApplicationBootstrap {
             vehicleMap,
             jobMap,
             driverMap,
+            organisationId,
+            timeWindowed: !!opts.useTimeWindows,
         };
+    }
+
+    /**
+     * Computes the earliest set-off time (epoch seconds) per vehicle for an
+     * on-demand run:
+     *   - a dispatcher override always wins;
+     *   - a vehicle with an active (not fully delivered) route departs again
+     *     SETOFF_BUFFER_SECONDS after its estimated RETURN. Return is derived
+     *     from when it actually left (the first package's IN_TRANSIT timeline
+     *     row) — falling back to its planned scheduled_departure, then now —
+     *     plus that route's end-step arrival (total route duration in seconds);
+     *   - an idle vehicle departs now.
+     *
+     * The active route's in-progress packages are never re-touched (the
+     * pending-only query above excludes them); this only schedules the NEXT wave.
+     */
+    private async computeVehicleSetOffs(
+        runner: QueryRunner,
+        vehicleIds: string[],
+        overrides: { vehicleId: string; setOffAt: string }[],
+        now: Date,
+    ): Promise<Record<string, number>> {
+        const nowEpoch = Math.floor(now.getTime() / 1000);
+        const result: Record<string, number> = {};
+        for (const id of vehicleIds) result[id] = nowEpoch; // idle default
+
+        if (vehicleIds.length > 0) {
+            // One row per (vehicle, active route): the route's return reference
+            // and its total duration. HAVING drops fully-delivered routes.
+            const rows: {
+                vehicle_id: string;
+                end_arrival: number | null;
+                return_ref: string | null;
+            }[] = await runner.query(
+                `
+        WITH active AS (
+          SELECT
+            pa.vehicle_id,
+            rs.route_id,
+            MIN(it.in_transit_at)        AS first_in_transit_at,
+            MIN(pdw.scheduled_departure) AS scheduled_departure_min,
+            bool_and(latest.enums IN ('DELIVERED', 'FAILED')) AS all_terminal
+          FROM vrp_route_step rs
+          JOIN package_assignment pa ON pa.package_id = rs.package_id
+          LEFT JOIN package_delivery_window pdw ON pdw.package_id = rs.package_id
+          LEFT JOIN LATERAL (
+            SELECT ps.enums
+            FROM package_timeline pt
+            JOIN package_status ps ON ps.id = pt.package_status
+            WHERE pt.package_id = rs.package_id
+            ORDER BY pt.created_at DESC, pt.id DESC
+            LIMIT 1
+          ) latest ON true
+          LEFT JOIN LATERAL (
+            SELECT MIN(pt.created_at) AS in_transit_at
+            FROM package_timeline pt
+            JOIN package_status ps ON ps.id = pt.package_status
+            WHERE pt.package_id = rs.package_id AND ps.enums = 'IN_TRANSIT'
+          ) it ON true
+          WHERE rs.type = 'job'
+            AND pa.vehicle_id = ANY($1::uuid[])
+          GROUP BY pa.vehicle_id, rs.route_id
+        )
+        SELECT
+          a.vehicle_id,
+          e.arrival AS end_arrival,
+          COALESCE(a.first_in_transit_at, a.scheduled_departure_min) AS return_ref
+        FROM active a
+        LEFT JOIN LATERAL (
+          SELECT arrival
+          FROM vrp_route_step
+          WHERE route_id = a.route_id AND type = 'end'
+          LIMIT 1
+        ) e ON true
+        WHERE a.all_terminal = false
+        `,
+                [vehicleIds],
+            );
+
+            for (const row of rows) {
+                const refEpoch = row.return_ref
+                    ? Math.floor(new Date(row.return_ref).getTime() / 1000)
+                    : nowEpoch;
+                const returnEpoch = refEpoch + (row.end_arrival ?? 0);
+                const setOff = returnEpoch + SETOFF_BUFFER_SECONDS;
+                // A vehicle may carry more than one active route — take the
+                // latest return so its next wave never overlaps either.
+                result[row.vehicle_id] = Math.max(result[row.vehicle_id] ?? nowEpoch, setOff);
+            }
+        }
+
+        // Dispatcher overrides win outright.
+        for (const o of overrides) {
+            const epoch = Math.floor(new Date(o.setOffAt).getTime() / 1000);
+            if (!Number.isNaN(epoch)) result[o.vehicleId] = epoch;
+        }
+
+        return result;
     }
 
     /**
      * Persists the VROOM optimisation result atomically inside `runner`.
      *
      * Insert sequence (mirrors the original database.ts, now fully transactional):
-     *   1. vrp_optimization   — raw request / response snapshot
+     *   1. vrp_optimization   — raw request / response snapshot (+ organisation_id)
      *   2. vrp_solution       — summary statistics
      *   3. Per route:
      *      a. vrp_route
      *      b. package_assignment  (upsert — FK parent for vrp_route_step)
      *      c. vrp_route_step      (batch insert)
+     *      d. package_delivery_window.scheduled_departure  (when time-windowed)
      *   4. packages.optimisation_id  — marks packages as processed, prevents
-     *                                  re-inclusion in future nightly runs
+     *                                  re-inclusion in future runs
      *
-     * Because every write shares the same QueryRunner transaction, a failure at
-     * any step rolls back the entire operation — resolving the atomicity TODO
-     * from the original Deno implementation where Supabase SDK lacked transaction
-     * support.
+     * When `opts.timeWindowed` is true, VROOM reports step.arrival as absolute
+     * epoch seconds; we normalise it back to relative-from-departure seconds
+     * (subtracting the route's own start-step arrival) so the stored value stays
+     * consistent with the manual-shift flow and the dashboard's interpretation.
      *
      * @param runner  Must already have an open transaction (beginTransaction).
      */
@@ -257,7 +427,8 @@ export class DatabaseService implements OnApplicationBootstrap {
         vehicleMap: Record<number, string>,
         jobMap: Record<number, string>,
         driverMap: Record<number, string>,
-    ): Promise<void> {
+        opts: { organisationId?: string | null; timeWindowed?: boolean } = {},
+    ): Promise<string> {
         const optimisedPackageIds = new Set<string>();
 
         // 1. vrp_optimization — store raw request/response for auditability.
@@ -265,6 +436,7 @@ export class DatabaseService implements OnApplicationBootstrap {
             provider: 'vroom',
             request: requestPayload,
             response: optimisationResponse,
+            organisationId: opts.organisationId ?? null,
         });
         const optimizationId: string = optResult.identifiers[0].id;
 
@@ -295,6 +467,9 @@ export class DatabaseService implements OnApplicationBootstrap {
         });
         const solutionId: string = solResult.identifiers[0].id;
 
+        // Collected across all routes; written after the step inserts.
+        const departureByPackage: { package_id: string; departure: string }[] = [];
+
         // 3. Routes.
         for (const route of optimisationResponse.routes ?? []) {
             // 3a. vrp_route.
@@ -317,6 +492,15 @@ export class DatabaseService implements OnApplicationBootstrap {
                 priority: routeExt.priority ?? null,
             });
             const routeId: string = routeResult.identifiers[0].id;
+
+            // When time-windowed, arrivals are absolute epoch; the start step's
+            // arrival is this vehicle's actual departure. Subtract it to store
+            // relative-from-departure seconds (and reuse it as scheduled_departure).
+            const startStep = route.steps.find((s) => s.type === 'start');
+            const departureEpoch =
+                opts.timeWindowed && startStep?.arrival != null ? startStep.arrival : null;
+            const departureIso =
+                departureEpoch != null ? new Date(departureEpoch * 1000).toISOString() : null;
 
             // Collect steps and package assignments for this route.
             const stepsPayload: StepInsertRow[] = [];
@@ -346,7 +530,18 @@ export class DatabaseService implements OnApplicationBootstrap {
                         vehicle_id: vehicleMap[route.vehicle],
                         driver_id: driverMap[route.vehicle],
                     });
+                    if (departureIso) {
+                        departureByPackage.push({ package_id: pkgId, departure: departureIso });
+                    }
                 }
+
+                // Normalise absolute-epoch arrivals back to relative seconds.
+                const arrival =
+                    step.arrival == null
+                        ? null
+                        : departureEpoch != null
+                            ? step.arrival - departureEpoch
+                            : step.arrival;
 
                 stepsPayload.push({
                     route_id: routeId,
@@ -356,7 +551,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                     package_id: pkgId,
                     lon,
                     lat,
-                    arrival: step.arrival ?? null,
+                    arrival,
                     duration: step.duration ?? null,
                     setup: step.setup ?? null,
                     service: step.service ?? null,
@@ -383,6 +578,12 @@ export class DatabaseService implements OnApplicationBootstrap {
             }
         }
 
+        // 3d. Record planned departures so the availability filter + UI see the
+        //     vehicle as busy. Never overwrites the booking scheduled_arrival.
+        if (departureByPackage.length > 0) {
+            await this.upsertScheduledDepartures(runner, departureByPackage);
+        }
+
         // 4. Mark all processed packages so they are excluded from future runs.
         if (optimisedPackageIds.size > 0) {
             await runner.manager.update(
@@ -391,6 +592,8 @@ export class DatabaseService implements OnApplicationBootstrap {
                 { optimisationId: optimizationId },
             );
         }
+
+        return optimizationId;
     }
 
     // ---------------------------------------------------------------------------
@@ -413,6 +616,28 @@ export class DatabaseService implements OnApplicationBootstrap {
                 driverId: a.driver_id,
             })),
             ['packageId'],
+        );
+    }
+
+    /**
+     * Upserts package_delivery_window.scheduled_departure for the given packages.
+     * Only the departure column is touched — scheduled_arrival (the booking
+     * deadline) is left untouched.
+     */
+    private async upsertScheduledDepartures(
+        runner: QueryRunner,
+        rows: { package_id: string; departure: string }[],
+    ): Promise<void> {
+        const placeholders = rows
+            .map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2}::timestamptz)`)
+            .join(', ');
+        const params = rows.flatMap((r) => [r.package_id, r.departure]);
+        await runner.query(
+            `INSERT INTO package_delivery_window (package_id, scheduled_departure)
+             VALUES ${placeholders}
+             ON CONFLICT (package_id)
+             DO UPDATE SET scheduled_departure = EXCLUDED.scheduled_departure`,
+            params,
         );
     }
 

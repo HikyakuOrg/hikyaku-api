@@ -4,8 +4,10 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { DatabaseService } from '../database/database.service';
 import { SchedulerRun } from 'src/entities/scheduler-run.entity';
+import { OptimisationRun } from 'src/entities/optimisation-run.entity';
 import { VroomService } from '../vroom/vroom.service';
 import { QueueService } from './queue.service';
+import type { SetOffOverride } from '../database/database.types';
 
 /** Target local hour at which nightly optimization runs. */
 const OPTIMIZATION_HOUR = 2;
@@ -36,6 +38,7 @@ export class TasksService implements OnApplicationBootstrap {
     constructor(
         @InjectDataSource() private readonly dataSource: DataSource,
         @InjectRepository(SchedulerRun) private readonly schedulerRunRepo: Repository<SchedulerRun>,
+        @InjectRepository(OptimisationRun) private readonly optimisationRunRepo: Repository<OptimisationRun>,
         private readonly databaseService: DatabaseService,
         private readonly vroomService: VroomService,
         private readonly queueService: QueueService,
@@ -76,11 +79,19 @@ export class TasksService implements OnApplicationBootstrap {
         const msg = await this.queueService.readOne(QUEUE_VT_SECONDS);
         if (!msg) return;
 
-        const { warehouseId, runDate } = msg.message as { warehouseId: string; runDate: string };
+        const body = msg.message as Record<string, unknown>;
+
+        // On-demand runs carry a `kind` discriminator; nightly runs don't.
+        if (body.kind === 'on_demand') {
+            await this.handleOnDemand(msg.msg_id, body);
+            return;
+        }
+
+        const { warehouseId, runDate } = body as { warehouseId: string; runDate: string };
         this.logger.log(`[consumer] Processing optimization for warehouse ${warehouseId} (run_date: ${runDate}).`);
 
         try {
-            await this.runOptimization(warehouseId);
+            await this.runOptimization({ warehouseId });
             await this.queueService.archive(msg.msg_id);
             await this.schedulerRunRepo.update(
                 { warehouseId, runDate },
@@ -185,26 +196,79 @@ export class TasksService implements OnApplicationBootstrap {
         }
     }
 
-    private async runOptimization(warehouseId: string): Promise<void> {
+    /**
+     * Processes one on-demand run: marks it running, optimises with per-vehicle
+     * time windows, and records the terminal status the dashboard polls for.
+     * On-demand runs are not auto-retried (a failure is surfaced to the
+     * dispatcher, who can trigger again); the message is removed either way.
+     */
+    private async handleOnDemand(msgId: bigint, body: Record<string, unknown>): Promise<void> {
+        const runId = body.runId as string;
+        const organisationId = body.organisationId as string;
+        const warehouseId = body.warehouseId as string;
+        const setOffOverrides = (body.setOffOverrides as SetOffOverride[] | undefined) ?? [];
+
+        this.logger.log(`[consumer] Processing on-demand optimisation ${runId} (warehouse ${warehouseId}).`);
+        await this.optimisationRunRepo.update({ id: runId }, { status: 'running' });
+
+        try {
+            const optimizationId = await this.runOptimization({
+                warehouseId,
+                organisationId,
+                useTimeWindows: true,
+                setOffOverrides,
+            });
+            await this.queueService.archive(msgId);
+            await this.optimisationRunRepo.update(
+                { id: runId },
+                optimizationId
+                    ? { status: 'completed', optimisationId: optimizationId }
+                    : { status: 'skipped' },
+            );
+            this.logger.log(
+                `[consumer] On-demand optimisation ${runId} ${optimizationId ? 'completed' : 'skipped (no eligible packages)'}.`,
+            );
+        } catch (err: unknown) {
+            this.logger.error(`[consumer] On-demand optimisation ${runId} failed: ${String(err)}`);
+            await this.queueService.deleteMsg(msgId);
+            await this.optimisationRunRepo.update(
+                { id: runId },
+                { status: 'failed', error: String(err) },
+            );
+        }
+    }
+
+    private async runOptimization(opts: {
+        warehouseId: string;
+        organisationId?: string;
+        useTimeWindows?: boolean;
+        setOffOverrides?: SetOffOverride[];
+    }): Promise<string | null> {
         const runner = await this.databaseService.beginTransaction();
         try {
-            const { request, vehicleMap, jobMap, driverMap } =
-                await this.databaseService.buildOptimizationRequest(runner);
+            const build = await this.databaseService.buildOptimizationRequest(runner, opts);
 
-            if (request.jobs.length === 0) {
-                this.logger.log(`Warehouse ${warehouseId}: no eligible packages, skipping VROOM call.`);
+            if (build.request.jobs.length === 0) {
+                this.logger.log(`Warehouse ${opts.warehouseId}: no eligible packages, skipping VROOM call.`);
                 await runner.rollbackTransaction();
-                return;
+                return null;
             }
 
-            const response = await this.vroomService.solve(request);
+            const response = await this.vroomService.solve(build.request);
 
-            await this.databaseService.insertOptimisedRoutes(
-                runner, request, response, vehicleMap, jobMap, driverMap,
+            const optimizationId = await this.databaseService.insertOptimisedRoutes(
+                runner,
+                build.request,
+                response,
+                build.vehicleMap,
+                build.jobMap,
+                build.driverMap,
+                { organisationId: build.organisationId, timeWindowed: build.timeWindowed },
             );
 
             await runner.commitTransaction();
-            this.logger.log(`Warehouse ${warehouseId}: optimization committed successfully.`);
+            this.logger.log(`Warehouse ${opts.warehouseId}: optimization committed (${optimizationId}).`);
+            return optimizationId;
         } catch (err) {
             await runner.rollbackTransaction();
             throw err;

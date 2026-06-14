@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 
-const QUEUE_NAME = 'warehouse-optimization';
+export const QUEUE_NAME = 'warehouse-optimization';
 
 export interface PgmqMessage {
     msg_id: bigint;
@@ -39,12 +39,24 @@ export class QueueService {
     }
 
     /**
-     * Sends a single message to the queue with the warehouse ID and run date.
+     * Sends a single nightly message to the queue (warehouse ID + run date).
      */
     async enqueue(warehouseId: string, runDate: string): Promise<void> {
         await this.dataSource.query(
             `SELECT pgmq.send($1, $2::jsonb)`,
             [QUEUE_NAME, JSON.stringify({ warehouseId, runDate })],
+        );
+    }
+
+    /**
+     * Sends an arbitrary payload onto the same queue. Used for on-demand runs,
+     * which carry `{ kind: 'on_demand', ... }` so the consumer can tell them
+     * apart from nightly `{ warehouseId, runDate }` messages.
+     */
+    async enqueuePayload(payload: Record<string, unknown>): Promise<void> {
+        await this.dataSource.query(
+            `SELECT pgmq.send($1, $2::jsonb)`,
+            [QUEUE_NAME, JSON.stringify(payload)],
         );
     }
 

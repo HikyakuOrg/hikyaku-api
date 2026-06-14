@@ -18,6 +18,7 @@ import { ConnectModule } from './connect/connect.module';
 import { CustomersModule } from './customers/customers.module';
 import { ServicesModule } from './services/services.module';
 import { RoutingModule } from './routing/routing.module';
+import { OptimisationModule } from './optimisation/optimisation.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { RoutingModule } from './routing/routing.module';
     CustomersModule,
     ServicesModule,
     RoutingModule,
+    OptimisationModule,
   ],
   controllers: [],
   providers: [],

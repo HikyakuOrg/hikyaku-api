@@ -4,6 +4,7 @@ import { TasksService } from './tasks.service';
 import { DatabaseService } from 'src/database/database.service';
 import { VroomService } from 'src/vroom/vroom.service';
 import { SchedulerRun } from 'src/entities/scheduler-run.entity';
+import { OptimisationRun } from 'src/entities/optimisation-run.entity';
 import { QueueService } from './queue.service';
 
 type MockRunner = {
@@ -88,6 +89,7 @@ describe('TasksService', () => {
             insertOptimisedRoutes: jest.fn().mockResolvedValue(undefined),
         };
         vroomService = { solve: jest.fn() };
+        const optimisationRunRepo = { update: jest.fn().mockResolvedValue(undefined) };
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
@@ -97,6 +99,7 @@ describe('TasksService', () => {
                     useValue: { query: dsQuery, createQueryBuilder: jest.fn(() => claimQb) },
                 },
                 { provide: getRepositoryToken(SchedulerRun), useValue: schedulerRunRepo },
+                { provide: getRepositoryToken(OptimisationRun), useValue: optimisationRunRepo },
                 { provide: DatabaseService, useValue: dbService },
                 { provide: VroomService, useValue: vroomService },
                 { provide: QueueService, useValue: queueService },

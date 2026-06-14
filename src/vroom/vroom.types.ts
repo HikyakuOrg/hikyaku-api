@@ -13,6 +13,11 @@ export interface VroomJob {
     amount?: number[];
     /** Priority 0–100 (default: 0). */
     priority?: number;
+    /**
+     * Hard delivery windows as [start, end] epoch-second pairs. Unused for now
+     * (deadlines are modelled as priority); kept for a future enhancement.
+     */
+    time_windows?: [number, number][];
 }
 
 /**
@@ -31,6 +36,16 @@ export interface VroomVehicle {
     /** [lon, lat] end coordinates. */
     end?: number[];
     capacity?: number[];
+    /**
+     * Earliest/latest the vehicle may operate, as [start, end] epoch seconds.
+     * Used to encode the dispatcher "set off time": start = the vehicle's
+     * earliest departure (override, or computed return/entry + 30 min).
+     *
+     * IMPORTANT: when any time_window is present VROOM reports step.arrival as
+     * ABSOLUTE epoch seconds (without it, arrivals are relative-from-0).
+     * insertOptimisedRoutes normalises arrivals back to relative seconds.
+     */
+    time_window?: [number, number];
 }
 
 export interface VroomRequest {

@@ -16,4 +16,7 @@ export class VrpOptimization {
 
     @Column({ type: 'jsonb' })
     response: object;
+
+    @Column({ name: 'organisation_id', type: 'uuid', nullable: true })
+    organisationId: string | null;
 }
