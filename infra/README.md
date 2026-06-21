@@ -15,20 +15,11 @@ Both projects attach to an **external** Docker network, `hikyaku-net`. Docker's
 embedded DNS resolves services by name across projects, so `hikyaku` reaches the
 spatial services as `http://valhalla:8002` etc. — no host ports, no IPs.
 
-```
-                         internet
-                            │  (only via Cloudflare tunnel → hikyaku)
-                            ▼
-   ┌─────────────────────────────────────── hikyaku-net (bridge) ──┐
-   │                                                                │
-   │   hikyaku ──▶ valhalla:8002 ──▶ vroom:3000 ──▶ photon:2322     │
-   │   (hikyaku-api)            (hikyaku-spatial, no published ports)│
-   └────────────────────────────────────────────────────────────────┘
-```
-
 The spatial services publish **no** host ports, so they are reachable only by
 containers on `hikyaku-net` — not from localhost, the LAN, or the internet.
 See [Optional: LAN / tailnet access](#optional-lan--tailnet-access) to change that.
+
+![architecture](hikyaku-architecture.png)
 
 ## One-time setup
 
