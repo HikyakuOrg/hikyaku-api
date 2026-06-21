@@ -1,0 +1,37 @@
+name: hikyaku-spatial
+services:
+  valhalla:
+    image: ghcr.io/valhalla/valhalla-scripted@sha256:df75f78840285d1944325b037a3f658355f3e56344543eb08eefd6642d4bbb12
+    container_name: valhalla
+    volumes:
+      - ./valhalla_tiles:/custom_files
+    environment:
+    # Depending on disk space, you might not want to download planet files, but only specific regions. See: https://github.com/valhalla/valhalla/blob/master/docker/README.md
+      - tile_urls=https://download.geofabrik.de/australia-oceania-latest.osm.pbf
+      - build_elevation=true
+      - build_admins=true
+      - build_time_zones=true
+      - force_rebuild=false
+    networks: [hikyaku-net]
+    restart: unless-stopped
+  vroom:
+    image: ghcr.io/vroom-project/vroom-docker:v1.15.0
+    container_name: vroom
+    environment:
+      - VROOM_ROUTER=valhalla
+    volumes:
+      - ./vroom-conf/:/conf
+    networks: [hikyaku-net]
+    restart: unless-stopped
+  photon:
+    image: alpine/java:22
+    command: java -Xmx4G -jar photon-1.1.0.jar serve -cors-any -listen-ip 0.0.0.0 -listen-port 2322
+    working_dir: /app
+    volumes:
+      - ./photon:/app  
+    networks: [hikyaku-net]
+    restart: unless-stopped
+
+networks:
+  hikyaku-net:
+    external: true

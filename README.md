@@ -1,7 +1,6 @@
-<p align="center">
-  
-</p>
 
+
+Refer to `infra` folder for setting up spatial services using Docker.
 
 ## Project setup
 

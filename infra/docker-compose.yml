@@ -1,0 +1,23 @@
+name: hikyaku-api
+
+services:
+  hikyaku:
+    image: ghcr.io/hikyakuorg/hikyaku-api:main
+    container_name: hikyaku
+    env_file:
+      - ./.env.prod
+    networks: [hikyaku-net]
+    restart: unless-stopped
+
+# In production cloudflare tunnel will be used
+  # cloudflare_tunnel:
+  #   image: cloudflare/cloudflared
+  #   restart: unless-stopped
+  #   command: tunnel run
+  #   environment:
+  #     - TUNNEL_TOKEN=xxxxxxx
+  #   networks: [hikyaku-net]
+
+networks:
+  hikyaku-net:
+    external: true
