@@ -1,6 +1,7 @@
 
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { dataSourceOptions } from './database/data-source';
 import { SupabaseModule } from './supabase/supabase.module';
 import { GeocodeModule } from './geocode/geocode.module';
 import { DatabaseModule } from './database/database.module';
@@ -28,9 +29,11 @@ import { OptimisationModule } from './optimisation/optimisation.module';
     SupabaseModule,
     ScheduleModule.forRoot(),
     TasksModule,
+    // Schema is Supabase-owned: synchronize stays off and migrations are NOT run
+    // on boot (both enforced in dataSourceOptions). autoLoadEntities keeps Nest's
+    // existing per-module entity discovery. See src/database/data-source.ts.
     TypeOrmModule.forRoot({
-      type: 'postgres',
-      url: process.env.DB_URL,
+      ...dataSourceOptions,
       autoLoadEntities: true,
     }),
     GeocodeModule,
