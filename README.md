@@ -1,6 +1,13 @@
 
 
-Refer to `infra` folder for setting up spatial services using Docker.
+Refer to `infra` folder for setting up spatial services using Docker. See `.env.example` for environment variables. 
+
+Currently required stack:
+- Supabase
+- Valhalla
+- VROOM
+- Stripe
+- SMTP service
 
 ## Project setup
 

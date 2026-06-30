@@ -26,4 +26,6 @@ COPY --from=builder /app/dist ./dist
 ENV NODE_ENV=production
 EXPOSE 3002
 
-CMD ["node", "dist/main"]
+# start:prod runs pending migrations (migration:run:prod, over DB_MIGRATION_URL)
+# then boots the app — so a deploy never serves against a stale schema.
+CMD ["pnpm", "run", "start:prod"]
