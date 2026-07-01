@@ -4,3 +4,4 @@ INSERT INTO "public"."app_roles" ("id", "name") VALUES (1, 'Manager'), (2, 'Driv
 
 INSERT INTO "public"."vehicle_type" ("id", "vehicle_type", "vehicle_description", "ors_vehicle_type", "valhalla_vehicle_type") VALUES ('1264196a-b209-4087-a252-33e54e94cc46', 'Truck', 'Heavy freight vehicle', 'driving-hgv', 'truck'), ('360e8c6d-2d63-4032-9fad-221938c7395b', 'Motorbike', 'Small parcel delivery', 'driving-car', 'motor_scooter'), ('606da466-3b9e-4ae3-9ba9-5e4069a3543e', 'Van', 'Standard delivery vehicle', 'driving-car', 'auto'), ('eda5ce0d-e418-4950-90b5-16b93dc678e0', 'Bicycle', 'Bicycle', 'cycling-regular', 'bicycle');
 
+INSERT INTO "public"."package_status" ("id", "status", "enums") VALUES (1, 'Delivered', 'DELIVERED'), (2, 'Failed', 'FAILED'), (3, 'Pending', 'PENDING'), (4, 'Assigned', 'ASSIGNED'), (5, 'In Transit', 'IN_TRANSIT');
