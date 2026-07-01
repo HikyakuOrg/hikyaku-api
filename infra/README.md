@@ -23,15 +23,13 @@ See [Optional: LAN / tailnet access](#optional-lan--tailnet-access) to change th
 
 ## One-time setup
 
-1. **Create the shared network** (neither compose file creates it — both declare
-   it `external`):
+1. **Create the shared network**:
 
    ```bash
    docker network create hikyaku-net
    ```
 
-2. **Provide the files the compose stacks expect** (none are committed — see
-   `.gitignore`):
+2. **Provide the files the compose stacks expect**:
 
    | Path | Used by | Notes |
    |------|---------|-------|
@@ -48,12 +46,8 @@ names; they resolve over `hikyaku-net`:
 ```dotenv
 VALHALLA_URL=http://valhalla:8002
 VROOM_URL=http://vroom:3000
-PELIAS_BASE_URL=http://photon:2322
+PHOTON_URL=http://photon:2322
 ```
-
-> The geocode proxy is written against the Pelias API but `photon` serves
-> Photon's paths (`/api`, `/reverse`) — confirm your callers use Photon paths,
-> or you'll get 404s unrelated to this setup.
 
 ## Running
 
@@ -64,9 +58,6 @@ docker compose -f spatial-docker-compose.yml up -d
 # api stack
 docker compose up -d
 ```
-
-Tear down with the matching `down` commands. The network must exist before
-either `up`; bring the spatial stack up first so the API can resolve it.
 
 > **First boot is slow.** Valhalla downloads the Australia-Oceania PBF and builds
 > routing tiles before it answers — VROOM and the API will error until that
