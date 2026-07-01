@@ -38,10 +38,13 @@ See [Optional: LAN / tailnet access](#optional-lan--tailnet-access) to change th
    | `photon/photon-1.1.0.jar` + `photon/photon_data/` | `photon` | jar and prebuilt index (see Photon mount below) |
    | `valhalla_tiles/` | `valhalla` | created automatically on first boot |
 
+3. In `db` folder, 
+  - run `refresh_timezones` to populate the timezone table(Timezones may need to be refreshed depending on geopolitical changes).
+  - run `setup_db.sh` to create the database and seed data.
+
 ### `.env.prod` — wiring the API to the spatial services
 
-The API resolves each spatial service from an env var. Set them to the service
-names; they resolve over `hikyaku-net`:
+The API resolves each spatial service from an env var. Set them to the service names; they resolve over `hikyaku-net`:
 
 ```dotenv
 VALHALLA_URL=http://valhalla:8002
