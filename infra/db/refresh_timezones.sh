@@ -74,8 +74,6 @@ echo "Found GeoJSON: $GEOJSON_FILE"
 # ===== TRUNCATE TABLE =====
 echo "Truncating table ${DB_SCHEMA}.${DB_TABLE}..."
 
-export PGPASSWORD="$DB_PASSWORD"
-
 psql \
   -h "$DB_HOST" \
   -p "$DB_PORT" \

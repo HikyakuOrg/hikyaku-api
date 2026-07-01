@@ -39,6 +39,10 @@ See [Optional: LAN / tailnet access](#optional-lan--tailnet-access) to change th
    | `valhalla_tiles/` | `valhalla` | created automatically on first boot |
 
 3. In `db` folder, 
+  - run `docker compose up -d` to create the database and seed data.
+
+**OR**
+  
   - run `refresh_timezones` to populate the timezone table(Timezones may need to be refreshed depending on geopolitical changes).
   - run `setup_db.sh` to create the database and seed data.
 
@@ -68,20 +72,8 @@ docker compose up -d
 
 ## Recommendations
 
-### 1. Keep the Photon mount scoped
 
-`spatial-docker-compose.yml` mounts `./photon:/app` rather than `./:/app`, so the
-geocoder sees only its own jar and index — not the rest of `infra/`, which
-includes `.env.prod`. **Don't widen it back:** a `./:/app` mount would hand the
-API's Stripe/Supabase/DB secrets to the Photon container for no reason. The jar
-and index therefore live in `infra/photon/`:
-
-```
-infra/photon/photon-1.1.0.jar
-infra/photon/photon_data/      # prebuilt index — Photon won't serve without it
-```
-
-### 2. Optional: LAN / tailnet access
+### 1. LAN access
 
 To reach the spatial services from other machines, publish the port **bound to a
 specific interface** — the bind address decides how far it's exposed:
@@ -92,7 +84,7 @@ specific interface** — the bind address decides how far it's exposed:
 | `"127.0.0.1:8002:8002"` | the host only | no |
 | `"<host-LAN-IP>:8002:8002"` | your LAN | no |
 | `"<tailscale-IP>:8002:8002"` | your tailnet | no |
-| `"8002:8002"` (= `0.0.0.0`) | LAN **+ internet if host has a public IP** | ⚠️ maybe |
+| `"8002:8002"` (= `0.0.0.0`) | LAN **+ internet if host has a public IP** | maybe |
 
 Caveats:
 

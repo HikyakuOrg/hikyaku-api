@@ -1,0 +1,21 @@
+services:
+  setup-db:
+    image: alpine/curl
+    volumes:
+      - .:/work
+    working_dir: /work
+    command:
+        - /bin/sh
+        - -c
+        - |
+          apk add --no-cache bash unzip postgresql16-client gdal-tools gdal-driver-pg
+          chmod +x setup_db.sh refresh_timezones.sh
+          ./setup_db.sh
+          ./refresh_timezones.sh
+    environment:
+      DB_HOST: xxxxx.pooler.supabase.com
+      DB_PORT: 5432
+      DB_NAME: postgres
+      DB_USER: xxxxx
+      DB_PASSWORD: xxxxx
+
