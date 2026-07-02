@@ -1,8 +1,13 @@
-import { Injectable, HttpException } from '@nestjs/common';
+import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 
 /**
- * Proxy for the Pelias geocoder configured via PELIAS_BASE_URL /
- * PELIAS_API_KEY.
+ * Proxy for the Photon geocoder configured via PHOTON_URL.
+ *
+ * Photon needs no API key and serves autocomplete/forward search from the
+ * single `/api` endpoint and reverse geocoding from `/reverse`. `path` is a
+ * Photon path (e.g. `/api`, `/reverse`); `query` is passed through verbatim,
+ * so callers are responsible for using Photon's parameter names (`q`, `lat`,
+ * `lon`, …).
  */
 @Injectable()
 export class GeocodeService {
@@ -11,9 +16,16 @@ export class GeocodeService {
         query: Record<string, string | string[] | undefined>,
         authHeader?: string,
     ): Promise<unknown> {
+        const baseUrl = process.env.PHOTON_URL;
+        if (!baseUrl) {
+            throw new HttpException(
+                'Geocoder is not configured (PHOTON_URL is unset)',
+                HttpStatus.INTERNAL_SERVER_ERROR,
+            );
+        }
+
         const params = new URLSearchParams();
-        const enrichedQuery = { api_key: process.env.PELIAS_API_KEY ?? '', ...query };
-        for (const [key, value] of Object.entries(enrichedQuery)) {
+        for (const [key, value] of Object.entries(query)) {
             if (value === undefined || value === null) continue;
             if (Array.isArray(value)) {
                 value.forEach((v) => params.append(key, v));
@@ -22,7 +34,7 @@ export class GeocodeService {
             }
         }
         const qs = params.toString();
-        const url = `${process.env.PELIAS_BASE_URL ?? ''}${path}${qs ? `?${qs}` : ''}`;
+        const url = `${baseUrl}${path}${qs ? `?${qs}` : ''}`;
 
         const headers: Record<string, string> = {
             Accept: 'application/json, application/geo+json, */*',
