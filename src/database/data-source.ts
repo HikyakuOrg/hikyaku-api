@@ -33,7 +33,13 @@ export const dataSourceOptions: DataSourceOptions = {
   // App connection — unchanged from before (the running app keeps using DB_URL).
   url: process.env.DB_URL,
   migrations: [__dirname + '/migrations/*.{ts,js}'],
-  migrationsTableName: 'typeorm_migrations',
+  // Schema-qualified (not the top-level `schema` option) so ONLY the ledger
+  // table moves — the top-level option would silently default every entity
+  // without its own @Entity({schema}) into hikyaku_migrations too.
+  // Requires `CREATE SCHEMA IF NOT EXISTS "hikyaku_migrations"` to already
+  // exist in the target database (see infra/db/schema.sql) — TypeORM does
+  // not create the schema itself, only the table within it.
+  migrationsTableName: 'hikyaku_migrations.typeorm_migrations',
   synchronize: false,
   migrationsRun: false,
 };

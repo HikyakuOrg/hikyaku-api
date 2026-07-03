@@ -29,6 +29,15 @@ CREATE SCHEMA IF NOT EXISTS "tzdata";
 ALTER SCHEMA "tzdata" OWNER TO "postgres";
 
 
+-- hikyaku-api's TypeORM migration ledger. Kept out of "public" so it's not
+-- exposed through PostgREST; only the direct Postgres connection the CLI/app
+-- uses can see it.
+CREATE SCHEMA IF NOT EXISTS "hikyaku_migrations";
+
+
+ALTER SCHEMA "hikyaku_migrations" OWNER TO "postgres";
+
+
 CREATE EXTENSION IF NOT EXISTS "btree_gist" WITH SCHEMA "extensions";
 
 
