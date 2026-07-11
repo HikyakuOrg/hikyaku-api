@@ -8,11 +8,12 @@ import {
     Req,
     UseGuards,
 } from '@nestjs/common';
-import { ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBody, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
 import { RequirePermission } from 'src/auth/decorators/required-permission.decorator';
 import { OptimisationService } from './optimisation.service';
 import { RunOptimisationDto } from './dto/run-optimisation.dto';
+import { AdhocOptimisationDto } from './dto/adhoc-optimisation.dto';
 
 @ApiTags('optimisation')
 @Controller('api/v1/optimisation')
@@ -37,5 +38,20 @@ export class OptimisationController {
     @ApiResponse({ status: 200, description: 'Most recent run + next allowed time' })
     latest(@Req() req: Request & { organisationId: string }) {
         return this.optimisation.getLatest(req.organisationId);
+    }
+
+    @Post('adhoc')
+    @HttpCode(HttpStatus.CREATED)
+    @RequirePermission('shifts.assign')
+    @ApiBody({ type: AdhocOptimisationDto })
+    @ApiResponse({
+        status: 201,
+        description: 'Optimised route persisted; returns the vrp_optimization id.',
+    })
+    adhoc(
+        @Body() dto: AdhocOptimisationDto,
+        @Req() req: Request & { organisationId: string },
+    ) {
+        return this.optimisation.runAdhoc(req.organisationId, dto);
     }
 }

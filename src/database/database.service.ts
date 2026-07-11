@@ -18,13 +18,13 @@ import type {
 } from './database.types';
 
 /** Service time per delivery stop, in seconds (15 minutes). Hardcoded for now. */
-const TIME_PER_STOP = 900;
+export const TIME_PER_STOP = 900;
 
 /** Reload/turnaround buffer added after a vehicle returns, in seconds (30 min). */
 const SETOFF_BUFFER_SECONDS = 1800;
 
 /** Width of the vehicle operating window once it has set off, in seconds (12h). */
-const SHIFT_WINDOW_SECONDS = 12 * 60 * 60;
+export const SHIFT_WINDOW_SECONDS = 12 * 60 * 60;
 
 @Injectable()
 export class DatabaseService implements OnApplicationBootstrap {
@@ -594,6 +594,170 @@ export class DatabaseService implements OnApplicationBootstrap {
         }
 
         return optimizationId;
+    }
+
+    /**
+     * Persists an ad-hoc (mobile) optimisation result atomically inside `runner`.
+     *
+     * Unlike insertOptimisedRoutes this flow has NO packages: the jobs are raw
+     * customers picked by the mobile app, so there is nothing to assign. Every
+     * vrp_route_step is therefore written with package_id = null (the FK to
+     * package_assignment is nullable), and package_assignment /
+     * package_delivery_window / packages.optimisation_id are left untouched.
+     *
+     * The customer↔step mapping is not stored on the steps (there is no
+     * customer_id column); it lives in requestForDb.meta.customerByJob, which the
+     * caller embeds. `jobCustomerMap` is used here only to resolve unassigned job
+     * ids back to customer ids for the return value.
+     *
+     * Ad-hoc runs always carry a vehicle time_window, so VROOM reports
+     * step.arrival as ABSOLUTE epoch seconds; we normalise it back to
+     * relative-from-departure seconds (subtracting the route's start-step
+     * arrival), matching the stored convention used everywhere else.
+     *
+     * @param runner  Must already have an open transaction (beginTransaction).
+     */
+    async insertAdhocRoutes(
+        runner: QueryRunner,
+        requestForDb: object,
+        response: OptimizationResponse,
+        jobCustomerMap: Record<number, string>,
+        opts: { organisationId: string; scheduledStart: Date },
+    ): Promise<{
+        optimizationId: string;
+        routeId: string | null;
+        unassignedCustomerIds: string[];
+    }> {
+        // 1. vrp_optimization — raw request/response snapshot for auditability.
+        const optResult = await runner.manager.insert(VrpOptimization, {
+            provider: 'vroom',
+            request: requestForDb,
+            response,
+            organisationId: opts.organisationId,
+            scheduledStart: opts.scheduledStart,
+        });
+        const optimizationId: string = optResult.identifiers[0].id;
+
+        // 2. vrp_solution — summary stats from the VROOM response.
+        const summary = response.summary ?? {};
+        // computing_times is returned by VROOM but absent from the typed interface.
+        const computingTimes =
+            (summary as Record<string, unknown>)?.computing_times as
+            | { loading?: number; solving?: number; routing?: number }
+            | undefined;
+
+        const solResult = await runner.manager.insert(VrpSolution, {
+            optimizationId,
+            cost: summary.cost ?? null,
+            routesCount: summary.routes ?? null,
+            unassignedCount: summary.unassigned ?? null,
+            delivery: summary.delivery != null ? [summary.delivery] : null,
+            amount: (summary as Record<string, unknown>).amount as number[] ?? null,
+            pickup: summary.pickup != null ? [summary.pickup] : null,
+            setup: summary.setup ?? null,
+            service: summary.service ?? null,
+            duration: summary.duration ?? null,
+            waitingTime: summary.waiting_time ?? null,
+            priority: summary.priority ?? null,
+            loadingTime: computingTimes?.loading ?? 0,
+            solvingTime: computingTimes?.solving ?? 0,
+            routingTime: computingTimes?.routing ?? 0,
+        });
+        const solutionId: string = solResult.identifiers[0].id;
+
+        // 3. Single route (absent when every customer is unassigned).
+        let routeId: string | null = null;
+        const route = response.routes?.[0];
+        if (route) {
+            const routeExt = route as typeof route & {
+                amount?: number[];
+                setup?: number;
+                priority?: number;
+            };
+
+            const routeResult = await runner.manager.insert(VrpRoute, {
+                solutionId,
+                cost: route.cost ?? null,
+                delivery: route.delivery ?? null,
+                amount: routeExt.amount ?? null,
+                pickup: route.pickup ?? null,
+                setup: routeExt.setup ?? null,
+                service: route.service ?? null,
+                duration: route.duration ?? null,
+                waitingTime: route.waiting_time ?? null,
+                priority: routeExt.priority ?? null,
+            });
+            const insertedRouteId: string = routeResult.identifiers[0].id;
+            routeId = insertedRouteId;
+
+            // Arrivals are absolute epoch (time_window is always set for ad-hoc);
+            // the start step's arrival is the vehicle's departure. Subtract it to
+            // store relative-from-departure seconds.
+            const startStep = route.steps.find((s) => s.type === 'start');
+            const departureEpoch = startStep?.arrival ?? null;
+
+            const stepsPayload: StepInsertRow[] = [];
+            for (const [index, step] of route.steps.entries()) {
+                if (!step.location) continue;
+                const [lon, lat] = step.location;
+
+                const arrival =
+                    step.arrival == null
+                        ? null
+                        : departureEpoch != null
+                            ? step.arrival - departureEpoch
+                            : step.arrival;
+
+                stepsPayload.push({
+                    route_id: insertedRouteId,
+                    step_index: index,
+                    type: step.type,
+                    solution_id: solutionId,
+                    package_id: null, // no packages in the ad-hoc flow
+                    lon,
+                    lat,
+                    arrival,
+                    duration: step.duration ?? null,
+                    setup: step.setup ?? null,
+                    service: step.service ?? null,
+                    waiting_time: step.waiting_time ?? null,
+                    load:
+                        step.load != null
+                            ? Array.isArray(step.load)
+                                ? (step.load as number[])
+                                : [step.load as unknown as number]
+                            : null,
+                });
+            }
+
+            if (stepsPayload.length > 0) {
+                await this.batchInsertRouteSteps(runner, stepsPayload);
+            }
+        }
+
+        // 4. vrp_unassigned_job — customers VROOM could not fit.
+        const unassignedCustomerIds: string[] = [];
+        for (const u of response.unassigned ?? []) {
+            const customerId = jobCustomerMap[u.id];
+            if (customerId) unassignedCustomerIds.push(customerId);
+
+            const loc = u.location;
+            if (loc && loc.length === 2) {
+                await runner.query(
+                    `INSERT INTO vrp_unassigned_job (solution_id, job_id, location, type)
+                     VALUES ($1, $2, ST_SetSRID(ST_Point($3, $4), 4326), $5)`,
+                    [solutionId, u.id, loc[0], loc[1], 'job'],
+                );
+            } else {
+                await runner.query(
+                    `INSERT INTO vrp_unassigned_job (solution_id, job_id, type)
+                     VALUES ($1, $2, $3)`,
+                    [solutionId, u.id, 'job'],
+                );
+            }
+        }
+
+        return { optimizationId, routeId, unassignedCustomerIds };
     }
 
     // ---------------------------------------------------------------------------

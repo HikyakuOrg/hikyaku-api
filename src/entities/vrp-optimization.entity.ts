@@ -19,4 +19,7 @@ export class VrpOptimization {
 
     @Column({ name: 'organisation_id', type: 'uuid', nullable: true })
     organisationId: string | null;
+
+    @Column({ name: 'scheduled_start', type: 'timestamptz', nullable: true })
+    scheduledStart: Date | null;
 }
