@@ -48,9 +48,26 @@ export interface VroomVehicle {
     time_window?: [number, number];
 }
 
+/**
+ * Per-request overrides for vroom-express CLI flags. Honoured only when the
+ * server was started with `override: true` in vroom-conf/config.yml.
+ */
+export interface VroomOptions {
+    /** Plan mode (-c). MUST be false to run the solver; true only checks a
+     *  pre-supplied plan and leaves every job unassigned. */
+    c?: boolean;
+    /** Add detailed route geometry (-g). */
+    g?: boolean;
+    /** Exploration level 0..5 (-x). */
+    x?: number;
+    /** Threads (-t). */
+    t?: number;
+}
+
 export interface VroomRequest {
     jobs: VroomJob[];
     vehicles: VroomVehicle[];
+    options?: VroomOptions;
 }
 
 // ─── VROOM response ───────────────────────────────────────────────────────────

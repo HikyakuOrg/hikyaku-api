@@ -29,7 +29,7 @@ describe('VroomService', () => {
         }
     });
 
-    it('POSTs the request as JSON to VROOM_URL', async () => {
+    it('POSTs the request as JSON to VROOM_URL, forcing solver (plan mode off)', async () => {
         mockFetch.mockResolvedValueOnce({
             ok: true,
             json: () => Promise.resolve({ code: 0, routes: [] }),
@@ -40,8 +40,21 @@ describe('VroomService', () => {
         expect(mockFetch).toHaveBeenCalledWith('http://vroom.test:3000', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(request),
+            body: JSON.stringify({ ...request, options: { c: false } }),
         });
+    });
+
+    it('preserves caller-supplied options while keeping the solver on', async () => {
+        mockFetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ code: 0, routes: [] }),
+        });
+
+        await service.solve({ ...request, options: { g: true } });
+
+        expect(mockFetch.mock.calls[0][1].body).toBe(
+            JSON.stringify({ ...request, options: { c: false, g: true } }),
+        );
     });
 
     it('falls back to localhost when VROOM_URL is unset', async () => {
