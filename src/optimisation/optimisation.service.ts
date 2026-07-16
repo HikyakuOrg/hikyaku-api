@@ -1,5 +1,6 @@
 import {
     BadRequestException,
+    ConflictException,
     HttpException,
     HttpStatus,
     Injectable,
@@ -41,17 +42,22 @@ export class OptimisationService {
 
     /**
      * Synchronous ad-hoc optimisation for the mobile app. Derives coordinates
-     * from the warehouse (starting_location_id) and the explicit customer list,
-     * builds a single-vehicle VROOM request, solves it, persists the result into
-     * the vrp_* tables, and returns the vrp_optimization id.
+     * from the warehouse (starting_location_id) and the recipient of each
+     * requested package, builds a single-vehicle VROOM request, solves it,
+     * persists the result into the vrp_* tables, and returns the
+     * vrp_optimization id.
      *
-     * All lookups are org-scoped; unknown/other-org warehouse or customers yield
-     * a 400 so cross-org rows are never leaked.
+     * The packages already exist — the mobile wizard creates or picks them
+     * before calling this — so this only loads, validates and claims them.
+     *
+     * All lookups are org-scoped; an unknown/other-org warehouse or package
+     * yields a 400 so cross-org rows are never leaked. A package already
+     * claimed by another optimisation yields a 409.
      */
     async runAdhoc(
         organisationId: string,
         dto: AdhocOptimisationDto,
-    ): Promise<{ id: string; routeId: string | null; unassignedCustomerIds: string[] }> {
+    ): Promise<{ id: string; routeId: string | null; unassignedPackageIds: string[] }> {
         // 1. Warehouse (org-scoped) → start/end coordinates.
         const whRows: { lon: number | null; lat: number | null }[] =
             await this.dataSource.query(
@@ -77,38 +83,90 @@ export class OptimisationService {
         }
         const profile = orsProfileToValhallaCosting(vtRows[0].ors_vehicle_type);
 
-        // 3. Customers (org-scoped). Dedupe, preserve order, require all found.
-        const requestedIds = Array.from(new Set(dto.customers));
-        const custRows: { id: string; lon: number | null; lat: number | null }[] =
-            await this.dataSource.query(
-                `SELECT id,
-                        ST_X(customer_location::geometry) AS lon,
-                        ST_Y(customer_location::geometry) AS lat
-                 FROM customer
-                 WHERE id = ANY($1::uuid[]) AND organisation_id = $2`,
-                [requestedIds, organisationId],
+        // 3. Packages. Dedupe, preserve order, validate the whole batch up front
+        //    so the caller gets one clear error rather than a partial failure.
+        //
+        //    packages has no organisation_id column, so the org scope is derived
+        //    from the owning warehouse — combined with the warehouse_id check
+        //    below, a package can only pass if it sits at a warehouse this org
+        //    owns. Rows outside the org simply do not come back, and are
+        //    reported as unknown rather than "wrong warehouse", so this never
+        //    discloses the existence of another org's package.
+        const requestedIds = Array.from(new Set(dto.packages));
+        const pkgRows: {
+            id: string;
+            warehouse_id: string | null;
+            optimisation_id: string | null;
+            lon: number | null;
+            lat: number | null;
+        }[] = await this.dataSource.query(
+            `SELECT p.id,
+                    p.warehouse_id,
+                    p.optimisation_id,
+                    ST_X(c.customer_location::geometry) AS lon,
+                    ST_Y(c.customer_location::geometry) AS lat
+             FROM packages p
+             JOIN warehouse w ON w.id = p.warehouse_id
+             LEFT JOIN customer c ON c.id = p.to_customer
+             WHERE p.id = ANY($1::uuid[]) AND w.organisation_id = $2`,
+            [requestedIds, organisationId],
+        );
+        const packagesById = new Map(pkgRows.map((p) => [p.id, p]));
+
+        const unknown: string[] = [];
+        const wrongWarehouse: string[] = [];
+        const unlocatable: string[] = [];
+        const alreadyClaimed: string[] = [];
+        for (const id of requestedIds) {
+            const pkg = packagesById.get(id);
+            if (!pkg) {
+                unknown.push(id);
+            } else if (pkg.warehouse_id !== dto.startingLocationId) {
+                // A shift is one vehicle out of one depot; a package sitting at a
+                // different warehouse cannot be on this route.
+                wrongWarehouse.push(id);
+            } else if (pkg.lon == null || pkg.lat == null) {
+                unlocatable.push(id);
+            } else if (pkg.optimisation_id !== null) {
+                alreadyClaimed.push(id);
+            }
+        }
+
+        // 400 (bad input) takes precedence over 409 (live contention).
+        const problems: string[] = [];
+        if (unknown.length > 0) {
+            problems.push(`unknown package id(s): ${unknown.join(', ')}`);
+        }
+        if (wrongWarehouse.length > 0) {
+            problems.push(
+                `package(s) not at warehouse ${dto.startingLocationId}: ${wrongWarehouse.join(', ')}`,
             );
-        const coordsById = new Map(custRows.map((c) => [c.id, c]));
-        const missing = requestedIds.filter((id) => {
-            const c = coordsById.get(id);
-            return !c || c.lon == null || c.lat == null;
-        });
-        if (missing.length > 0) {
-            throw new BadRequestException(
-                `Unknown or unlocatable customer id(s): ${missing.join(', ')}`,
+        }
+        if (unlocatable.length > 0) {
+            problems.push(
+                `package(s) whose recipient has no location: ${unlocatable.join(', ')}`,
+            );
+        }
+        if (problems.length > 0) {
+            throw new BadRequestException(problems.join('; '));
+        }
+        if (alreadyClaimed.length > 0) {
+            throw new ConflictException(
+                `Package(s) already assigned to another optimisation: ${alreadyClaimed.join(', ')}`,
             );
         }
 
-        // 4. Build the single-vehicle VROOM request. No amounts/capacity → the
-        //    only constraint is the vehicle time_window, so every customer is
-        //    eligible; VROOM returns the optimal visiting order.
+        // 4. Build the single-vehicle VROOM request, one job per package at its
+        //    recipient's location. No amounts/capacity → the only constraint is
+        //    the vehicle time_window, so every package is eligible; VROOM returns
+        //    the optimal visiting order.
         const jobs: VroomJob[] = [];
-        const jobCustomerMap: Record<number, string> = {};
+        const jobPackageMap: Record<number, string> = {};
         requestedIds.forEach((id, i) => {
-            const c = coordsById.get(id)!;
+            const pkg = packagesById.get(id)!;
             const jobId = i + 1;
-            jobs.push({ id: jobId, service: TIME_PER_STOP, location: [c.lon!, c.lat!] });
-            jobCustomerMap[jobId] = id;
+            jobs.push({ id: jobId, service: TIME_PER_STOP, location: [pkg.lon!, pkg.lat!] });
+            jobPackageMap[jobId] = id;
         });
 
         const startEpoch = Math.floor(new Date(dto.startDateTime).getTime() / 1000);
@@ -125,12 +183,13 @@ export class OptimisationService {
         // 5. Solve (VROOM routes via Valhalla).
         const response = await this.vroom.solve(vroomRequest);
 
-        // 6. Persist. Store a richer request so the customer↔job mapping is
-        //    recoverable from vrp_optimization.request (steps carry no customer id).
+        // 6. Persist. Store a richer request so the package↔job mapping is
+        //    recoverable from vrp_optimization.request (ad-hoc steps carry no
+        //    package_id — see insertAdhocRoutes).
         const requestForDb = {
             ...vroomRequest,
             meta: {
-                customerByJob: jobCustomerMap,
+                packageByJob: jobPackageMap,
                 startDateTime: dto.startDateTime,
                 startingLocationId: dto.startingLocationId,
                 vehicleType: dto.vehicleType,
@@ -143,7 +202,7 @@ export class OptimisationService {
                 runner,
                 requestForDb,
                 response,
-                jobCustomerMap,
+                jobPackageMap,
                 { organisationId, scheduledStart: new Date(dto.startDateTime) },
             );
             await runner.commitTransaction();
@@ -153,7 +212,7 @@ export class OptimisationService {
             return {
                 id: result.optimizationId,
                 routeId: result.routeId,
-                unassignedCustomerIds: result.unassignedCustomerIds,
+                unassignedPackageIds: result.unassignedPackageIds,
             };
         } catch (err) {
             await runner.rollbackTransaction();

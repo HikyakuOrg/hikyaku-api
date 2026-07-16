@@ -46,7 +46,19 @@ export class OptimisationController {
     @ApiBody({ type: AdhocOptimisationDto })
     @ApiResponse({
         status: 201,
-        description: 'Optimised route persisted; returns the vrp_optimization id.',
+        description:
+            'Optimised route persisted and the routed packages claimed; returns the ' +
+            'vrp_optimization id plus any packages VROOM could not fit.',
+    })
+    @ApiResponse({
+        status: 400,
+        description:
+            'Unknown warehouse/vehicle type, or a package that is unknown, not at ' +
+            'startingLocationId, or whose recipient has no location.',
+    })
+    @ApiResponse({
+        status: 409,
+        description: 'A package is already assigned to another optimisation.',
     })
     adhoc(
         @Body() dto: AdhocOptimisationDto,

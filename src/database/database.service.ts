@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import {
+    ConflictException,
+    Injectable,
+    Logger,
+    OnApplicationBootstrap,
+} from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, QueryRunner, Repository } from 'typeorm';
 import { Package } from 'src/entities/package.entity';
@@ -599,16 +604,21 @@ export class DatabaseService implements OnApplicationBootstrap {
     /**
      * Persists an ad-hoc (mobile) optimisation result atomically inside `runner`.
      *
-     * Unlike insertOptimisedRoutes this flow has NO packages: the jobs are raw
-     * customers picked by the mobile app, so there is nothing to assign. Every
-     * vrp_route_step is therefore written with package_id = null (the FK to
-     * package_assignment is nullable), and package_assignment /
-     * package_delivery_window / packages.optimisation_id are left untouched.
+     * The jobs are packages the mobile app already created and picked, so — like
+     * insertOptimisedRoutes — the routed packages are claimed by stamping
+     * packages.optimisation_id. Unlike that flow there is no driver or vehicle
+     * (the request only carries a vehicle_type), so no package_assignment row can
+     * be written. vrp_route_step.package_id FKs to package_assignment, so every
+     * step is still written with package_id = null and the package↔step mapping
+     * lives in requestForDb.meta.packageByJob, which the caller embeds.
+     * package_delivery_window is likewise left untouched.
      *
-     * The customer↔step mapping is not stored on the steps (there is no
-     * customer_id column); it lives in requestForDb.meta.customerByJob, which the
-     * caller embeds. `jobCustomerMap` is used here only to resolve unassigned job
-     * ids back to customer ids for the return value.
+     * `jobPackageMap` resolves VROOM job ids back to package ids — both to report
+     * unassigned packages and to determine which packages to claim.
+     *
+     * Only packages VROOM actually routed are claimed. Ones it could not fit stay
+     * optimisation_id IS NULL so they remain pickable for another shift (there is
+     * no detach endpoint yet, so claiming them would strand them).
      *
      * Ad-hoc runs always carry a vehicle time_window, so VROOM reports
      * step.arrival as ABSOLUTE epoch seconds; we normalise it back to
@@ -616,17 +626,18 @@ export class DatabaseService implements OnApplicationBootstrap {
      * arrival), matching the stored convention used everywhere else.
      *
      * @param runner  Must already have an open transaction (beginTransaction).
+     * @throws ConflictException if a package was claimed concurrently.
      */
     async insertAdhocRoutes(
         runner: QueryRunner,
         requestForDb: object,
         response: OptimizationResponse,
-        jobCustomerMap: Record<number, string>,
+        jobPackageMap: Record<number, string>,
         opts: { organisationId: string; scheduledStart: Date },
     ): Promise<{
         optimizationId: string;
         routeId: string | null;
-        unassignedCustomerIds: string[];
+        unassignedPackageIds: string[];
     }> {
         // 1. vrp_optimization — raw request/response snapshot for auditability.
         const optResult = await runner.manager.insert(VrpOptimization, {
@@ -665,8 +676,9 @@ export class DatabaseService implements OnApplicationBootstrap {
         });
         const solutionId: string = solResult.identifiers[0].id;
 
-        // 3. Single route (absent when every customer is unassigned).
+        // 3. Single route (absent when every package is unassigned).
         let routeId: string | null = null;
+        const routedPackageIds = new Set<string>();
         const route = response.routes?.[0];
         if (route) {
             const routeExt = route as typeof route & {
@@ -701,6 +713,16 @@ export class DatabaseService implements OnApplicationBootstrap {
                 if (!step.location) continue;
                 const [lon, lat] = step.location;
 
+                if (step.type === 'job') {
+                    const packageId = step.id != null ? jobPackageMap[step.id] : undefined;
+                    if (!packageId) {
+                        throw new Error(
+                            `Missing package mapping for job id ${step.id ?? '(unknown)'}`,
+                        );
+                    }
+                    routedPackageIds.add(packageId);
+                }
+
                 const arrival =
                     step.arrival == null
                         ? null
@@ -713,7 +735,9 @@ export class DatabaseService implements OnApplicationBootstrap {
                     step_index: index,
                     type: step.type,
                     solution_id: solutionId,
-                    package_id: null, // no packages in the ad-hoc flow
+                    // FKs package_assignment, which needs a driver + vehicle the
+                    // ad-hoc flow does not have; mapping lives in request.meta.
+                    package_id: null,
                     lon,
                     lat,
                     arrival,
@@ -735,11 +759,11 @@ export class DatabaseService implements OnApplicationBootstrap {
             }
         }
 
-        // 4. vrp_unassigned_job — customers VROOM could not fit.
-        const unassignedCustomerIds: string[] = [];
+        // 4. vrp_unassigned_job — packages VROOM could not fit.
+        const unassignedPackageIds: string[] = [];
         for (const u of response.unassigned ?? []) {
-            const customerId = jobCustomerMap[u.id];
-            if (customerId) unassignedCustomerIds.push(customerId);
+            const packageId = jobPackageMap[u.id];
+            if (packageId) unassignedPackageIds.push(packageId);
 
             const loc = u.location;
             if (loc && loc.length === 2) {
@@ -757,7 +781,29 @@ export class DatabaseService implements OnApplicationBootstrap {
             }
         }
 
-        return { optimizationId, routeId, unassignedCustomerIds };
+        // 5. Claim the routed packages. The optimisation_id IS NULL guard makes
+        //    this the point of truth rather than the caller's earlier validation:
+        //    if another request claimed one in between, fewer rows come back and
+        //    we abort so the caller's transaction rolls the whole run back.
+        if (routedPackageIds.size > 0) {
+            const ids = Array.from(routedPackageIds);
+            const claimed: { id: string }[] = await runner.query(
+                `UPDATE packages
+                    SET optimisation_id = $1
+                  WHERE id = ANY($2::uuid[])
+                    AND optimisation_id IS NULL
+                RETURNING id`,
+                [optimizationId, ids],
+            );
+            if (claimed.length < ids.length) {
+                const lost = ids.filter((id) => !claimed.some((c) => c.id === id));
+                throw new ConflictException(
+                    `Package(s) claimed by another optimisation while this one was solving: ${lost.join(', ')}`,
+                );
+            }
+        }
+
+        return { optimizationId, routeId, unassignedPackageIds };
     }
 
     // ---------------------------------------------------------------------------
