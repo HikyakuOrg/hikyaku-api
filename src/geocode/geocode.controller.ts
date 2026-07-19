@@ -3,14 +3,12 @@ import {
     Controller,
     Get,
     Query,
-    Headers,
     UseGuards,
 } from '@nestjs/common';
 import {
-    ApiHeader,
+    ApiBearerAuth,
     ApiOkResponse,
     ApiQuery,
-    ApiSecurity,
     ApiTags,
     ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -24,22 +22,7 @@ import { GeoJsonFeatureCollectionDto } from './dto/geo-json.dto';
  * object to Photon verbatim — a validated DTO would strip any param not listed
  * here, which would silently break Photon features as they are adopted.
  */
-/**
- * Declared explicitly so the generated param is optional. The `@Headers()`
- * decorator on the handler would otherwise emit a required `authorization`
- * header, which reads as this endpoint's authentication — it is not; that is
- * `x-whendan`. This header is only a pass-through to the upstream geocoder.
- */
-const PhotonAuthPassthroughHeader = ApiHeader({
-    name: 'authorization',
-    required: false,
-    description:
-        'Optional; forwarded verbatim to the upstream geocoder. This is NOT this ' +
-        'endpoint`s own authentication — that is the `x-whendan` header.',
-});
-
 const ForwardSearchQueryParams = [
-    PhotonAuthPassthroughHeader,
     ApiQuery({
         name: 'text',
         required: true,
@@ -86,9 +69,9 @@ function toPhotonReverseQuery(
 }
 
 @ApiTags('geocode')
-@ApiSecurity('whendanToken')
+@ApiBearerAuth('bearer')
 @ApiUnauthorizedResponse({
-    description: 'Missing or invalid `x-whendan` header.',
+    description: 'Missing or invalid `Authorization` header.',
 })
 @UseGuards(AuthGuard)
 @Controller('geocode')
@@ -102,11 +85,8 @@ export class GeocodeController {
     @Get('search')
     @applyDecorators(...ForwardSearchQueryParams)
     @ApiOkResponse({ type: GeoJsonFeatureCollectionDto })
-    search(
-        @Query() query: Record<string, string>,
-        @Headers('authorization') auth?: string,
-    ): Promise<unknown> {
-        return this.geocodeService.get('/api', toPhotonSearchQuery(query), auth);
+    search(@Query() query: Record<string, string>): Promise<unknown> {
+        return this.geocodeService.get('/api', toPhotonSearchQuery(query));
     }
 
     /**
@@ -116,11 +96,8 @@ export class GeocodeController {
     @Get('autocomplete')
     @applyDecorators(...ForwardSearchQueryParams)
     @ApiOkResponse({ type: GeoJsonFeatureCollectionDto })
-    autocomplete(
-        @Query() query: Record<string, string>,
-        @Headers('authorization') auth?: string,
-    ): Promise<unknown> {
-        return this.geocodeService.get('/api', toPhotonSearchQuery(query), auth);
+    autocomplete(@Query() query: Record<string, string>): Promise<unknown> {
+        return this.geocodeService.get('/api', toPhotonSearchQuery(query));
     }
 
     /**
@@ -128,7 +105,6 @@ export class GeocodeController {
      * Accepts `point.lat`/`point.lon` (or native `lat`/`lon`).
      */
     @Get('reverse')
-    @PhotonAuthPassthroughHeader
     @ApiQuery({
         name: 'lat',
         required: true,
@@ -162,10 +138,7 @@ export class GeocodeController {
         description: 'Maximum number of features to return.',
     })
     @ApiOkResponse({ type: GeoJsonFeatureCollectionDto })
-    reverse(
-        @Query() query: Record<string, string>,
-        @Headers('authorization') auth?: string,
-    ): Promise<unknown> {
-        return this.geocodeService.get('/reverse', toPhotonReverseQuery(query), auth);
+    reverse(@Query() query: Record<string, string>): Promise<unknown> {
+        return this.geocodeService.get('/reverse', toPhotonReverseQuery(query));
     }
 }

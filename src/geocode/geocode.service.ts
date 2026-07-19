@@ -14,7 +14,6 @@ export class GeocodeService {
     async get(
         path: string,
         query: Record<string, string | string[] | undefined>,
-        authHeader?: string,
     ): Promise<unknown> {
         const baseUrl = process.env.PHOTON_URL;
         if (!baseUrl) {
@@ -39,9 +38,6 @@ export class GeocodeService {
         const headers: Record<string, string> = {
             Accept: 'application/json, application/geo+json, */*',
         };
-        if (authHeader) {
-            headers['Authorization'] = authHeader;
-        }
 
         const response = await fetch(url, { method: 'GET', headers });
         const data: unknown = await response.json();

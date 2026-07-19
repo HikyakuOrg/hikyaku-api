@@ -19,22 +19,13 @@ async function bootstrap() {
     .setTitle('Whendan Logistics API')
     .setDescription('The Whendan Logistics API description')
     .setVersion('1.0')
-    // Two distinct schemes are in play. PermissionGuard-protected endpoints read
-    // a standard `Authorization: Bearer <jwt>`; the geocode proxy's AuthGuard
-    // reads the same JWT from `x-whendan` instead. Both are declared so generated
-    // clients wire the token up rather than treating it as a plain header.
+    // Every guard (PermissionGuard, AuthGuard) reads the same standard
+    // `Authorization: Bearer <jwt>` — a single scheme covers all of them so
+    // generated clients wire the token up rather than treating it as a plain
+    // header.
     .addBearerAuth(
       { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
       'bearer',
-    )
-    .addApiKey(
-      {
-        type: 'apiKey',
-        name: 'x-whendan',
-        in: 'header',
-        description: 'Supabase JWT, sent as `Bearer <jwt>`.',
-      },
-      'whendanToken',
     )
     .build();
   const documentFactory = () => SwaggerModule.createDocument(app, config);

@@ -54,13 +54,6 @@ describe('GeocodeService', () => {
         expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('forwards the Authorization header when provided', async () => {
-        await service.get('/reverse', { lat: '-33.8', lon: '151.2' }, 'Bearer token-1');
-
-        const init = mockFetch.mock.calls[0][1] as RequestInit;
-        expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer token-1');
-    });
-
     it('throws an HttpException carrying status and body on error', async () => {
         const errorBody = { message: 'bad request' };
         mockFetch.mockResolvedValueOnce({

@@ -27,7 +27,7 @@ describe('AuthGuard', () => {
         guard = module.get<AuthGuard>(AuthGuard);
     });
 
-    it('throws UnauthorizedException when x-whendan header is absent', async () => {
+    it('throws UnauthorizedException when Authorization header is absent', async () => {
         await expect(guard.canActivate(makeContext({}))).rejects.toThrow(
             UnauthorizedException,
         );
@@ -35,7 +35,7 @@ describe('AuthGuard', () => {
 
     it('throws UnauthorizedException when header has no token after space', async () => {
         await expect(
-            guard.canActivate(makeContext({ 'x-whendan': 'Bearer' })),
+            guard.canActivate(makeContext({ authorization: 'Bearer' })),
         ).rejects.toThrow(UnauthorizedException);
     });
 
@@ -45,7 +45,7 @@ describe('AuthGuard', () => {
             error: new Error('token expired'),
         });
         await expect(
-            guard.canActivate(makeContext({ 'x-whendan': 'Bearer bad-token' })),
+            guard.canActivate(makeContext({ authorization: 'Bearer bad-token' })),
         ).rejects.toThrow(UnauthorizedException);
     });
 
@@ -56,7 +56,7 @@ describe('AuthGuard', () => {
             error: null,
         });
         const req: { headers: Record<string, string>; user?: unknown } = {
-            headers: { 'x-whendan': 'Bearer valid-token' },
+            headers: { authorization: 'Bearer valid-token' },
         };
         const ctx = {
             switchToHttp: () => ({ getRequest: () => req }),

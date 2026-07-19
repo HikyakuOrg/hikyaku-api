@@ -18,14 +18,14 @@ export class AuthGuard implements CanActivate {
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
         const request = context.switchToHttp().getRequest();
-        const authHeader = request.headers['x-whendan'];
+        const authHeader = request.headers['authorization'];
         if (!authHeader) {
-            throw new UnauthorizedException('Missing WhenDan header');
+            throw new UnauthorizedException('Missing Authorization header');
         }
         const [, token] = authHeader.split(' ');
 
         if (!token) {
-            throw new UnauthorizedException('Invalid WhenDan header');
+            throw new UnauthorizedException('Invalid Authorization header');
         }
 
         try {
