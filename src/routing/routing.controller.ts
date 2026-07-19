@@ -7,10 +7,16 @@ import {
     HttpStatus,
     Post,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import {
+    ApiBadRequestResponse,
+    ApiHeader,
+    ApiOkResponse,
+    ApiTags,
+} from '@nestjs/swagger';
 import { OrganisationsService } from 'src/organisations/organisations.service';
 import { ValhallaService } from 'src/valhalla/valhalla.service';
 import { RouteRequestDto } from './dto/route-request.dto';
+import { RoutePreviewDto } from './dto/route-preview.dto';
 
 /**
  * Public routing endpoint. Unauthenticated by design — it is called both from
@@ -30,7 +36,17 @@ export class RoutingController {
 
     @Post('route')
     @HttpCode(HttpStatus.OK)
-    async route(@Body() dto: RouteRequestDto, @Headers('x-org-slug') slug?: string) {
+    @ApiHeader({
+        name: 'x-org-slug',
+        required: true,
+        description: 'Slug of the active organisation.',
+    })
+    @ApiOkResponse({ type: RoutePreviewDto })
+    @ApiBadRequestResponse({ description: 'Unknown or missing organisation.' })
+    async route(
+        @Body() dto: RouteRequestDto,
+        @Headers('x-org-slug') slug?: string,
+    ): Promise<RoutePreviewDto> {
         await this.requireOrg(slug);
         return this.valhalla.route(dto.profile, dto.coordinates);
     }

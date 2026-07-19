@@ -39,8 +39,19 @@ export class RouteRequestDto {
     @IsNotEmpty()
     profile: string;
 
+    // The schema is spelled out rather than inferred: a tuple type erases to
+    // Array at runtime, so without this the generated spec typed coordinates as
+    // array<string> and clients emitted List<String> instead of [lng, lat] pairs.
     @ApiProperty({
         description: 'Stops to route through, as [lng, lat] pairs in visit order.',
+        type: 'array',
+        minItems: 2,
+        items: {
+            type: 'array',
+            minItems: 2,
+            maxItems: 2,
+            items: { type: 'number' },
+        },
         example: [
             [103.85, 1.29],
             [103.86, 1.3],
