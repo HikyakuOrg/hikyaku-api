@@ -12,16 +12,20 @@ const START = '2026-07-11T08:00:00Z';
 const START_EPOCH = Math.floor(Date.parse(START) / 1000);
 const SHIFT_WINDOW = 12 * 60 * 60;
 
-/** Rows the three sequential SELECTs in runAdhoc return, in order. */
+/** Rows the five sequential SELECTs in runAdhoc return, in order. */
 function mockDataSource(rows: {
     warehouse?: unknown[];
     vehicleType?: unknown[];
+    driver?: unknown[];
+    vehicle?: unknown[];
     packages?: unknown[];
 }): DataSource {
     const query = jest
         .fn()
         .mockResolvedValueOnce(rows.warehouse ?? [])
         .mockResolvedValueOnce(rows.vehicleType ?? [])
+        .mockResolvedValueOnce(rows.driver ?? [{ warehouse_id: 'depot-1' }])
+        .mockResolvedValueOnce(rows.vehicle ?? [{ warehouse_id: 'depot-1' }])
         .mockResolvedValueOnce(rows.packages ?? []);
     return { query } as unknown as DataSource;
 }
@@ -44,6 +48,8 @@ const baseDto: AdhocOptimisationDto = {
     vehicleType: 'vt-1',
     startDateTime: START,
     startingLocationId: 'wh-1',
+    driverId: 'driver-1',
+    vehicleId: 'vehicle-1',
     packages: ['pkg-a', 'pkg-b'],
 };
 
@@ -121,6 +127,8 @@ describe('OptimisationService.runAdhoc', () => {
         const persistOpts = db.insertAdhocRoutes.mock.calls[0][4];
         expect(persistOpts.organisationId).toBe(ORG);
         expect(persistOpts.scheduledStart).toEqual(new Date(START));
+        expect(persistOpts.driverId).toBe('driver-1');
+        expect(persistOpts.vehicleId).toBe('vehicle-1');
 
         expect(runner.commitTransaction).toHaveBeenCalledTimes(1);
         expect(runner.release).toHaveBeenCalledTimes(1);
@@ -142,6 +150,43 @@ describe('OptimisationService.runAdhoc', () => {
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toBeInstanceOf(
             BadRequestException,
+        );
+        expect(vroom.solve).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the driver is not found in this organisation', async () => {
+        const ds = mockDataSource({
+            warehouse: [{ lon: 1, lat: 2 }],
+            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
+            driver: [],
+        });
+        await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
+            /Driver not found/,
+        );
+        expect(vroom.solve).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the vehicle is not found in this organisation', async () => {
+        const ds = mockDataSource({
+            warehouse: [{ lon: 1, lat: 2 }],
+            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
+            vehicle: [],
+        });
+        await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
+            /Vehicle not found/,
+        );
+        expect(vroom.solve).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the driver and vehicle belong to different warehouses', async () => {
+        const ds = mockDataSource({
+            warehouse: [{ lon: 1, lat: 2 }],
+            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
+            driver: [{ warehouse_id: 'depot-1' }],
+            vehicle: [{ warehouse_id: 'depot-2' }],
+        });
+        await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
+            /same warehouse/,
         );
         expect(vroom.solve).not.toHaveBeenCalled();
     });

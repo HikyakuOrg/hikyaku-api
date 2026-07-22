@@ -83,6 +83,29 @@ export class OptimisationService {
         }
         const profile = orsProfileToValhallaCosting(vtRows[0].ors_vehicle_type);
 
+        // 2b. Driver and vehicle (both org-scoped). package_assignment has a
+        //     enforce_driver_vehicle_warehouse trigger requiring both to share a
+        //     warehouse, so check it here for a clean 400 instead of a raw DB error.
+        const driverRows: { warehouse_id: string | null }[] = await this.dataSource.query(
+            `SELECT warehouse_id FROM drivers WHERE id = $1 AND organisation_id = $2`,
+            [dto.driverId, organisationId],
+        );
+        if (driverRows.length === 0) {
+            throw new BadRequestException('Driver not found for this organisation.');
+        }
+
+        const vehicleRows: { warehouse_id: string | null }[] = await this.dataSource.query(
+            `SELECT warehouse_id FROM vehicles WHERE id = $1 AND organisation_id = $2`,
+            [dto.vehicleId, organisationId],
+        );
+        if (vehicleRows.length === 0) {
+            throw new BadRequestException('Vehicle not found for this organisation.');
+        }
+
+        if (driverRows[0].warehouse_id !== vehicleRows[0].warehouse_id) {
+            throw new BadRequestException('Driver and vehicle must belong to the same warehouse.');
+        }
+
         // 3. Packages. Dedupe, preserve order, validate the whole batch up front
         //    so the caller gets one clear error rather than a partial failure.
         //
@@ -203,7 +226,12 @@ export class OptimisationService {
                 requestForDb,
                 response,
                 jobPackageMap,
-                { organisationId, scheduledStart: new Date(dto.startDateTime) },
+                {
+                    organisationId,
+                    scheduledStart: new Date(dto.startDateTime),
+                    driverId: dto.driverId,
+                    vehicleId: dto.vehicleId,
+                },
             );
             await runner.commitTransaction();
             this.logger.log(

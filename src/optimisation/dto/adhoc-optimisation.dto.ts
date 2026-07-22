@@ -31,6 +31,20 @@ export class AdhocOptimisationDto {
     startingLocationId: string;
 
     @ApiProperty({
+        format: 'uuid',
+        description: 'drivers.id — the driver this shift is assigned to. Must share a warehouse with vehicleId.',
+    })
+    @IsUUID()
+    driverId: string;
+
+    @ApiProperty({
+        format: 'uuid',
+        description: 'vehicles.id — the vehicle this shift is assigned to. Must share a warehouse with driverId.',
+    })
+    @IsUUID()
+    vehicleId: string;
+
+    @ApiProperty({
         type: [String],
         format: 'uuid',
         description:

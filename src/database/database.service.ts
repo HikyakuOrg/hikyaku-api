@@ -606,12 +606,12 @@ export class DatabaseService implements OnApplicationBootstrap {
      *
      * The jobs are packages the mobile app already created and picked, so — like
      * insertOptimisedRoutes — the routed packages are claimed by stamping
-     * packages.optimisation_id. Unlike that flow there is no driver or vehicle
-     * (the request only carries a vehicle_type), so no package_assignment row can
-     * be written. vrp_route_step.package_id FKs to package_assignment, so every
-     * step is still written with package_id = null and the package↔step mapping
-     * lives in requestForDb.meta.packageByJob, which the caller embeds.
-     * package_delivery_window is likewise left untouched.
+     * packages.optimisation_id. The caller supplies the driver/vehicle for this
+     * shift (validated to share a warehouse, per the enforce_driver_vehicle_warehouse
+     * trigger on package_assignment), so job steps get package_id set and
+     * package_assignment rows upserted exactly like the on-demand pipeline.
+     * package_delivery_window is left untouched, matching insertOptimisedRoutes'
+     * non-time-windowed behaviour.
      *
      * `jobPackageMap` resolves VROOM job ids back to package ids — both to report
      * unassigned packages and to determine which packages to claim.
@@ -633,7 +633,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         requestForDb: object,
         response: OptimizationResponse,
         jobPackageMap: Record<number, string>,
-        opts: { organisationId: string; scheduledStart: Date },
+        opts: { organisationId: string; scheduledStart: Date; driverId: string; vehicleId: string },
     ): Promise<{
         optimizationId: string;
         routeId: string | null;
@@ -709,18 +709,29 @@ export class DatabaseService implements OnApplicationBootstrap {
             const departureEpoch = startStep?.arrival ?? null;
 
             const stepsPayload: StepInsertRow[] = [];
+            const routeAssignments: {
+                package_id: string;
+                vehicle_id: string;
+                driver_id: string;
+            }[] = [];
             for (const [index, step] of route.steps.entries()) {
                 if (!step.location) continue;
                 const [lon, lat] = step.location;
 
+                let pkgId: string | null = null;
                 if (step.type === 'job') {
-                    const packageId = step.id != null ? jobPackageMap[step.id] : undefined;
-                    if (!packageId) {
+                    pkgId = (step.id != null ? jobPackageMap[step.id] : undefined) ?? null;
+                    if (!pkgId) {
                         throw new Error(
                             `Missing package mapping for job id ${step.id ?? '(unknown)'}`,
                         );
                     }
-                    routedPackageIds.add(packageId);
+                    routedPackageIds.add(pkgId);
+                    routeAssignments.push({
+                        package_id: pkgId,
+                        vehicle_id: opts.vehicleId,
+                        driver_id: opts.driverId,
+                    });
                 }
 
                 const arrival =
@@ -735,9 +746,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                     step_index: index,
                     type: step.type,
                     solution_id: solutionId,
-                    // FKs package_assignment, which needs a driver + vehicle the
-                    // ad-hoc flow does not have; mapping lives in request.meta.
-                    package_id: null,
+                    package_id: pkgId,
                     lon,
                     lat,
                     arrival,
@@ -752,6 +761,11 @@ export class DatabaseService implements OnApplicationBootstrap {
                                 : [step.load as unknown as number]
                             : null,
                 });
+            }
+
+            // package_assignment must be inserted before vrp_route_step (FK).
+            if (routeAssignments.length > 0) {
+                await this.upsertPackageAssignments(runner, routeAssignments);
             }
 
             if (stepsPayload.length > 0) {

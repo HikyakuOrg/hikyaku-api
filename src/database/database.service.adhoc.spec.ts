@@ -23,6 +23,7 @@ function makeRunner(claimed?: { id: string }[]) {
     const insert = jest.fn((entity: { name: string }) =>
         Promise.resolve({ identifiers: [{ id: idByEntity[entity.name] }] }),
     );
+    const upsert = jest.fn().mockResolvedValue(undefined);
     const query = jest.fn((sql: string, params?: unknown[]) => {
         if (String(sql).includes('UPDATE packages')) {
             const requested = (params?.[1] ?? []) as string[];
@@ -30,9 +31,16 @@ function makeRunner(claimed?: { id: string }[]) {
         }
         return Promise.resolve([]);
     });
-    const runner = { manager: { insert }, query } as unknown as QueryRunner;
-    return { runner, insert, query };
+    const runner = { manager: { insert, upsert }, query } as unknown as QueryRunner;
+    return { runner, insert, upsert, query };
 }
+
+const PERSIST_OPTS = {
+    organisationId: 'org-1',
+    scheduledStart: new Date(START),
+    driverId: 'driver-1',
+    vehicleId: 'vehicle-1',
+};
 
 function newService(): DatabaseService {
     // insertAdhocRoutes only touches the passed-in runner; the injected
@@ -71,7 +79,7 @@ describe('DatabaseService.insertAdhocRoutes', () => {
             { jobs: [], vehicles: [] },
             response,
             jobPackageMap,
-            { organisationId: 'org-1', scheduledStart: new Date(START) },
+            PERSIST_OPTS,
         );
 
         expect(result).toEqual({
@@ -88,7 +96,7 @@ describe('DatabaseService.insertAdhocRoutes', () => {
         });
     });
 
-    it('writes every step with a null package_id and relative-from-departure arrivals', async () => {
+    it('writes job steps with their package_id and relative-from-departure arrivals', async () => {
         const { runner, query } = makeRunner();
         const svc = newService();
 
@@ -97,7 +105,7 @@ describe('DatabaseService.insertAdhocRoutes', () => {
             { jobs: [], vehicles: [] },
             response,
             jobPackageMap,
-            { organisationId: 'org-1', scheduledStart: new Date(START) },
+            PERSIST_OPTS,
         );
 
         const stepCall = query.mock.calls.find((c) =>
@@ -110,12 +118,33 @@ describe('DatabaseService.insertAdhocRoutes', () => {
         const PARAMS_PER_ROW = 13;
         const rows = params.length / PARAMS_PER_ROW;
         expect(rows).toBe(3);
-        for (let r = 0; r < rows; r++) {
-            expect(params[r * PARAMS_PER_ROW + 4]).toBeNull(); // package_id
-        }
+        expect(params[0 * PARAMS_PER_ROW + 4]).toBeNull();   // start → no package
+        expect(params[1 * PARAMS_PER_ROW + 4]).toBe('pkg-a'); // job → its package
+        expect(params[2 * PARAMS_PER_ROW + 4]).toBeNull();   // end → no package
         expect(params[0 * PARAMS_PER_ROW + 7]).toBe(0);    // start → departure baseline
         expect(params[1 * PARAMS_PER_ROW + 7]).toBe(600);  // job arrival relative
         expect(params[2 * PARAMS_PER_ROW + 7]).toBe(1500); // end arrival relative
+    });
+
+    it('upserts a package_assignment for every routed job, using the caller-supplied driver/vehicle', async () => {
+        const { runner, upsert } = makeRunner();
+        const svc = newService();
+
+        await svc.insertAdhocRoutes(
+            runner,
+            { jobs: [], vehicles: [] },
+            response,
+            jobPackageMap,
+            PERSIST_OPTS,
+        );
+
+        expect(upsert).toHaveBeenCalledTimes(1);
+        const [entity, rows, conflictCols] = upsert.mock.calls[0];
+        expect((entity as { name: string }).name).toBe('PackageAssignment');
+        expect(rows).toEqual([
+            { packageId: 'pkg-a', vehicleId: 'vehicle-1', driverId: 'driver-1' },
+        ]);
+        expect(conflictCols).toEqual(['packageId']);
     });
 
     it('inserts unassigned jobs with their geometry', async () => {
@@ -127,7 +156,7 @@ describe('DatabaseService.insertAdhocRoutes', () => {
             { jobs: [], vehicles: [] },
             response,
             jobPackageMap,
-            { organisationId: 'org-1', scheduledStart: new Date(START) },
+            PERSIST_OPTS,
         );
 
         const unassignedCall = query.mock.calls.find((c) =>
@@ -146,7 +175,7 @@ describe('DatabaseService.insertAdhocRoutes', () => {
             { jobs: [], vehicles: [] },
             { code: 0, summary: { unassigned: 0 }, routes: [], unassigned: [] },
             {},
-            { organisationId: 'org-1', scheduledStart: new Date(START) },
+            PERSIST_OPTS,
         );
 
         expect(result.routeId).toBeNull();
@@ -162,7 +191,7 @@ describe('DatabaseService.insertAdhocRoutes', () => {
             { jobs: [], vehicles: [] },
             response,
             jobPackageMap,
-            { organisationId: 'org-1', scheduledStart: new Date(START) },
+            PERSIST_OPTS,
         );
 
         const claimCall = query.mock.calls.find((c) =>
@@ -185,7 +214,7 @@ describe('DatabaseService.insertAdhocRoutes', () => {
                 { jobs: [], vehicles: [] },
                 response,
                 jobPackageMap,
-                { organisationId: 'org-1', scheduledStart: new Date(START) },
+                PERSIST_OPTS,
             )
             .catch((e: unknown) => e);
 
@@ -203,7 +232,7 @@ describe('DatabaseService.insertAdhocRoutes', () => {
                 { jobs: [], vehicles: [] },
                 response,
                 {}, // job 1 has no package
-                { organisationId: 'org-1', scheduledStart: new Date(START) },
+                PERSIST_OPTS,
             ),
         ).rejects.toThrow(/Missing package mapping for job id 1/);
     });
