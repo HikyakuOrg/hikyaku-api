@@ -12,10 +12,9 @@ const START = '2026-07-11T08:00:00Z';
 const START_EPOCH = Math.floor(Date.parse(START) / 1000);
 const SHIFT_WINDOW = 12 * 60 * 60;
 
-/** Rows the five sequential SELECTs in runAdhoc return, in order. */
+/** Rows the four sequential SELECTs in runAdhoc return, in order. */
 function mockDataSource(rows: {
     warehouse?: unknown[];
-    vehicleType?: unknown[];
     driver?: unknown[];
     vehicle?: unknown[];
     packages?: unknown[];
@@ -23,9 +22,10 @@ function mockDataSource(rows: {
     const query = jest
         .fn()
         .mockResolvedValueOnce(rows.warehouse ?? [])
-        .mockResolvedValueOnce(rows.vehicleType ?? [])
         .mockResolvedValueOnce(rows.driver ?? [{ warehouse_id: 'depot-1' }])
-        .mockResolvedValueOnce(rows.vehicle ?? [{ warehouse_id: 'depot-1' }])
+        .mockResolvedValueOnce(
+            rows.vehicle ?? [{ warehouse_id: 'depot-1', ors_vehicle_type: 'driving-car' }],
+        )
         .mockResolvedValueOnce(rows.packages ?? []);
     return { query } as unknown as DataSource;
 }
@@ -45,7 +45,6 @@ function makeRunner(): jest.Mocked<Pick<QueryRunner,
 }
 
 const baseDto: AdhocOptimisationDto = {
-    vehicleType: 'vt-1',
     startDateTime: START,
     startingLocationId: 'wh-1',
     driverId: 'driver-1',
@@ -91,7 +90,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('builds a single-vehicle VROOM request and returns the optimisation id', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [pkg('pkg-a', 10, 20), pkg('pkg-b', 30, 40)],
         });
 
@@ -143,21 +141,9 @@ describe('OptimisationService.runAdhoc', () => {
         expect(vroom.solve).not.toHaveBeenCalled();
     });
 
-    it('rejects when the vehicle type is unknown', async () => {
-        const ds = mockDataSource({
-            warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [],
-        });
-        await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toBeInstanceOf(
-            BadRequestException,
-        );
-        expect(vroom.solve).not.toHaveBeenCalled();
-    });
-
     it('rejects when the driver is not found in this organisation', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             driver: [],
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
@@ -169,7 +155,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('rejects when the vehicle is not found in this organisation', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             vehicle: [],
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
@@ -181,9 +166,8 @@ describe('OptimisationService.runAdhoc', () => {
     it('rejects when the driver and vehicle belong to different warehouses', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             driver: [{ warehouse_id: 'depot-1' }],
-            vehicle: [{ warehouse_id: 'depot-2' }],
+            vehicle: [{ warehouse_id: 'depot-2', ors_vehicle_type: 'driving-car' }],
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
             /same warehouse/,
@@ -194,7 +178,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('rejects when a requested package is missing or in another org', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [pkg('pkg-a', 10, 20)], // pkg-b missing
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
@@ -206,7 +189,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('rejects a package sitting at a different warehouse', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [
                 pkg('pkg-a', 10, 20),
                 pkg('pkg-b', 30, 40, { warehouse_id: 'wh-2' }),
@@ -221,7 +203,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('rejects a package whose recipient has no location', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [pkg('pkg-a', 10, 20), pkg('pkg-b', null as never, null as never)],
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
@@ -233,7 +214,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('409s when a package is already claimed by another optimisation', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [
                 pkg('pkg-a', 10, 20),
                 pkg('pkg-b', 30, 40, { optimisation_id: 'opt-old' }),
@@ -248,7 +228,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('reports every invalid package in one error rather than failing on the first', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [pkg('pkg-b', 30, 40, { warehouse_id: 'wh-2' })], // pkg-a unknown
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
@@ -259,7 +238,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('prefers the 400 over the 409 when the batch has both problems', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [pkg('pkg-b', 30, 40, { optimisation_id: 'opt-old' })], // pkg-a unknown
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toBeInstanceOf(
@@ -270,7 +248,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('dedupes repeated package ids into a single job', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [pkg('pkg-a', 10, 20)],
         });
         await makeService(ds).runAdhoc(ORG, {
@@ -284,7 +261,6 @@ describe('OptimisationService.runAdhoc', () => {
     it('rolls back and rethrows when persistence fails', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2 }],
-            vehicleType: [{ ors_vehicle_type: 'driving-car' }],
             packages: [pkg('pkg-a', 10, 20), pkg('pkg-b', 30, 40)],
         });
         db.insertAdhocRoutes.mockRejectedValueOnce(new Error('db boom'));

@@ -18,10 +18,6 @@ import {
  * receives existing packages.id values — it never creates packages itself.
  */
 export class AdhocOptimisationDto {
-    @ApiProperty({ format: 'uuid', description: 'vehicle_type.id — resolves the routing profile.' })
-    @IsUUID()
-    vehicleType: string;
-
     @ApiProperty({ description: 'ISO-8601 timestamp the vehicle sets off.' })
     @IsISO8601()
     startDateTime: string;
@@ -39,7 +35,9 @@ export class AdhocOptimisationDto {
 
     @ApiProperty({
         format: 'uuid',
-        description: 'vehicles.id — the vehicle this shift is assigned to. Must share a warehouse with driverId.',
+        description:
+            'vehicles.id — the vehicle this shift is assigned to; also resolves the ' +
+            'routing profile via vehicles.vehicle_type. Must share a warehouse with driverId.',
     })
     @IsUUID()
     vehicleId: string;

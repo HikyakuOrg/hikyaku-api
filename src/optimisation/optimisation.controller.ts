@@ -89,9 +89,9 @@ export class OptimisationController {
     @ApiResponse({
         status: 400,
         description:
-            'Unknown warehouse/vehicle type/driver/vehicle, driver and vehicle at ' +
-            'different warehouses, or a package that is unknown, not at ' +
-            'startingLocationId, or whose recipient has no location.',
+            'Unknown warehouse/driver/vehicle, driver and vehicle at different ' +
+            'warehouses, or a package that is unknown, not at startingLocationId, ' +
+            'or whose recipient has no location.',
     })
     @ApiResponse({
         status: 409,

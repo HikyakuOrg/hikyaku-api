@@ -73,19 +73,11 @@ export class OptimisationService {
         }
         const warehouseCoords: [number, number] = [wh.lon, wh.lat];
 
-        // 2. Vehicle profile (vehicle_type is a global lookup, not org-scoped).
-        const vtRows: { ors_vehicle_type: string }[] = await this.dataSource.query(
-            `SELECT ors_vehicle_type FROM vehicle_type WHERE id = $1`,
-            [dto.vehicleType],
-        );
-        if (vtRows.length === 0) {
-            throw new BadRequestException('Vehicle type not found.');
-        }
-        const profile = orsProfileToValhallaCosting(vtRows[0].ors_vehicle_type);
-
-        // 2b. Driver and vehicle (both org-scoped). package_assignment has a
-        //     enforce_driver_vehicle_warehouse trigger requiring both to share a
-        //     warehouse, so check it here for a clean 400 instead of a raw DB error.
+        // 2. Driver and vehicle (both org-scoped). The vehicle also resolves the
+        //    routing profile via vehicles.vehicle_type — no separate vehicleType
+        //    input needed. package_assignment has an enforce_driver_vehicle_warehouse
+        //    trigger requiring driver and vehicle to share a warehouse, so check
+        //    that here too for a clean 400 instead of a raw DB error.
         const driverRows: { warehouse_id: string | null }[] = await this.dataSource.query(
             `SELECT warehouse_id FROM drivers WHERE id = $1 AND organisation_id = $2`,
             [dto.driverId, organisationId],
@@ -94,10 +86,14 @@ export class OptimisationService {
             throw new BadRequestException('Driver not found for this organisation.');
         }
 
-        const vehicleRows: { warehouse_id: string | null }[] = await this.dataSource.query(
-            `SELECT warehouse_id FROM vehicles WHERE id = $1 AND organisation_id = $2`,
-            [dto.vehicleId, organisationId],
-        );
+        const vehicleRows: { warehouse_id: string | null; ors_vehicle_type: string }[] =
+            await this.dataSource.query(
+                `SELECT v.warehouse_id, vt.ors_vehicle_type
+                 FROM vehicles v
+                 JOIN vehicle_type vt ON vt.id = v.vehicle_type
+                 WHERE v.id = $1 AND v.organisation_id = $2`,
+                [dto.vehicleId, organisationId],
+            );
         if (vehicleRows.length === 0) {
             throw new BadRequestException('Vehicle not found for this organisation.');
         }
@@ -105,6 +101,8 @@ export class OptimisationService {
         if (driverRows[0].warehouse_id !== vehicleRows[0].warehouse_id) {
             throw new BadRequestException('Driver and vehicle must belong to the same warehouse.');
         }
+
+        const profile = orsProfileToValhallaCosting(vehicleRows[0].ors_vehicle_type);
 
         // 3. Packages. Dedupe, preserve order, validate the whole batch up front
         //    so the caller gets one clear error rather than a partial failure.
@@ -215,7 +213,8 @@ export class OptimisationService {
                 packageByJob: jobPackageMap,
                 startDateTime: dto.startDateTime,
                 startingLocationId: dto.startingLocationId,
-                vehicleType: dto.vehicleType,
+                driverId: dto.driverId,
+                vehicleId: dto.vehicleId,
             },
         };
 
