@@ -16,8 +16,8 @@ async function bootstrap() {
   );
   
   const config = new DocumentBuilder()
-    .setTitle('Whendan Logistics API')
-    .setDescription('The Whendan Logistics API description')
+    .setTitle('Hikyaku Logistics API')
+    .setDescription('The Hikyaku Logistics API description')
     .setVersion('1.0')
     // Every guard (PermissionGuard, AuthGuard) reads the same standard
     // `Authorization: Bearer <jwt>` — a single scheme covers all of them so

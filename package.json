@@ -1,10 +1,10 @@
 {
-  "name": "whendan-scheduler",
+  "name": "hikyaku-api",
   "version": "0.0.1",
   "description": "",
   "author": "",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "build": "nest build",

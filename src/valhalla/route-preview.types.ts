@@ -1,6 +1,6 @@
 /**
  * Normalised routing result returned by the routing endpoint. Mirrors the
- * frontend contract in whendan/app/models/route-preview.ts field-for-field —
+ * frontend contract in hikyaku/app/models/route-preview.ts field-for-field —
  * keep both in sync. The frontend has no knowledge of Valhalla; it only sees
  * this shape.
  */

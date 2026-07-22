@@ -3,7 +3,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 /**
  * Response shape of the geocode proxy. Photon answers with GeoJSON, and the
  * proxy passes the body through verbatim, so these classes describe Photon's
- * output rather than a Whendan-owned contract.
+ * output rather than a Hikyaku-owned contract.
  *
  * Properties are declaration-only: nothing constructs these — they exist so
  * @nestjs/swagger can emit a response schema and generated clients get a typed
