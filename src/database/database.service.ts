@@ -35,6 +35,7 @@ export const SHIFT_WINDOW_SECONDS = 12 * 60 * 60;
 export class DatabaseService implements OnApplicationBootstrap {
     private readonly logger = new Logger(DatabaseService.name);
     private pendingStatusId!: number;
+    private assignedStatusId!: number;
 
     constructor(
         @InjectDataSource() private readonly dataSource: DataSource,
@@ -53,6 +54,13 @@ export class DatabaseService implements OnApplicationBootstrap {
         }
         this.pendingStatusId = status.id;
         this.logger.log(`Resolved PENDING status id: ${this.pendingStatusId}`);
+
+        const assignedStatus = await this.packageStatusRepo.findOneBy({ enums: 'ASSIGNED' });
+        if (!assignedStatus) {
+            throw new Error('package_status row with enums = \'ASSIGNED\' not found.');
+        }
+        this.assignedStatusId = assignedStatus.id;
+        this.logger.log(`Resolved ASSIGNED status id: ${this.assignedStatusId}`);
     }
 
     /**
@@ -591,11 +599,16 @@ export class DatabaseService implements OnApplicationBootstrap {
 
         // 4. Mark all processed packages so they are excluded from future runs.
         if (optimisedPackageIds.size > 0) {
+            const ids = Array.from(optimisedPackageIds);
             await runner.manager.update(
                 Package,
-                { id: In(Array.from(optimisedPackageIds)) },
+                { id: In(ids) },
                 { optimisationId: optimizationId },
             );
+
+            // 5. Advance status to ASSIGNED now that these packages have a
+            //    driver/vehicle/route — mirrors insertAdhocRoutes.
+            await this.insertPackageTimelineStatus(runner, ids, this.assignedStatusId);
         }
 
         return optimizationId;
@@ -815,6 +828,11 @@ export class DatabaseService implements OnApplicationBootstrap {
                     `Package(s) claimed by another optimisation while this one was solving: ${lost.join(', ')}`,
                 );
             }
+
+            // 6. Advance status to ASSIGNED now that these packages have a
+            //    driver/vehicle/route — mirrors how PENDING is stamped on
+            //    creation (see PaymentsService.fulfilCheckoutSession).
+            await this.insertPackageTimelineStatus(runner, ids, this.assignedStatusId);
         }
 
         return { optimizationId, routeId, unassignedPackageIds };
@@ -840,6 +858,25 @@ export class DatabaseService implements OnApplicationBootstrap {
                 driverId: a.driver_id,
             })),
             ['packageId'],
+        );
+    }
+
+    /**
+     * Records a package_timeline row moving each package to the given status.
+     * ON CONFLICT DO NOTHING matches the (package_id, package_status) unique
+     * constraint — re-running for a package already at this status is a no-op.
+     */
+    private async insertPackageTimelineStatus(
+        runner: QueryRunner,
+        packageIds: string[],
+        statusId: number,
+    ): Promise<void> {
+        const placeholders = packageIds.map((_, i) => `($${i + 1}, $${packageIds.length + 1})`).join(', ');
+        await runner.query(
+            `INSERT INTO package_timeline (package_id, package_status)
+             VALUES ${placeholders}
+             ON CONFLICT (package_id, package_status) DO NOTHING`,
+            [...packageIds, statusId],
         );
     }
 

@@ -402,6 +402,31 @@ describe('DatabaseService', () => {
                 { id: In(['pkg-1']) },
                 { optimisationId: 'opt-1' },
             );
+            // and advanced to ASSIGNED via package_timeline
+            const timelineCall = runner.query.mock.calls.find((call: unknown[]) =>
+                String(call[0]).includes('INSERT INTO package_timeline'),
+            );
+            expect(timelineCall).toBeDefined();
+            expect(timelineCall![1]).toEqual(['pkg-1', 1]);
+        });
+
+        it('does not touch package_timeline when no packages were optimised', async () => {
+            const runner = makeRunner();
+            chainInsertIds(runner, 'opt-1', 'sol-1');
+
+            await service.insertOptimisedRoutes(
+                runner as never,
+                { jobs: [], vehicles: [] },
+                { code: 0, summary: { cost: 0, routes: 0, unassigned: 0 }, routes: [], unassigned: [] },
+                {},
+                {},
+                {},
+            );
+
+            const timelineCall = runner.query.mock.calls.find((call: unknown[]) =>
+                String(call[0]).includes('INSERT INTO package_timeline'),
+            );
+            expect(timelineCall).toBeUndefined();
         });
 
         it('throws when a job step has no corresponding entry in jobMap', async () => {

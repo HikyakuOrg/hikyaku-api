@@ -45,10 +45,14 @@ const PERSIST_OPTS = {
 function newService(): DatabaseService {
     // insertAdhocRoutes only touches the passed-in runner; the injected
     // DataSource/repositories are irrelevant, so stub them.
-    return new DatabaseService(
+    const svc = new DatabaseService(
         {} as never, {} as never, {} as never, {} as never,
         {} as never, {} as never, {} as never,
     );
+    // Normally resolved in onApplicationBootstrap; set directly here since
+    // these tests construct the service without bootstrapping it.
+    (svc as unknown as { assignedStatusId: number }).assignedStatusId = 4;
+    return svc;
 }
 
 describe('DatabaseService.insertAdhocRoutes', () => {
@@ -201,6 +205,44 @@ describe('DatabaseService.insertAdhocRoutes', () => {
         // pkg-b was unassigned, so it stays free for another shift.
         expect(claimCall![1]).toEqual(['opt-1', ['pkg-a']]);
         expect(String(claimCall![0])).toMatch(/optimisation_id IS NULL/);
+    });
+
+    it('advances claimed packages to ASSIGNED via package_timeline', async () => {
+        const { runner, query } = makeRunner();
+        const svc = newService();
+
+        await svc.insertAdhocRoutes(
+            runner,
+            { jobs: [], vehicles: [] },
+            response,
+            jobPackageMap,
+            PERSIST_OPTS,
+        );
+
+        const timelineCall = query.mock.calls.find((c) =>
+            String(c[0]).includes('INSERT INTO package_timeline'),
+        );
+        expect(timelineCall).toBeDefined();
+        // Only the routed package (pkg-a) is stamped — pkg-b was unassigned.
+        expect(timelineCall![1]).toEqual(['pkg-a', 4]);
+    });
+
+    it('does not touch package_timeline when nothing was routed', async () => {
+        const { runner, query } = makeRunner();
+        const svc = newService();
+
+        await svc.insertAdhocRoutes(
+            runner,
+            { jobs: [], vehicles: [] },
+            { code: 0, summary: { unassigned: 0 }, routes: [], unassigned: [] },
+            {},
+            PERSIST_OPTS,
+        );
+
+        const timelineCall = query.mock.calls.find((c) =>
+            String(c[0]).includes('INSERT INTO package_timeline'),
+        );
+        expect(timelineCall).toBeUndefined();
     });
 
     it('throws a 409 when a package was claimed concurrently', async () => {
