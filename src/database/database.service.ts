@@ -19,6 +19,8 @@ import type {
     BuildOptions,
     BuildResult,
     PackageRow,
+    PinnedPackageRow,
+    PinnedRouteRequest,
     StepInsertRow,
 } from './database.types';
 
@@ -319,6 +321,21 @@ export class DatabaseService implements OnApplicationBootstrap {
             })
             : null;
 
+        // 6. Packages already paired to a driver/vehicle outside this optimiser
+        //    (e.g. a manual dashboard assignment) but never routed. The main
+        //    solve above deliberately excludes them (pa.package_id IS NULL) so
+        //    it never overrides a dispatcher's choice — this builds one
+        //    single-vehicle request per pair so they still get a route.
+        const pinnedRoutes = await this.buildPinnedRoutes(
+            runner,
+            opts.warehouseId ?? null,
+            warehouseCoords!,
+            setOffByVehicle,
+            now,
+            startOfDay,
+            endOfDay,
+        );
+
         return {
             request: { jobs, vehicles },
             vehicleMap,
@@ -327,7 +344,141 @@ export class DatabaseService implements OnApplicationBootstrap {
             organisationId,
             timeWindowed: !!opts.useTimeWindows,
             skipReason,
+            pinnedRoutes,
         };
+    }
+
+    /**
+     * Finds packages with a package_assignment (driver/vehicle pair) but no
+     * vrp_route_step yet, and groups them into one single-vehicle VROOM
+     * request per pair — mirroring insertAdhocRoutes' shape so the same
+     * persistence path can be reused. Skipped for a pair whose every package
+     * fails the same geocode/future-date checks as the main job-building loop.
+     */
+    private async buildPinnedRoutes(
+        runner: QueryRunner,
+        warehouseId: string | null,
+        warehouseCoords: [number, number],
+        setOffByVehicle: Record<string, number>,
+        now: Date,
+        startOfDay: Date,
+        endOfDay: Date,
+    ): Promise<PinnedRouteRequest[]> {
+        const pinnedRows: PinnedPackageRow[] = await runner.query(
+            `
+      SELECT
+        p.id,
+        pa.driver_id,
+        pa.vehicle_id,
+        v.vehicle_gross_limits,
+        vt.ors_vehicle_type,
+        pd.weight_kg,
+        pdw.scheduled_arrival,
+        ST_X(c.customer_location::geometry) AS customer_lon,
+        ST_Y(c.customer_location::geometry) AS customer_lat
+      FROM   packages                     p
+      JOIN   package_assignment           pa  ON pa.package_id = p.id
+      JOIN   vehicles                     v   ON v.id = pa.vehicle_id
+      JOIN   vehicle_type                 vt  ON vt.id = v.vehicle_type
+      JOIN   customer                     c   ON c.id = p.to_customer
+      LEFT   JOIN package_dimensions      pd  ON pd.package_id = p.id
+      LEFT   JOIN package_delivery_window pdw ON pdw.package_id = p.id
+      WHERE  p.optimisation_id IS NULL
+        AND  ($1::uuid IS NULL OR p.warehouse_id = $1)
+        AND  NOT EXISTS (
+               SELECT 1 FROM vrp_route_step rs WHERE rs.package_id = p.id
+             )
+      FOR UPDATE OF p SKIP LOCKED
+      `,
+            [warehouseId],
+        );
+
+        interface PinnedGroup {
+            driverId: string;
+            vehicleId: string;
+            profile: string;
+            capacity: number;
+            packages: PinnedPackageRow[];
+        }
+        const groups = new Map<string, PinnedGroup>();
+        for (const row of pinnedRows) {
+            const key = `${row.driver_id}:${row.vehicle_id}`;
+            let group = groups.get(key);
+            if (!group) {
+                group = {
+                    driverId: row.driver_id,
+                    vehicleId: row.vehicle_id,
+                    profile: orsProfileToValhallaCosting(row.ors_vehicle_type),
+                    capacity:
+                        typeof row.vehicle_gross_limits === 'number' ? row.vehicle_gross_limits : 1000,
+                    packages: [],
+                };
+                groups.set(key, group);
+            }
+            group.packages.push(row);
+        }
+
+        const pinnedRoutes: PinnedRouteRequest[] = [];
+        for (const group of groups.values()) {
+            const jobs: BuildResult['request']['jobs'] = [];
+            const jobPackageMap: Record<number, string> = {};
+
+            group.packages.forEach((pkg, index) => {
+                if (pkg.customer_lon == null || pkg.customer_lat == null) return;
+
+                let priority = 0;
+                let skipProcessing = false;
+                if (pkg.scheduled_arrival) {
+                    const arrivalDate = new Date(pkg.scheduled_arrival);
+                    if (arrivalDate < startOfDay) {
+                        priority = 100;
+                    } else if (arrivalDate <= endOfDay) {
+                        priority = 50;
+                    } else {
+                        skipProcessing = true; // future: skip tonight, same as the main flow
+                    }
+                }
+                if (skipProcessing) return;
+
+                const weight = typeof pkg.weight_kg === 'number' ? pkg.weight_kg * 1000 : 1;
+                const jobNumericId = index + 1;
+                jobs.push({
+                    id: jobNumericId,
+                    service: TIME_PER_STOP,
+                    location: [pkg.customer_lon, pkg.customer_lat],
+                    amount: [weight],
+                    priority,
+                });
+                jobPackageMap[jobNumericId] = pkg.id;
+            });
+
+            // Every package in this pair was unlocatable or future-dated —
+            // nothing to route yet.
+            if (jobs.length === 0) continue;
+
+            const setOff = setOffByVehicle[group.vehicleId] ?? Math.floor(now.getTime() / 1000);
+            pinnedRoutes.push({
+                driverId: group.driverId,
+                vehicleId: group.vehicleId,
+                scheduledStart: new Date(setOff * 1000),
+                request: {
+                    jobs,
+                    vehicles: [
+                        {
+                            id: 1,
+                            profile: group.profile,
+                            start: warehouseCoords,
+                            end: warehouseCoords,
+                            capacity: [group.capacity],
+                            time_window: [setOff, setOff + SHIFT_WINDOW_SECONDS],
+                        },
+                    ],
+                },
+                jobPackageMap,
+            });
+        }
+
+        return pinnedRoutes;
     }
 
     /**

@@ -248,7 +248,7 @@ export class TasksService implements OnApplicationBootstrap {
         try {
             const build = await this.databaseService.buildOptimizationRequest(runner, opts);
 
-            if (build.request.jobs.length === 0) {
+            if (build.request.jobs.length === 0 && build.pinnedRoutes.length === 0) {
                 this.logger.log(
                     `Warehouse ${opts.warehouseId}: no eligible packages, skipping VROOM call. ${build.skipReason}`,
                 );
@@ -256,21 +256,48 @@ export class TasksService implements OnApplicationBootstrap {
                 return { optimisationId: null, skipReason: build.skipReason };
             }
 
-            const response = await this.vroomService.solve(build.request);
+            let optimisationId: string | null = null;
 
-            const optimizationId = await this.databaseService.insertOptimisedRoutes(
-                runner,
-                build.request,
-                response,
-                build.vehicleMap,
-                build.jobMap,
-                build.driverMap,
-                { organisationId: build.organisationId, timeWindowed: build.timeWindowed },
-            );
+            if (build.request.jobs.length > 0) {
+                const response = await this.vroomService.solve(build.request);
+                optimisationId = await this.databaseService.insertOptimisedRoutes(
+                    runner,
+                    build.request,
+                    response,
+                    build.vehicleMap,
+                    build.jobMap,
+                    build.driverMap,
+                    { organisationId: build.organisationId, timeWindowed: build.timeWindowed },
+                );
+            }
+
+            // Packages already paired to a driver/vehicle outside this optimiser
+            // (see buildPinnedRoutes) still need a route — one single-vehicle
+            // solve per pair, persisted the same way as an ad-hoc run.
+            for (const pinned of build.pinnedRoutes) {
+                const response = await this.vroomService.solve(pinned.request);
+                const result = await this.databaseService.insertAdhocRoutes(
+                    runner,
+                    pinned.request,
+                    response,
+                    pinned.jobPackageMap,
+                    {
+                        organisationId: build.organisationId!,
+                        scheduledStart: pinned.scheduledStart,
+                        driverId: pinned.driverId,
+                        vehicleId: pinned.vehicleId,
+                    },
+                );
+                optimisationId ??= result.optimizationId;
+                this.logger.log(
+                    `Warehouse ${opts.warehouseId}: routed ${Object.keys(pinned.jobPackageMap).length} ` +
+                    `pre-assigned package(s) for driver ${pinned.driverId}/vehicle ${pinned.vehicleId} (${result.optimizationId}).`,
+                );
+            }
 
             await runner.commitTransaction();
-            this.logger.log(`Warehouse ${opts.warehouseId}: optimization committed (${optimizationId}).`);
-            return { optimisationId: optimizationId, skipReason: null };
+            this.logger.log(`Warehouse ${opts.warehouseId}: optimization committed (${optimisationId}).`);
+            return { optimisationId, skipReason: null };
         } catch (err) {
             await runner.rollbackTransaction();
             throw err;

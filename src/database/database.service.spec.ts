@@ -174,7 +174,8 @@ describe('DatabaseService', () => {
                             customer_lat: -33.9,
                         },
                     ])
-                    .mockResolvedValueOnce([ASSIGNMENT_ROW]),
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
             const result = await service.buildOptimizationRequest(runner as never);
@@ -206,7 +207,8 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([
                         ASSIGNMENT_ROW, // driving-car
                         { ...ASSIGNMENT_ROW, vehicle_id: 'veh-2', ors_vehicle_type: 'driving-hgv' },
-                    ]),
+                    ])
+                    .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
             const result = await service.buildOptimizationRequest(runner as never);
@@ -233,7 +235,8 @@ describe('DatabaseService', () => {
                             customer_lat: -33.9,
                         },
                     ])
-                    .mockResolvedValueOnce([ASSIGNMENT_ROW]),
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
             const result = await service.buildOptimizationRequest(runner as never);
@@ -259,7 +262,8 @@ describe('DatabaseService', () => {
                             customer_lat: -33.9,
                         },
                     ])
-                    .mockResolvedValueOnce([ASSIGNMENT_ROW]),
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
             const result = await service.buildOptimizationRequest(runner as never);
@@ -288,7 +292,8 @@ describe('DatabaseService', () => {
                             customer_lat: null,
                         },
                     ])
-                    .mockResolvedValueOnce([ASSIGNMENT_ROW]),
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
             const result = await service.buildOptimizationRequest(runner as never);
@@ -304,7 +309,8 @@ describe('DatabaseService', () => {
                 jest.fn()
                     .mockResolvedValueOnce([]) // no PENDING/unassigned packages
                     .mockResolvedValueOnce([ASSIGNMENT_ROW]) // assignment supplies warehouse coords
-                    .mockResolvedValueOnce([{ already_assigned: '2', not_pending: '1' }]), // diagnostic query
+                    .mockResolvedValueOnce([{ already_assigned: '2', not_pending: '1' }]) // diagnostic query
+                    .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
             const result = await service.buildOptimizationRequest(runner as never);
@@ -320,7 +326,8 @@ describe('DatabaseService', () => {
                 jest.fn()
                     .mockResolvedValueOnce([]) // no PENDING/unassigned packages
                     .mockResolvedValueOnce([ASSIGNMENT_ROW])
-                    .mockResolvedValueOnce([{ already_assigned: '0', not_pending: '0' }]),
+                    .mockResolvedValueOnce([{ already_assigned: '0', not_pending: '0' }])
+                    .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
             const result = await service.buildOptimizationRequest(runner as never);
@@ -346,13 +353,132 @@ describe('DatabaseService', () => {
                             customer_lat: -33.9,
                         },
                     ])
-                    .mockResolvedValueOnce([ASSIGNMENT_ROW]),
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
             const result = await service.buildOptimizationRequest(runner as never);
 
             // Vehicle warehouse coords used — start/end should be set
             expect(result.request.vehicles[0].start).toEqual([151.2, -33.8]);
+        });
+
+        describe('pinned routes (packages already paired outside the optimiser)', () => {
+            const TODAY = new Date();
+            const NORMAL_PACKAGE = {
+                id: 'pkg-1',
+                tracking_number: 'TRK001',
+                created_at: TODAY,
+                warehouse_id: 'wh-1',
+                warehouse_lon: 151.2,
+                warehouse_lat: -33.8,
+                weight_kg: 2,
+                scheduled_arrival: TODAY.toISOString(),
+                customer_lon: 151.3,
+                customer_lat: -33.9,
+            };
+            const PINNED_ROW = {
+                id: 'pkg-pinned-1',
+                driver_id: 'drv-9',
+                vehicle_id: 'veh-9',
+                vehicle_gross_limits: 3000,
+                ors_vehicle_type: 'driving-hgv',
+                weight_kg: 2,
+                scheduled_arrival: TODAY.toISOString(),
+                customer_lon: 151.4,
+                customer_lat: -34.0,
+            };
+
+            it('builds a single-vehicle pinned route alongside the main request', async () => {
+                const runner = makeRunner(
+                    jest.fn()
+                        .mockResolvedValueOnce([NORMAL_PACKAGE])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([PINNED_ROW]),
+                );
+
+                const result = await service.buildOptimizationRequest(runner as never);
+
+                expect(result.request.jobs).toHaveLength(1); // main solve unaffected
+                expect(result.pinnedRoutes).toHaveLength(1);
+                const pinned = result.pinnedRoutes[0];
+                expect(pinned.driverId).toBe('drv-9');
+                expect(pinned.vehicleId).toBe('veh-9');
+                expect(pinned.jobPackageMap[1]).toBe('pkg-pinned-1');
+                expect(pinned.request.jobs).toHaveLength(1);
+                expect(pinned.request.jobs[0].location).toEqual([151.4, -34.0]);
+                expect(pinned.request.vehicles).toHaveLength(1);
+                expect(pinned.request.vehicles[0].profile).toBe('truck');
+                expect(pinned.scheduledStart).toBeInstanceOf(Date);
+            });
+
+            it('groups multiple pinned packages sharing a driver/vehicle pair into one route', async () => {
+                const runner = makeRunner(
+                    jest.fn()
+                        .mockResolvedValueOnce([NORMAL_PACKAGE])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([
+                            PINNED_ROW,
+                            { ...PINNED_ROW, id: 'pkg-pinned-2', customer_lon: 151.5, customer_lat: -34.1 },
+                        ]),
+                );
+
+                const result = await service.buildOptimizationRequest(runner as never);
+
+                expect(result.pinnedRoutes).toHaveLength(1);
+                expect(result.pinnedRoutes[0].request.jobs).toHaveLength(2);
+                expect(Object.values(result.pinnedRoutes[0].jobPackageMap).sort()).toEqual([
+                    'pkg-pinned-1',
+                    'pkg-pinned-2',
+                ]);
+            });
+
+            it('keeps separately-paired vehicles as separate routes', async () => {
+                const runner = makeRunner(
+                    jest.fn()
+                        .mockResolvedValueOnce([NORMAL_PACKAGE])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([
+                            PINNED_ROW,
+                            { ...PINNED_ROW, id: 'pkg-pinned-2', driver_id: 'drv-8', vehicle_id: 'veh-8' },
+                        ]),
+                );
+
+                const result = await service.buildOptimizationRequest(runner as never);
+
+                expect(result.pinnedRoutes).toHaveLength(2);
+            });
+
+            it('drops a pinned group entirely when every package in it lacks a geocoded location', async () => {
+                const runner = makeRunner(
+                    jest.fn()
+                        .mockResolvedValueOnce([NORMAL_PACKAGE])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([
+                            { ...PINNED_ROW, customer_lon: null, customer_lat: null },
+                        ]),
+                );
+
+                const result = await service.buildOptimizationRequest(runner as never);
+
+                expect(result.pinnedRoutes).toHaveLength(0);
+            });
+
+            it('excludes a pinned package with a future scheduled_arrival from its route', async () => {
+                const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+                const runner = makeRunner(
+                    jest.fn()
+                        .mockResolvedValueOnce([NORMAL_PACKAGE])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([
+                            { ...PINNED_ROW, scheduled_arrival: future.toISOString() },
+                        ]),
+                );
+
+                const result = await service.buildOptimizationRequest(runner as never);
+
+                expect(result.pinnedRoutes).toHaveLength(0);
+            });
         });
     });
 

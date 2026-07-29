@@ -37,6 +37,7 @@ describe('TasksService', () => {
         beginTransaction: jest.Mock;
         buildOptimizationRequest: jest.Mock;
         insertOptimisedRoutes: jest.Mock;
+        insertAdhocRoutes: jest.Mock;
     };
     let vroomService: { solve: jest.Mock };
     let optimisationRunRepo: { update: jest.Mock };
@@ -88,6 +89,7 @@ describe('TasksService', () => {
             beginTransaction: jest.fn(),
             buildOptimizationRequest: jest.fn(),
             insertOptimisedRoutes: jest.fn().mockResolvedValue(undefined),
+            insertAdhocRoutes: jest.fn(),
         };
         vroomService = { solve: jest.fn() };
         optimisationRunRepo = { update: jest.fn().mockResolvedValue(undefined) };
@@ -174,6 +176,7 @@ describe('TasksService', () => {
                 vehicleMap: {},
                 jobMap: {},
                 driverMap: {},
+                pinnedRoutes: [],
             });
 
             await service.handleQueue();
@@ -210,6 +213,7 @@ describe('TasksService', () => {
                 vehicleMap: { 1: 'veh-1' },
                 jobMap: { 1: 'pkg-1' },
                 driverMap: { 1: 'drv-1' },
+                pinnedRoutes: [],
             });
             vroomService.solve.mockResolvedValueOnce({
                 code: 0,
@@ -326,6 +330,7 @@ describe('TasksService', () => {
                 jobMap: {},
                 driverMap: {},
                 skipReason: 'No unassigned packages found for this warehouse.',
+                pinnedRoutes: [],
             });
 
             await service.handleQueue();
@@ -340,6 +345,81 @@ describe('TasksService', () => {
                 { status: 'skipped', error: 'No unassigned packages found for this warehouse.' },
             );
             expect(queueService.archive).toHaveBeenCalledWith(BigInt(10));
+        });
+
+        it('routes already-paired packages and marks the run completed even when the main job list is empty', async () => {
+            queueService.readOne.mockResolvedValueOnce({
+                msg_id: BigInt(13),
+                read_ct: 0,
+                enqueued_at: new Date(),
+                vt: new Date(),
+                message: ON_DEMAND_MESSAGE,
+            });
+            const runner = makeRunner();
+            dbService.beginTransaction.mockResolvedValueOnce(runner);
+            const pinnedRequest = {
+                jobs: [{ id: 1, service: 900, location: [151.3, -33.9], amount: [2000], priority: 0 }],
+                vehicles: [
+                    {
+                        id: 1,
+                        profile: 'auto',
+                        start: [151.2, -33.8],
+                        end: [151.2, -33.8],
+                        capacity: [5000],
+                        time_window: [1000, 1000 + 12 * 60 * 60],
+                    },
+                ],
+            };
+            dbService.buildOptimizationRequest.mockResolvedValueOnce({
+                request: { jobs: [], vehicles: [] },
+                vehicleMap: {},
+                jobMap: {},
+                driverMap: {},
+                organisationId: 'org-1',
+                skipReason: 'No eligible packages: 3 already have a driver/vehicle assignment.',
+                pinnedRoutes: [
+                    {
+                        driverId: 'drv-1',
+                        vehicleId: 'veh-1',
+                        scheduledStart: new Date(1000 * 1000),
+                        request: pinnedRequest,
+                        jobPackageMap: { 1: 'pkg-pinned-1' },
+                    },
+                ],
+            });
+            vroomService.solve.mockResolvedValueOnce({
+                code: 0,
+                summary: { cost: 50, routes: 1, unassigned: 0 },
+                routes: [{ vehicle: 1, cost: 50, delivery: [0], pickup: [0], service: 0, duration: 1800, waiting_time: 0, steps: [] }],
+                unassigned: [],
+            });
+            dbService.insertAdhocRoutes.mockResolvedValueOnce({
+                optimizationId: 'opt-pinned-1',
+                routeId: 'route-1',
+                unassignedPackageIds: [],
+            });
+
+            await service.handleQueue();
+
+            expect(vroomService.solve).toHaveBeenCalledWith(pinnedRequest);
+            expect(dbService.insertAdhocRoutes).toHaveBeenCalledWith(
+                runner,
+                pinnedRequest,
+                expect.objectContaining({ code: 0 }),
+                { 1: 'pkg-pinned-1' },
+                {
+                    organisationId: 'org-1',
+                    scheduledStart: new Date(1000 * 1000),
+                    driverId: 'drv-1',
+                    vehicleId: 'veh-1',
+                },
+            );
+            expect(runner.commitTransaction).toHaveBeenCalled();
+            expect(runner.rollbackTransaction).not.toHaveBeenCalled();
+            expect(optimisationRunRepo.update).toHaveBeenCalledWith(
+                { id: 'run-1' },
+                { status: 'completed', optimisationId: 'opt-pinned-1' },
+            );
         });
 
         it('marks the run completed with the optimisation id when jobs are routed', async () => {
@@ -364,6 +444,7 @@ describe('TasksService', () => {
                 jobMap: { 1: 'pkg-1' },
                 driverMap: { 1: 'drv-1' },
                 skipReason: null,
+                pinnedRoutes: [],
             });
             vroomService.solve.mockResolvedValueOnce({
                 code: 0,

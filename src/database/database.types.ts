@@ -38,6 +38,38 @@ export interface AssignmentRow {
 }
 
 /**
+ * Raw row shape for a package already paired to a driver/vehicle (via
+ * package_assignment, e.g. assigned outside the optimiser) but not yet routed.
+ */
+export interface PinnedPackageRow {
+  id: string;
+  driver_id: string;
+  vehicle_id: string;
+  vehicle_gross_limits: number;
+  ors_vehicle_type: string;
+  weight_kg: number | null;
+  scheduled_arrival: string | null;
+  customer_lon: number | null;
+  customer_lat: number | null;
+}
+
+/**
+ * A ready-to-solve single-vehicle VROOM request for one (driver, vehicle)
+ * pair that already owns unrouted packages — mirrors the ad-hoc flow, but
+ * built automatically so a stray manual assignment still gets a route.
+ */
+export interface PinnedRouteRequest {
+  driverId: string;
+  vehicleId: string;
+  scheduledStart: Date;
+  request: {
+    jobs: VroomJob[];
+    vehicles: VroomVehicle[];
+  };
+  jobPackageMap: Record<number, string>;
+}
+
+/**
  * Intermediate shape used when batch-inserting vrp_route_step rows.
  * lon/lat are kept separate so they can be passed as individual parameters
  * to ST_SetSRID(ST_Point($lon, $lat), 4326).
@@ -106,4 +138,6 @@ export interface BuildResult {
   timeWindowed: boolean;
   /** Why `request.jobs` is empty; null whenever it isn't. */
   skipReason: string | null;
+  /** One single-vehicle request per pre-paired (driver, vehicle) needing a route. */
+  pinnedRoutes: PinnedRouteRequest[];
 }
