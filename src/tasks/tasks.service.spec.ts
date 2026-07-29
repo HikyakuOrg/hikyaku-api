@@ -39,6 +39,7 @@ describe('TasksService', () => {
         insertOptimisedRoutes: jest.Mock;
     };
     let vroomService: { solve: jest.Mock };
+    let optimisationRunRepo: { update: jest.Mock };
     let queueService: {
         ensureQueue: jest.Mock;
         enqueue: jest.Mock;
@@ -89,7 +90,7 @@ describe('TasksService', () => {
             insertOptimisedRoutes: jest.fn().mockResolvedValue(undefined),
         };
         vroomService = { solve: jest.fn() };
-        const optimisationRunRepo = { update: jest.fn().mockResolvedValue(undefined) };
+        optimisationRunRepo = { update: jest.fn().mockResolvedValue(undefined) };
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
@@ -295,6 +296,112 @@ describe('TasksService', () => {
 
             // MAX_RETRIES fallback means permanent failure path is taken
             expect(queueService.deleteMsg).toHaveBeenCalledWith(BigInt(5));
+        });
+    });
+
+    // ---------------------------------------------------------------------------
+    // handleQueue — on-demand dispatch (kind: 'on_demand' -> handleOnDemand)
+    // ---------------------------------------------------------------------------
+    describe('handleQueue (on-demand dispatch)', () => {
+        const ON_DEMAND_MESSAGE = {
+            kind: 'on_demand',
+            runId: 'run-1',
+            organisationId: 'org-1',
+            warehouseId: 'wh-1',
+        };
+
+        it('marks the run skipped with the diagnostic reason when there are no eligible jobs', async () => {
+            queueService.readOne.mockResolvedValueOnce({
+                msg_id: BigInt(10),
+                read_ct: 0,
+                enqueued_at: new Date(),
+                vt: new Date(),
+                message: ON_DEMAND_MESSAGE,
+            });
+            const runner = makeRunner();
+            dbService.beginTransaction.mockResolvedValueOnce(runner);
+            dbService.buildOptimizationRequest.mockResolvedValueOnce({
+                request: { jobs: [], vehicles: [] },
+                vehicleMap: {},
+                jobMap: {},
+                driverMap: {},
+                skipReason: 'No unassigned packages found for this warehouse.',
+            });
+
+            await service.handleQueue();
+
+            expect(runner.rollbackTransaction).toHaveBeenCalled();
+            expect(optimisationRunRepo.update).toHaveBeenCalledWith(
+                { id: 'run-1' },
+                { status: 'running' },
+            );
+            expect(optimisationRunRepo.update).toHaveBeenCalledWith(
+                { id: 'run-1' },
+                { status: 'skipped', error: 'No unassigned packages found for this warehouse.' },
+            );
+            expect(queueService.archive).toHaveBeenCalledWith(BigInt(10));
+        });
+
+        it('marks the run completed with the optimisation id when jobs are routed', async () => {
+            queueService.readOne.mockResolvedValueOnce({
+                msg_id: BigInt(11),
+                read_ct: 0,
+                enqueued_at: new Date(),
+                vt: new Date(),
+                message: ON_DEMAND_MESSAGE,
+            });
+            const runner = makeRunner();
+            dbService.beginTransaction.mockResolvedValueOnce(runner);
+            const request = {
+                jobs: [{ id: 1, service: 900, location: [151.2, -33.8], amount: [2000], priority: 50 }],
+                vehicles: [
+                    { id: 1, profile: 'auto', start: [151.0, -33.7], end: [151.0, -33.7], capacity: [5000] },
+                ],
+            };
+            dbService.buildOptimizationRequest.mockResolvedValueOnce({
+                request,
+                vehicleMap: { 1: 'veh-1' },
+                jobMap: { 1: 'pkg-1' },
+                driverMap: { 1: 'drv-1' },
+                skipReason: null,
+            });
+            vroomService.solve.mockResolvedValueOnce({
+                code: 0,
+                summary: { cost: 100, routes: 1, unassigned: 0 },
+                routes: [{ vehicle: 1, cost: 100, delivery: [0], pickup: [0], service: 0, duration: 3600, waiting_time: 0, steps: [] }],
+                unassigned: [],
+            });
+            dbService.insertOptimisedRoutes.mockResolvedValueOnce('opt-1');
+
+            await service.handleQueue();
+
+            expect(runner.commitTransaction).toHaveBeenCalled();
+            expect(optimisationRunRepo.update).toHaveBeenCalledWith(
+                { id: 'run-1' },
+                { status: 'completed', optimisationId: 'opt-1' },
+            );
+        });
+
+        it('marks the run failed with the error when runOptimization throws', async () => {
+            queueService.readOne.mockResolvedValueOnce({
+                msg_id: BigInt(12),
+                read_ct: 0,
+                enqueued_at: new Date(),
+                vt: new Date(),
+                message: ON_DEMAND_MESSAGE,
+            });
+            const runner = makeRunner();
+            dbService.beginTransaction.mockResolvedValueOnce(runner);
+            dbService.buildOptimizationRequest.mockRejectedValueOnce(new Error('VROOM unreachable'));
+
+            await service.handleQueue();
+
+            expect(runner.rollbackTransaction).toHaveBeenCalled();
+            expect(queueService.deleteMsg).toHaveBeenCalledWith(BigInt(12));
+            expect(optimisationRunRepo.update).toHaveBeenCalledWith(
+                { id: 'run-1' },
+                { status: 'failed', error: 'Error: VROOM unreachable' },
+            );
         });
     });
 });

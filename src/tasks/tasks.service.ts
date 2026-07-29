@@ -212,7 +212,7 @@ export class TasksService implements OnApplicationBootstrap {
         await this.optimisationRunRepo.update({ id: runId }, { status: 'running' });
 
         try {
-            const optimizationId = await this.runOptimization({
+            const result = await this.runOptimization({
                 warehouseId,
                 organisationId,
                 useTimeWindows: true,
@@ -221,12 +221,12 @@ export class TasksService implements OnApplicationBootstrap {
             await this.queueService.archive(msgId);
             await this.optimisationRunRepo.update(
                 { id: runId },
-                optimizationId
-                    ? { status: 'completed', optimisationId: optimizationId }
-                    : { status: 'skipped' },
+                result.optimisationId
+                    ? { status: 'completed', optimisationId: result.optimisationId }
+                    : { status: 'skipped', error: result.skipReason },
             );
             this.logger.log(
-                `[consumer] On-demand optimisation ${runId} ${optimizationId ? 'completed' : 'skipped (no eligible packages)'}.`,
+                `[consumer] On-demand optimisation ${runId} ${result.optimisationId ? 'completed' : `skipped (${result.skipReason})`}.`,
             );
         } catch (err: unknown) {
             this.logger.error(`[consumer] On-demand optimisation ${runId} failed: ${String(err)}`);
@@ -243,15 +243,17 @@ export class TasksService implements OnApplicationBootstrap {
         organisationId?: string;
         useTimeWindows?: boolean;
         setOffOverrides?: SetOffOverride[];
-    }): Promise<string | null> {
+    }): Promise<{ optimisationId: string | null; skipReason: string | null }> {
         const runner = await this.databaseService.beginTransaction();
         try {
             const build = await this.databaseService.buildOptimizationRequest(runner, opts);
 
             if (build.request.jobs.length === 0) {
-                this.logger.log(`Warehouse ${opts.warehouseId}: no eligible packages, skipping VROOM call.`);
+                this.logger.log(
+                    `Warehouse ${opts.warehouseId}: no eligible packages, skipping VROOM call. ${build.skipReason}`,
+                );
                 await runner.rollbackTransaction();
-                return null;
+                return { optimisationId: null, skipReason: build.skipReason };
             }
 
             const response = await this.vroomService.solve(build.request);
@@ -268,7 +270,7 @@ export class TasksService implements OnApplicationBootstrap {
 
             await runner.commitTransaction();
             this.logger.log(`Warehouse ${opts.warehouseId}: optimization committed (${optimizationId}).`);
-            return optimizationId;
+            return { optimisationId: optimizationId, skipReason: null };
         } catch (err) {
             await runner.rollbackTransaction();
             throw err;

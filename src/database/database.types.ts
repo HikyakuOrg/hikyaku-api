@@ -104,4 +104,6 @@ export interface BuildResult {
   organisationId: string | null;
   /** True when vehicle time_windows were emitted (arrivals are absolute epoch). */
   timeWindowed: boolean;
+  /** Why `request.jobs` is empty; null whenever it isn't. */
+  skipReason: string | null;
 }

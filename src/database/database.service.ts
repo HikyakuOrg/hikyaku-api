@@ -269,9 +269,14 @@ export class DatabaseService implements OnApplicationBootstrap {
         // 5. Build jobs array — apply priority rules and skip future-due packages.
         const jobs: BuildResult['request']['jobs'] = [];
         const jobMap: Record<number, string> = {};
+        let excludedNoGeocode = 0;
+        let excludedFutureScheduled = 0;
 
         packages.forEach((pkg, index) => {
-            if (pkg.customer_lon == null || pkg.customer_lat == null) return;
+            if (pkg.customer_lon == null || pkg.customer_lat == null) {
+                excludedNoGeocode++;
+                return;
+            }
 
             // VROOM expects weight in grams for capacity matching.
             const weight =
@@ -291,7 +296,10 @@ export class DatabaseService implements OnApplicationBootstrap {
                 }
             }
 
-            if (skipProcessing) return;
+            if (skipProcessing) {
+                excludedFutureScheduled++;
+                return;
+            }
 
             const jobNumericId = index + 1;
             jobs.push({
@@ -304,6 +312,13 @@ export class DatabaseService implements OnApplicationBootstrap {
             jobMap[jobNumericId] = pkg.id;
         });
 
+        const skipReason = jobs.length === 0
+            ? await this.explainNoEligibleJobs(runner, opts.warehouseId ?? null, packages.length, {
+                excludedNoGeocode,
+                excludedFutureScheduled,
+            })
+            : null;
+
         return {
             request: { jobs, vehicles },
             vehicleMap,
@@ -311,7 +326,68 @@ export class DatabaseService implements OnApplicationBootstrap {
             driverMap,
             organisationId,
             timeWindowed: !!opts.useTimeWindows,
+            skipReason,
         };
+    }
+
+    /**
+     * Builds a human-readable reason `jobs` came out empty, so a `skipped` run
+     * is distinguishable from a stuck worker (see optimisation_run.error).
+     * Only called on the rare zero-jobs path, so the extra diagnostic query
+     * below never runs on the normal hot path.
+     */
+    private async explainNoEligibleJobs(
+        runner: QueryRunner,
+        warehouseId: string | null,
+        candidateCount: number,
+        excluded: { excludedNoGeocode: number; excludedFutureScheduled: number },
+    ): Promise<string> {
+        if (candidateCount > 0) {
+            const parts: string[] = [];
+            if (excluded.excludedNoGeocode > 0) {
+                parts.push(`${excluded.excludedNoGeocode} missing a geocoded customer location`);
+            }
+            if (excluded.excludedFutureScheduled > 0) {
+                parts.push(`${excluded.excludedFutureScheduled} scheduled for a future date`);
+            }
+            return `${candidateCount} candidate package(s) found but all were excluded (${parts.join(', ')}).`;
+        }
+
+        // No candidates even before the geocode/date filters — find out whether
+        // that's because nothing is pending, or because it's pending but already
+        // spoken for by a manual assignment.
+        const diagRows: { already_assigned: string; not_pending: string }[] = await runner.query(
+            `
+      SELECT
+        COUNT(*) FILTER (WHERE pa.package_id IS NOT NULL) AS already_assigned,
+        COUNT(*) FILTER (
+          WHERE pa.package_id IS NULL AND latest_status.package_status IS DISTINCT FROM $1
+        ) AS not_pending
+      FROM   packages                p
+      JOIN   LATERAL (
+               SELECT package_status
+               FROM   package_timeline
+               WHERE  package_id = p.id
+               ORDER  BY created_at DESC
+               LIMIT  1
+             ) latest_status ON true
+      LEFT   JOIN package_assignment pa ON pa.package_id = p.id
+      WHERE  p.optimisation_id IS NULL
+        AND  ($2::uuid IS NULL OR p.warehouse_id = $2)
+      `,
+            [this.pendingStatusId, warehouseId],
+        );
+        const diag = diagRows[0];
+        const alreadyAssigned = Number(diag?.already_assigned ?? 0);
+        const notPending = Number(diag?.not_pending ?? 0);
+
+        if (alreadyAssigned === 0 && notPending === 0) {
+            return 'No unassigned packages found for this warehouse.';
+        }
+        const parts: string[] = [];
+        if (notPending > 0) parts.push(`${notPending} not in PENDING status`);
+        if (alreadyAssigned > 0) parts.push(`${alreadyAssigned} already have a driver/vehicle assignment`);
+        return `No eligible packages: ${parts.join(', ')}.`;
     }
 
     /**

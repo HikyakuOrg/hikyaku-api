@@ -78,7 +78,9 @@ export class LatestOptimisationRunDto {
     @ApiProperty({
         type: String,
         nullable: true,
-        description: 'Failure detail when status is `failed`.',
+        description:
+            'Failure detail when status is `failed`, or the reason no packages ' +
+            'were eligible when status is `skipped`. Always null otherwise.',
     })
     error: string | null;
 

@@ -265,6 +265,67 @@ describe('DatabaseService', () => {
             const result = await service.buildOptimizationRequest(runner as never);
 
             expect(result.request.jobs).toHaveLength(0);
+            expect(result.skipReason).toBe(
+                '1 candidate package(s) found but all were excluded (1 scheduled for a future date).',
+            );
+        });
+
+        it('skips packages whose customer has no geocoded location', async () => {
+            const today = new Date();
+            const runner = makeRunner(
+                jest.fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-no-geo',
+                            tracking_number: 'TRK005',
+                            created_at: today,
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: 1,
+                            scheduled_arrival: today.toISOString(),
+                            customer_lon: null,
+                            customer_lat: null,
+                        },
+                    ])
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW]),
+            );
+
+            const result = await service.buildOptimizationRequest(runner as never);
+
+            expect(result.request.jobs).toHaveLength(0);
+            expect(result.skipReason).toBe(
+                '1 candidate package(s) found but all were excluded (1 missing a geocoded customer location).',
+            );
+        });
+
+        it('explains an empty candidate set via the already-assigned/not-pending diagnostic query', async () => {
+            const runner = makeRunner(
+                jest.fn()
+                    .mockResolvedValueOnce([]) // no PENDING/unassigned packages
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW]) // assignment supplies warehouse coords
+                    .mockResolvedValueOnce([{ already_assigned: '2', not_pending: '1' }]), // diagnostic query
+            );
+
+            const result = await service.buildOptimizationRequest(runner as never);
+
+            expect(result.request.jobs).toHaveLength(0);
+            expect(result.skipReason).toBe(
+                'No eligible packages: 1 not in PENDING status, 2 already have a driver/vehicle assignment.',
+            );
+        });
+
+        it('reports a plain "no packages" reason when the diagnostic query also finds nothing', async () => {
+            const runner = makeRunner(
+                jest.fn()
+                    .mockResolvedValueOnce([]) // no PENDING/unassigned packages
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([{ already_assigned: '0', not_pending: '0' }]),
+            );
+
+            const result = await service.buildOptimizationRequest(runner as never);
+
+            expect(result.skipReason).toBe('No unassigned packages found for this warehouse.');
         });
 
         it('falls back to vehicle warehouse coords when packages have none', async () => {
