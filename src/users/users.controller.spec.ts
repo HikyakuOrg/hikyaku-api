@@ -1,9 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ValidationPipe, ExecutionContext } from '@nestjs/common';
 import {
-    INestApplication,
-    ValidationPipe,
-    ExecutionContext,
-} from '@nestjs/common';
+    FastifyAdapter,
+    NestFastifyApplication,
+} from '@nestjs/platform-fastify';
 import request = require('supertest');
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
@@ -32,7 +32,7 @@ async function buildApp(options: {
         auth: { getUser: jest.Mock };
         from: jest.Mock;
     };
-}): Promise<INestApplication> {
+}): Promise<NestFastifyApplication> {
     const { bypass = false } = options;
     const supabase = options.supabase ?? {
         auth: { getUser: jest.fn() },
@@ -54,17 +54,20 @@ async function buildApp(options: {
     }
 
     const module: TestingModule = await builder.compile();
-    const app = module.createNestApplication();
+    const app = module.createNestApplication<NestFastifyApplication>(
+        new FastifyAdapter(),
+    );
     app.useGlobalPipes(
         new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }),
     );
     await app.init();
+    await app.getHttpAdapter().getInstance().ready();
     return app;
 }
 
 
 describe('UsersController (integration)', () => {
-    let app: INestApplication;
+    let app: NestFastifyApplication;
 
     const validBody = {
         user_email: 'user@example.com',
