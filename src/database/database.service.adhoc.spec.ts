@@ -24,10 +24,18 @@ function makeRunner(claimed?: { id: string }[]) {
         Promise.resolve({ identifiers: [{ id: idByEntity[entity.name] }] }),
     );
     const upsert = jest.fn().mockResolvedValue(undefined);
-    const query = jest.fn((sql: string, params?: unknown[]) => {
+    const query = jest.fn((sql: string, params?: unknown[], useStructuredResult?: boolean) => {
         if (String(sql).includes('UPDATE packages')) {
             const requested = (params?.[1] ?? []) as string[];
-            return Promise.resolve(claimed ?? requested.map((id) => ({ id })));
+            const rows = claimed ?? requested.map((id) => ({ id }));
+            // Mirrors TypeORM's postgres driver: an UPDATE resolves to the
+            // [rows, rowCount] tuple unless the caller opts into the structured
+            // result, in which case the rows live under `records`.
+            return Promise.resolve(
+                useStructuredResult
+                    ? { records: rows, affected: rows.length, raw: [rows, rows.length] }
+                    : [rows, rows.length],
+            );
         }
         return Promise.resolve([]);
     });
@@ -262,6 +270,47 @@ describe('DatabaseService.insertAdhocRoutes', () => {
 
         expect(err).toBeInstanceOf(ConflictException);
         expect((err as Error).message).toMatch(/pkg-a/);
+    });
+
+    it('claims every routed package when a run has more than two of them', async () => {
+        // Regression: TypeORM resolves an UPDATE to [rows, rowCount], so reading
+        // the raw result always measured 2 claimed rows and any run of 3+
+        // packages 409'd even though the claim itself had succeeded.
+        const threeJobs: OptimizationResponse = {
+            code: 0,
+            summary: { cost: 100, routes: 1, unassigned: 0, duration: 1500, service: 900 },
+            routes: [
+                {
+                    vehicle: 1,
+                    cost: 100,
+                    steps: [
+                        { type: 'start', arrival: START_EPOCH, location: [1, 2] },
+                        { type: 'job', id: 1, arrival: START_EPOCH + 600, location: [10, 20], service: 900 },
+                        { type: 'job', id: 2, arrival: START_EPOCH + 900, location: [30, 40], service: 900 },
+                        { type: 'job', id: 3, arrival: START_EPOCH + 1200, location: [50, 60], service: 900 },
+                        { type: 'end', arrival: START_EPOCH + 1500, location: [1, 2] },
+                    ],
+                },
+            ],
+            unassigned: [],
+        };
+        const { runner, query } = makeRunner();
+        const svc = newService();
+
+        const result = await svc.insertAdhocRoutes(
+            runner,
+            { jobs: [], vehicles: [] },
+            threeJobs,
+            { 1: 'pkg-a', 2: 'pkg-b', 3: 'pkg-c' },
+            PERSIST_OPTS,
+        );
+
+        expect(result.optimizationId).toBe('opt-1');
+        const claimCall = query.mock.calls.find((c) =>
+            String(c[0]).includes('UPDATE packages'),
+        );
+        expect(claimCall![1]).toEqual(['opt-1', ['pkg-a', 'pkg-b', 'pkg-c']]);
+        expect(claimCall![2]).toBe(true);
     });
 
     it('rejects a routed job with no package mapping rather than silently dropping it', async () => {

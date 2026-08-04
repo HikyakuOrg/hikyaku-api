@@ -82,6 +82,26 @@ export class DatabaseService implements OnApplicationBootstrap {
     }
 
     /**
+     * Executes a mutating statement with a RETURNING clause outside of a
+     * transaction, and yields only its rows.
+     *
+     * [query] cannot do this: TypeORM resolves an UPDATE/DELETE to the tuple
+     * [rows, rowCount], so a caller reading it as rows always sees a two-element
+     * array whatever RETURNING produced. The rows are exposed separately under
+     * `records`, and only QueryRunner.query takes the flag that asks for them —
+     * DataSource.query's third argument is a QueryRunner, not that flag.
+     */
+    async queryReturning<T = unknown>(sql: string, params?: unknown[]): Promise<T[]> {
+        const runner = this.dataSource.createQueryRunner();
+        try {
+            const result = await runner.query(sql, params, true);
+            return (result.records ?? []) as T[];
+        } finally {
+            await runner.release();
+        }
+    }
+
+    /**
      * Fetches pending unassigned packages and active driver–vehicle assignments,
      * returning a ready-to-send VROOM optimization request plus the lookup maps
      * needed by insertOptimisedRoutes.
@@ -1041,14 +1061,20 @@ export class DatabaseService implements OnApplicationBootstrap {
         //    we abort so the caller's transaction rolls the whole run back.
         if (routedPackageIds.size > 0) {
             const ids = Array.from(routedPackageIds);
-            const claimed: { id: string }[] = await runner.query(
+            // useStructuredResult=true is required here: TypeORM returns
+            // [rows, rowCount] for UPDATE queries by default, so the raw result
+            // has length 2 no matter how many rows RETURNING produced — which
+            // made every run of 3+ packages look like a lost race.
+            const claimResult = await runner.query(
                 `UPDATE packages
                     SET optimisation_id = $1
                   WHERE id = ANY($2::uuid[])
                     AND optimisation_id IS NULL
                 RETURNING id`,
                 [optimizationId, ids],
+                true,
             );
+            const claimed = (claimResult.records ?? []) as { id: string }[];
             if (claimed.length < ids.length) {
                 const lost = ids.filter((id) => !claimed.some((c) => c.id === id));
                 throw new ConflictException(

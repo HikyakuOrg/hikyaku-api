@@ -358,7 +358,11 @@ export class InvitationsService {
         id: string,
         user: { email: string },
     ): Promise<{ ok: true }> {
-        const result = (await this.db.query(
+        // queryReturning, not query: TypeORM resolves an UPDATE to
+        // [rows, rowCount], so plain query() would report a length of 2 here
+        // even when the statement matched nothing and the 404 below could never
+        // fire. Kept as one atomic UPDATE so the pending-only guard still holds.
+        const result = await this.db.queryReturning<{ id: string }>(
             `UPDATE organisation_invitations
                 SET status = 'declined',
                     decided_at = now()
@@ -367,9 +371,9 @@ export class InvitationsService {
                 AND email = lower($2)
           RETURNING id`,
             [id, user.email],
-        )) as { id: string }[];
+        );
 
-        if (!result || result.length === 0) {
+        if (result.length === 0) {
             throw new NotFoundException(
                 'Invitation not found or for a different email',
             );

@@ -126,7 +126,11 @@ export class CustomersService {
             ? await this.updateOrCreateStripeCustomer(stripeAccountId, existing[0].stripe_customer_id, customerId, dto)
             : existing[0].stripe_customer_id;
 
-        const updated: DbRow[] = await this.dataSource.query(
+        // No RETURNING here: TypeORM resolves an UPDATE to [rows, rowCount], so
+        // reading the result as rows yields the rows array at index 0 rather
+        // than a row. The updated record is re-read through getCustomer below,
+        // which already maps it and 404s if it has since gone.
+        await this.dataSource.query(
             `UPDATE public.customer SET
                 customer_name = $1, customer_phone = $2, customer_email = $3,
                 customer_address = $4, customer_suburb = $5, customer_state = $6,
@@ -134,8 +138,7 @@ export class CustomersService {
                 geocode_confidence = $9, pelias_gid = $10, pelias_raw = $11::jsonb,
                 customer_location = ST_SetSRID(ST_Point($12, $13), 4326),
                 stripe_customer_id = $14
-             WHERE id = $15 AND organisation_id = $16
-             RETURNING ${SELECT_COLS}`,
+             WHERE id = $15 AND organisation_id = $16`,
             [
                 dto.name, dto.phone, dto.email ?? null,
                 dto.address.street, dto.address.suburb, dto.address.state,
@@ -146,9 +149,8 @@ export class CustomersService {
                 customerId, organisationId,
             ],
         );
-        if (!updated[0]) throw new NotFoundException(`Customer ${customerId} not found after update`);
 
-        return this.mapRow(updated[0]);
+        return this.getCustomer(organisationId, customerId);
     }
 
     /**
