@@ -1,0 +1,27 @@
+allowBuilds:
+  "@nestjs/core": true
+  "@scarf/scarf": true
+  unrs-resolver: true
+
+minimumReleaseAge: 7200
+
+minimumReleaseAgeExclude:
+  - find-my-way@9.7.0 # GHSA DDoS via HTTP2, no older patched version exists
+  - js-yaml@5.2.2 # exponential parsing time DoS, pinned exactly by @nestjs/swagger
+  - brace-expansion@1.1.18 # DoS bypass fix, rapid-fire patch series, no older fixed version
+  - brace-expansion@2.1.4 # same brace-expansion DoS bypass series
+  - brace-expansion@5.0.9 # same brace-expansion DoS bypass series
+  - fast-uri@3.1.5 # host-confusion fix chain, no older patched version exists
+  - fast-uri@4.1.2 # host-confusion fix chain, no older patched version exists
+
+overrides:
+  find-my-way: ^9.7.0
+  "@nestjs/swagger>js-yaml": ^5.2.2
+  "ajv>fast-uri": ^3.1.5
+  "@fastify/ajv-compiler>fast-uri": ^3.1.5
+  "fast-json-stringify>fast-uri": ^4.1.2
+  "@fastify/static": ^10.1.2
+  "minimatch@3>brace-expansion": ^1.1.18
+  "minimatch@9>brace-expansion": ^2.1.4
+  "minimatch@10>brace-expansion": ^5.0.9
+  "@istanbuljs/load-nyc-config>js-yaml": ^3.15.0
