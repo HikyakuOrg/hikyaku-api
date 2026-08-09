@@ -1,6 +1,6 @@
 allowBuilds:
   "@nestjs/core": true
-  "@scarf/scarf": true
+  "@scarf/scarf": false
   '@sentry/node-cpu-profiler': true
   unrs-resolver: true
 
