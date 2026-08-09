@@ -1,5 +1,7 @@
 
 import { Module } from '@nestjs/common';
+import { APP_FILTER } from '@nestjs/core';
+import { SentryModule, SentryGlobalFilter } from '@sentry/nestjs/setup';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { dataSourceOptions } from './database/data-source';
 import { SupabaseModule } from './supabase/supabase.module';
@@ -21,8 +23,12 @@ import { ServicesModule } from './services/services.module';
 import { RoutingModule } from './routing/routing.module';
 import { OptimisationModule } from './optimisation/optimisation.module';
 
+// Error tracking is opt-in: only wire up Sentry when a DSN is configured.
+const sentryEnabled = !!process.env.SENTRY_DSN;
+
 @Module({
   imports: [
+    ...(sentryEnabled ? [SentryModule.forRoot()] : []),
     ConfigModule.forRoot({
       envFilePath: ['.env.local', '.env'],
     }),
@@ -52,6 +58,10 @@ import { OptimisationModule } from './optimisation/optimisation.module';
     OptimisationModule,
   ],
   controllers: [],
-  providers: [],
+  providers: [
+    ...(sentryEnabled
+      ? [{ provide: APP_FILTER, useClass: SentryGlobalFilter }]
+      : []),
+  ],
 })
 export class AppModule { }
