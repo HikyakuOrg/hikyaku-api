@@ -87,7 +87,7 @@ CREATE INDEX "package_timeline_pkg_created_idx"
     ON "public"."package_timeline" USING "btree" ("package_id", "created_at" DESC, "id" DESC);
 
 -- 5. Backfill helper was single-use; remove it.
-DROP FUNCTION "public"."package_timeline_uuid_v7_backfill"("timestamp with time zone", "bigint");
+DROP FUNCTION "public"."package_timeline_uuid_v7_backfill"(timestamp with time zone, bigint);
 
 -- 6. Enable Supabase Realtime (same mechanism already used for
 --    driver_current_location).
