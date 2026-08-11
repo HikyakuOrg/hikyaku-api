@@ -16,6 +16,7 @@ interface DbRow {
     id: string;
     organisation_id: string;
     stripe_customer_id: string | null;
+    shopify_customer_id: string | null;
     customer_name: string | null;
     customer_phone: string | null;
     customer_email: string | null;
@@ -36,6 +37,7 @@ export interface CustomerRow {
     id: string;
     organisation_id: string;
     stripe_customer_id: string | null;
+    shopify_customer_id: string | null;
     customer_name: string;
     customer_phone: string;
     customer_email: string;
@@ -52,7 +54,7 @@ export interface CustomerRow {
 }
 
 /** Columns selected on every read. Location is emitted as GeoJSON. */
-const SELECT_COLS = `id, organisation_id, stripe_customer_id,
+const SELECT_COLS = `id, organisation_id, stripe_customer_id, shopify_customer_id,
     customer_name, customer_phone, customer_email,
     customer_address, customer_suburb, customer_state, customer_postcode, customer_country,
     geocode_confidence, pelias_gid, pelias_raw,
@@ -170,38 +172,7 @@ export class CustomersService {
         organisationId: string | null,
         idempotencyKey: string,
     ): Promise<string> {
-        const rows: { id: string }[] = await this.dataSource.query(
-            `INSERT INTO public.customer (
-                id, organisation_id,
-                customer_name, customer_phone, customer_email,
-                customer_address, customer_suburb, customer_state, customer_postcode, customer_country,
-                customer_location
-             ) VALUES (
-                $1, $2,
-                $3, $4, $5,
-                $6, $7, $8, $9, $10,
-                ST_SetSRID(ST_Point($11, $12), 4326)
-             )
-             ON CONFLICT (organisation_id, lower(customer_phone)) WHERE customer_phone IS NOT NULL
-             DO UPDATE SET
-                customer_name = EXCLUDED.customer_name,
-                customer_email = EXCLUDED.customer_email,
-                customer_address = EXCLUDED.customer_address,
-                customer_suburb = EXCLUDED.customer_suburb,
-                customer_state = EXCLUDED.customer_state,
-                customer_postcode = EXCLUDED.customer_postcode,
-                customer_country = EXCLUDED.customer_country,
-                customer_location = EXCLUDED.customer_location
-             RETURNING id, stripe_customer_id`,
-            [
-                randomUUID(), organisationId,
-                person.name, person.phone, person.email ?? null,
-                person.address.street, person.address.suburb, person.address.state,
-                person.address.postcode ?? null, person.address.country,
-                person.address.lon, person.address.lat,
-            ],
-        );
-        const customerId = rows[0].id;
+        const customerId = await this.upsertCustomerRow(organisationId, person);
 
         // Best-effort Stripe sync — never blocks the booking on a Stripe failure.
         if (stripeAccountId) {
@@ -229,6 +200,44 @@ export class CustomersService {
             } catch (err) {
                 this.logger.error(`Stripe customer sync failed (${idempotencyKey}): ${String(err)}`);
             }
+        }
+
+        return customerId;
+    }
+
+    /**
+     * Upsert a customer for a Shopify `order.paid` webhook. DB-only — a
+     * Shopify order is paid entirely inside Shopify, so there is no Stripe
+     * payment for a Stripe Customer object to attach to. Syncing one anyway
+     * would just be a third, functionless copy of this person's PII (see
+     * upsertFromBooking, which syncs to Stripe precisely because a Stripe
+     * payment *is* happening in that flow).
+     *
+     * Unlike a booking, phone is frequently absent from Shopify's delivery
+     * payload, so this goes through the same three-tier (phone → email →
+     * name) fallback as upsertFromBooking via upsertCustomerRow — see that
+     * method for the exact matching rules.
+     */
+    async upsertFromShopifyOrder(
+        organisationId: string,
+        person: {
+            name: string;
+            phone: string | null;
+            email?: string | null;
+            address: { lon: number; lat: number; street: string; suburb: string; state: string; postcode?: string | null; country: string };
+            confidence?: number | null;
+            peliasGid?: string | null;
+            peliasRaw?: Record<string, unknown> | null;
+        },
+        shopifyCustomerId: string | null,
+    ): Promise<string> {
+        const customerId = await this.upsertCustomerRow(organisationId, person);
+
+        if (shopifyCustomerId) {
+            await this.dataSource.query(
+                `UPDATE public.customer SET shopify_customer_id = $1 WHERE id = $2`,
+                [shopifyCustomerId, customerId],
+            );
         }
 
         return customerId;
@@ -307,6 +316,81 @@ export class CustomersService {
 
     // ── Private helpers ─────────────────────────────────────────────────────────
 
+    /**
+     * Shared DB-upsert-by-identity used by both upsertFromBooking and
+     * upsertFromShopifyOrder. Picks the strongest available identifier as the
+     * ON CONFLICT target, in descending reliability: phone, then email (only
+     * among rows that also lack a phone), then name (only among rows that
+     * lack both). Each fallback tier is scoped so it can only ever merge into
+     * an equally-weak-identity row — never overwrite one that already has
+     * stronger verified data. See customer_org_phone_unique /
+     * customer_org_email_unique / customer_org_name_unique in the schema.
+     *
+     * geocode_confidence/pelias_gid/pelias_raw are only ever supplied by the
+     * geocoded manual-entry endpoint (UpsertCustomerDto) — booking and
+     * Shopify callers never pass them. On conflict they're preserved via
+     * COALESCE rather than overwritten, so a later booking/Shopify touch
+     * can't blank out an existing row's geocode provenance.
+     */
+    private async upsertCustomerRow(
+        organisationId: string | null,
+        person: {
+            name: string;
+            phone: string | null;
+            email?: string | null;
+            address: { lon: number; lat: number; street: string; suburb: string; state: string; postcode?: string | null; country: string };
+            confidence?: number | null;
+            peliasGid?: string | null;
+            peliasRaw?: Record<string, unknown> | null;
+        },
+    ): Promise<string> {
+        const conflictClause = person.phone
+            ? `ON CONFLICT (organisation_id, lower(customer_phone)) WHERE customer_phone IS NOT NULL`
+            : person.email
+                ? `ON CONFLICT (organisation_id, lower(customer_email)) WHERE customer_email IS NOT NULL AND customer_phone IS NULL`
+                : `ON CONFLICT (organisation_id, lower(customer_name)) WHERE customer_name IS NOT NULL AND customer_phone IS NULL AND customer_email IS NULL`;
+
+        const rows: { id: string }[] = await this.dataSource.query(
+            `INSERT INTO public.customer (
+                id, organisation_id,
+                customer_name, customer_phone, customer_email,
+                customer_address, customer_suburb, customer_state, customer_postcode, customer_country,
+                geocode_confidence, pelias_gid, pelias_raw,
+                customer_location
+             ) VALUES (
+                $1, $2,
+                $3, $4, $5,
+                $6, $7, $8, $9, $10,
+                $11, $12, $13::jsonb,
+                ST_SetSRID(ST_Point($14, $15), 4326)
+             )
+             ${conflictClause}
+             DO UPDATE SET
+                customer_name = EXCLUDED.customer_name,
+                customer_email = EXCLUDED.customer_email,
+                customer_address = EXCLUDED.customer_address,
+                customer_suburb = EXCLUDED.customer_suburb,
+                customer_state = EXCLUDED.customer_state,
+                customer_postcode = EXCLUDED.customer_postcode,
+                customer_country = EXCLUDED.customer_country,
+                customer_location = EXCLUDED.customer_location,
+                geocode_confidence = COALESCE(EXCLUDED.geocode_confidence, public.customer.geocode_confidence),
+                pelias_gid = COALESCE(EXCLUDED.pelias_gid, public.customer.pelias_gid),
+                pelias_raw = COALESCE(EXCLUDED.pelias_raw, public.customer.pelias_raw)
+             RETURNING id`,
+            [
+                randomUUID(), organisationId,
+                person.name, person.phone, person.email ?? null,
+                person.address.street, person.address.suburb, person.address.state,
+                person.address.postcode ?? null, person.address.country,
+                person.confidence ?? null, person.peliasGid ?? null, person.peliasRaw ? JSON.stringify(person.peliasRaw) : null,
+                person.address.lon, person.address.lat,
+            ],
+        );
+
+        return rows[0].id;
+    }
+
     async resolveStripeAccount(organisationId: string): Promise<string | null> {
         const account = await this.orgs.getStripeAccount(organisationId);
         return account?.stripeAccountId ?? null;
@@ -317,6 +401,7 @@ export class CustomersService {
             id: row.id,
             organisation_id: row.organisation_id,
             stripe_customer_id: row.stripe_customer_id,
+            shopify_customer_id: row.shopify_customer_id,
             customer_name: row.customer_name ?? '',
             customer_phone: row.customer_phone ?? '',
             customer_email: row.customer_email ?? '',
