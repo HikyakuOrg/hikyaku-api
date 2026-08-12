@@ -14,7 +14,14 @@ export class CreateInvitationDto {
     @IsNotEmpty()
     user_email: string;
 
-    @ApiProperty({ description: 'Must match the X-Organisation-Slug org id' })
+    @ApiProperty({
+        format: 'uuid',
+        description:
+            'Id of the organisation to invite into. Must be the same organisation ' +
+            'the `X-Organisation-Slug` header resolves to — a mismatch is ' +
+            'rejected with 400. Redundant by design: it makes the caller state ' +
+            'which tenant they believe they are acting on.',
+    })
     @IsUUID('4')
     org_id: string;
 

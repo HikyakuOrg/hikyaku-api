@@ -8,15 +8,10 @@ import {
     Req,
     UseGuards,
 } from '@nestjs/common';
-import {
-    ApiBearerAuth,
-    ApiBody,
-    ApiForbiddenResponse,
-    ApiHeader,
-    ApiResponse,
-    ApiTags,
-    ApiUnauthorizedResponse,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiErrorDto } from 'src/common/swagger/api-error.dto';
+import { ApiGuardErrors } from 'src/common/swagger/api-errors.decorator';
+import { ApiOrganisationSlugHeader } from 'src/common/swagger/tenant-header.decorator';
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
 import { RequirePermission } from 'src/auth/decorators/required-permission.decorator';
 import { OptimisationService } from './optimisation.service';
@@ -30,17 +25,8 @@ import {
 
 @ApiTags('optimisation')
 @ApiBearerAuth('bearer')
-@ApiHeader({
-    name: 'X-Organisation-Slug',
-    required: true,
-    description: 'Slug of the organisation the request acts on.',
-})
-@ApiUnauthorizedResponse({ description: 'Missing, malformed or expired bearer token.' })
-@ApiForbiddenResponse({
-    description:
-        'Unknown organisation, caller is not a member of it, or the required ' +
-        'permission is missing.',
-})
+@ApiOrganisationSlugHeader()
+@ApiGuardErrors()
 @Controller('api/v1/optimisation')
 @UseGuards(PermissionGuard)
 export class OptimisationController {
@@ -54,7 +40,11 @@ export class OptimisationController {
         description: 'Optimisation queued',
         type: RunOptimisationResultDto,
     })
-    @ApiResponse({ status: 429, description: 'Rate limited (see nextAllowedAt)' })
+    @ApiResponse({
+        status: 429,
+        description: 'Rate limited (see nextAllowedAt)',
+        type: ApiErrorDto,
+    })
     run(
         @Body() dto: RunOptimisationDto,
         @Req() req: Request & { organisationId: string; user: { id: string } },
@@ -91,11 +81,14 @@ export class OptimisationController {
         description:
             'Unknown warehouse/driver/vehicle, driver and vehicle at different ' +
             'warehouses, or a package that is unknown, not at startingLocationId, ' +
-            'or whose recipient has no location.',
+            'or whose recipient has no location. Also covers the guard’s missing ' +
+            '`X-Organisation-Slug` and body-validation failures.',
+        type: ApiErrorDto,
     })
     @ApiResponse({
         status: 409,
         description: 'A package is already assigned to another optimisation.',
+        type: ApiErrorDto,
     })
     adhoc(
         @Body() dto: AdhocOptimisationDto,

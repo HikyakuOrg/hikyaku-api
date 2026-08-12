@@ -12,6 +12,7 @@ import {
     ApiTags,
     ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
+import { ApiErrorDto } from 'src/common/swagger/api-error.dto';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { GeocodeService } from './geocode.service';
 import { GeoJsonFeatureCollectionDto } from './dto/geo-json.dto';
@@ -72,6 +73,7 @@ function toPhotonReverseQuery(
 @ApiBearerAuth('bearer')
 @ApiUnauthorizedResponse({
     description: 'Missing or invalid `Authorization` header.',
+    type: ApiErrorDto,
 })
 @UseGuards(AuthGuard)
 @Controller('geocode')

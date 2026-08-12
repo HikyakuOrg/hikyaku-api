@@ -7,12 +7,9 @@ import {
     HttpStatus,
     Post,
 } from '@nestjs/common';
-import {
-    ApiBadRequestResponse,
-    ApiHeader,
-    ApiOkResponse,
-    ApiTags,
-} from '@nestjs/swagger';
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBadRequest } from 'src/common/swagger/api-errors.decorator';
+import { ApiOrgSlugHeader } from 'src/common/swagger/tenant-header.decorator';
 import { OrganisationsService } from 'src/organisations/organisations.service';
 import { ValhallaService } from 'src/valhalla/valhalla.service';
 import { RouteRequestDto } from './dto/route-request.dto';
@@ -36,13 +33,19 @@ export class RoutingController {
 
     @Post('route')
     @HttpCode(HttpStatus.OK)
-    @ApiHeader({
-        name: 'x-org-slug',
-        required: true,
-        description: 'Slug of the active organisation.',
+    @ApiOperation({
+        summary: 'Road-network route through a list of stops.',
+        description:
+            'Hides the routing engine behind a normalised preview: whole-route ' +
+            'geometry, per-leg durations and distances, and a summary. Called from ' +
+            'both the dashboard and the public site, so it is unauthenticated — ' +
+            'but it still requires a valid org slug.',
     })
+    @ApiOrgSlugHeader()
     @ApiOkResponse({ type: RoutePreviewDto })
-    @ApiBadRequestResponse({ description: 'Unknown or missing organisation.' })
+    @ApiBadRequest(
+        'Unknown or missing organisation, or the body failed validation.',
+    )
     async route(
         @Body() dto: RouteRequestDto,
         @Headers('x-org-slug') slug?: string,

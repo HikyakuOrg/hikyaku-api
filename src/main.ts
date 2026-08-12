@@ -8,7 +8,8 @@ import {
 } from '@nestjs/platform-fastify';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
+import { buildOpenApiConfig } from './openapi.config';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -18,19 +19,8 @@ async function bootstrap() {
     { rawBody: true },
   );
   
-  const config = new DocumentBuilder()
-    .setTitle('Hikyaku Logistics API')
-    .setDescription('The Hikyaku Logistics API description')
-    .setVersion('1.0')
-    // Every guard (PermissionGuard, AuthGuard) reads the same standard
-    // `Authorization: Bearer <jwt>` — a single scheme covers all of them so
-    // generated clients wire the token up rather than treating it as a plain
-    // header.
-    .addBearerAuth(
-      { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
-      'bearer',
-    )
-    .build();
+  // Metadata lives in openapi.config.ts
+  const config = buildOpenApiConfig();
   const documentFactory = () => SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api-docs', app, documentFactory);
 
