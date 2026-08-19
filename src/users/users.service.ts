@@ -1,5 +1,6 @@
 import {
     BadRequestException,
+    ForbiddenException,
     Inject,
     Injectable,
     InternalServerErrorException,
@@ -56,7 +57,11 @@ export class UsersService {
         @InjectRepository(UserPermission) private readonly userPermissionRepo: Repository<UserPermission>,
     ) { }
 
-    async createUser(dto: CreateUserDto, organisationId: string): Promise<CreateUserResult> {
+    async createUser(
+        dto: CreateUserDto,
+        callerUserId: string,
+        organisationId: string,
+    ): Promise<CreateUserResult> {
         // Look up the role by name. Fail fast before touching auth so there is
         // nothing to clean up if the caller passes a bad role.
         const role = await this.appRoleRepo.findOne({
@@ -86,6 +91,26 @@ export class UsersService {
                 );
             }
             permissionIds = permRows.map((r) => r.id);
+        }
+
+        // Least-privilege: caller cannot grant permissions they do not hold.
+        // Runs before the invite so a rejection leaves no auth user behind.
+        if (permissionIds.length > 0) {
+            const callerGrants = await this.userPermissionRepo.findBy({
+                organisationId,
+                userId: callerUserId,
+            });
+            const callerPermissionIds = new Set(
+                callerGrants.map((g) => Number(g.permissionId)),
+            );
+            const missing = permissionIds.filter(
+                (id) => !callerPermissionIds.has(Number(id)),
+            );
+            if (missing.length > 0) {
+                throw new ForbiddenException(
+                    'You cannot grant permissions you do not hold',
+                );
+            }
         }
 
         const { data: inviteData, error: inviteError } =

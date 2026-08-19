@@ -45,14 +45,15 @@ export class UsersController {
             'Sends a Supabase invitation email, then writes the membership, ' +
             'permission grants and — for the Driver role — the driver profile in ' +
             'one transaction. If that transaction fails the auth user is deleted ' +
-            'again, so a failed call leaves nothing behind.',
+            'again, so a failed call leaves nothing behind. As with invitations, ' +
+            'the caller cannot grant permissions they do not themselves hold.',
     })
     @ApiCreatedResponse({ type: CreateUserResultDto })
     createUser(
         @Body() dto: CreateUserDto,
-        @Req() req: Request & { organisationId: string },
+        @Req() req: Request & { user: { id: string }; organisationId: string },
     ): Promise<CreateUserResultDto> {
-        return this.usersService.createUser(dto, req.organisationId);
+        return this.usersService.createUser(dto, req.user.id, req.organisationId);
     }
 
     @Delete()
