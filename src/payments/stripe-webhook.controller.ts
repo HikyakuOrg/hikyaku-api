@@ -10,6 +10,8 @@ import {
 import { ApiExcludeEndpoint } from '@nestjs/swagger';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
+import { BillingService } from 'src/billing/billing.service';
+import type { SubscriptionEventPayload } from 'src/billing/billing.service';
 import { PaymentsService } from './payments.service';
 import type { FulfillableCheckoutSession } from './payments.service';
 
@@ -28,6 +30,7 @@ export class StripeWebhookController {
     constructor(
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
         private readonly paymentsService: PaymentsService,
+        private readonly billingService: BillingService,
     ) {}
 
     /**
@@ -82,6 +85,24 @@ export class StripeWebhookController {
             if (session.payment_status === 'paid') {
                 await this.paymentsService.fulfillCheckoutSession(session);
             }
+        }
+
+        // Keeps organisations.trial_ends_at/subscription_status — the cache
+        // PermissionGuard and BillingService.getTrialStatus both read — in sync
+        // with Stripe for every status transition after
+        // BillingService.ensureSubscription() creates the subscription
+        // (trialing -> canceled at trial end, or -> active once a payment
+        // method exists). `created` is included so this self-heals even if the
+        // synchronous write in ensureSubscription() failed after Stripe's API
+        // call succeeded.
+        if (
+            event.type === 'customer.subscription.created' ||
+            event.type === 'customer.subscription.updated' ||
+            event.type === 'customer.subscription.deleted'
+        ) {
+            const subscription =
+                event.data.object as unknown as SubscriptionEventPayload;
+            await this.billingService.syncSubscriptionFromStripe(subscription);
         }
 
         return { received: true };

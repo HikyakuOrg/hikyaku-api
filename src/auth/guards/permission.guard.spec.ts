@@ -23,8 +23,12 @@ const DAY = 24 * 60 * 60 * 1000;
 const future = (days: number) => new Date(Date.now() + days * DAY).toISOString();
 const past = (days: number) => new Date(Date.now() - days * DAY).toISOString();
 
-/** An org row as the guard selects it: `id` plus the trial deadline. */
-type OrgRow = { id: string; trial_ends_at: string | null } | null;
+/** An org row as the guard selects it: `id` plus the cached billing state. */
+type OrgRow = {
+    id: string;
+    trial_ends_at: string | null;
+    subscription_status?: string | null;
+} | null;
 
 /**
  * The guard reads three tables in sequence, so the mock is keyed by table name
@@ -214,9 +218,12 @@ describe('PermissionGuard', () => {
 
     describe('trial enforcement', () => {
         /** Resolve the guard's outcome as a status code, or 200 when it allowed. */
-        async function statusFor(trial_ends_at: string | null) {
+        async function statusFor(
+            trial_ends_at: string | null,
+            subscription_status: string | null = 'trialing',
+        ) {
             await build({
-                organisations: { id: 'org-1', trial_ends_at },
+                organisations: { id: 'org-1', trial_ends_at, subscription_status },
                 team_members: { id: 'u1' },
             });
             authenticated();
@@ -229,22 +236,38 @@ describe('PermissionGuard', () => {
         }
 
         it('allows an organisation whose trial is still running', async () => {
-            expect(await statusFor(future(3))).toBe(HttpStatus.OK);
+            expect(await statusFor(future(3), 'trialing')).toBe(HttpStatus.OK);
         });
 
-        // The regression that matters most: personal orgs and every pre-existing
-        // org carry a null deadline and must stay unrestricted.
-        it('allows an organisation with no trial at all', async () => {
-            expect(await statusFor(null)).toBe(HttpStatus.OK);
+        // The regression that matters most: personal orgs, and every company org
+        // not yet provisioned, carry a null status and must stay unrestricted.
+        it('allows an organisation with no subscription at all', async () => {
+            expect(await statusFor(null, null)).toBe(HttpStatus.OK);
         });
 
-        it('answers 402 once the trial has elapsed', async () => {
-            expect(await statusFor(past(1))).toBe(HttpStatus.PAYMENT_REQUIRED);
+        // Every company org that predated Stripe billing was backfilled to this
+        // sentinel and must never be locked out by it.
+        it('allows a grandfathered organisation regardless of any stray deadline', async () => {
+            expect(await statusFor(past(30), 'grandfathered')).toBe(HttpStatus.OK);
+        });
+
+        it('answers 402 once a real Stripe subscription is canceled', async () => {
+            expect(await statusFor(past(1), 'canceled')).toBe(
+                HttpStatus.PAYMENT_REQUIRED,
+            );
+        });
+
+        // Belt-and-suspenders: status can lag a webhook that has not landed yet,
+        // so the cached deadline is still honoured while nominally trialing.
+        it('answers 402 once trialing but the cached deadline has elapsed', async () => {
+            expect(await statusFor(past(1), 'trialing')).toBe(
+                HttpStatus.PAYMENT_REQUIRED,
+            );
         });
 
         it('lets @AllowExpiredTrial routes through after expiry', async () => {
             metadata[ALLOW_EXPIRED_TRIAL_KEY] = true;
-            expect(await statusFor(past(1))).toBe(HttpStatus.OK);
+            expect(await statusFor(past(1), 'canceled')).toBe(HttpStatus.OK);
         });
 
         // Non-membership must win, so an outsider cannot probe an org's billing

@@ -1,34 +1,76 @@
 /**
- * The one place that decides what a `trial_ends_at` value means.
+ * The one place that decides what an organisation's billing state means.
  *
- * Two callers read the column and they must not disagree: `PermissionGuard`
- * blocks expired orgs, and `BillingService` tells the dashboard what to render.
- * If those two drifted, a user could be shown "3 days left" while every request
- * came back 402 — so the comparison lives here rather than in either of them.
+ * Two callers read it and they must not disagree: `PermissionGuard` blocks an
+ * expired org, and `BillingService` tells the dashboard what to render. If
+ * those two drifted, a user could be shown "3 days left" while every request
+ * came back 402 — so the interpretation lives here rather than in either of
+ * them.
+ *
+ * Stripe is the source of truth: `subscriptionStatus` is a cached copy of a
+ * Stripe subscription's `status`, synced by the customer.subscription.*
+ * webhook (see BillingService.syncSubscriptionFromStripe), plus the
+ * 'grandfathered' sentinel backfilled onto every company org that predates
+ * Stripe billing (see the AddOrganisationSubscriptionStatus migration).
+ * `trialEndsAt` is only meaningful while `subscriptionStatus === 'trialing'`.
  *
  * Pure and dependency-free by design, which is also what makes the boundary
  * cases testable without booting Nest.
  */
 
-/** What a trial deadline resolves to at a given instant. */
+/** What an organisation's billing state resolves to at a given instant. */
 export type TrialState = 'none' | 'active' | 'expired';
 
 /** Milliseconds in a day, for the countdown below. */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Resolve a deadline to a state.
+ * Stripe subscription statuses that mean access should be refused. An
+ * allow-list, not a deny-list: an unrecognised or future Stripe status must
+ * fail open rather than lock an org out because this list did not anticipate
+ * it. `trial_settings.end_behavior.missing_payment_method: 'cancel'` (set at
+ * subscription creation) is what drives a lapsed trial into 'canceled' here —
+ * there is no payment-collection flow yet, so 'past_due'/'incomplete' are not
+ * reachable in practice, but are deliberately left out of this set rather than
+ * blocked, since a future retrying-payment customer should not be locked out
+ * mid-retry.
+ */
+const BLOCKING_STATUSES = new Set([
+    'canceled',
+    'incomplete_expired',
+    'unpaid',
+]);
+
+/**
+ * Resolve a cached subscription status (+ trial deadline) to a state.
  *
- * NULL is `none`, not `expired`: it marks an org the trial never applied to
- * (personal orgs, and orgs created before the column existed), and treating it
- * as expired would lock out every one of them.
+ * - No status (NULL) — no Stripe subscription applies: a personal org, or a
+ *   company org BillingService has not provisioned yet. Unrestricted.
+ * - 'grandfathered' — a company org that predates Stripe billing. Unrestricted,
+ *   permanently: it was never told it was on a metered trial.
+ * - 'trialing' — a real trial is running. `trialEndsAt` is still checked even
+ *   here, as a safety net for a webhook that lags behind the deadline it
+ *   reports.
+ * - 'active' — paying. Unrestricted; nothing left to show.
+ * - a status in BLOCKING_STATUSES — refused.
+ * - anything else (including a future/unrecognised Stripe status) — fails
+ *   open, unrestricted.
  */
 export function trialState(
+    subscriptionStatus: string | null | undefined,
     trialEndsAt: Date | null | undefined,
     now: Date = new Date(),
 ): TrialState {
-    if (!trialEndsAt) return 'none';
-    return trialEndsAt.getTime() > now.getTime() ? 'active' : 'expired';
+    if (subscriptionStatus && BLOCKING_STATUSES.has(subscriptionStatus)) {
+        return 'expired';
+    }
+    if (subscriptionStatus === 'trialing') {
+        if (trialEndsAt && trialEndsAt.getTime() <= now.getTime()) {
+            return 'expired';
+        }
+        return 'active';
+    }
+    return 'none';
 }
 
 /**
@@ -36,14 +78,15 @@ export function trialState(
  * own function so call sites read as a decision rather than a string compare.
  */
 export function isTrialExpired(
+    subscriptionStatus: string | null | undefined,
     trialEndsAt: Date | null | undefined,
     now: Date = new Date(),
 ): boolean {
-    return trialState(trialEndsAt, now) === 'expired';
+    return trialState(subscriptionStatus, trialEndsAt, now) === 'expired';
 }
 
 /**
- * Whole days left, floored, for the sidebar countdown. Null when no trial
+ * Whole days left, floored, for the sidebar countdown. Null when no deadline
  * applies; 0 once the deadline passes rather than a negative number, so the UI
  * never has to special-case the sign.
  *

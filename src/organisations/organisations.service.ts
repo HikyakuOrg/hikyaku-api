@@ -3,6 +3,7 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Organisation } from './organisation.entity';
 import { OrganisationStripeAccount } from './organisation-stripe-account.entity';
+import { OrganisationSubscription } from './organisation-subscription.entity';
 
 @Injectable()
 export class OrganisationsService {
@@ -11,6 +12,8 @@ export class OrganisationsService {
         private readonly orgRepo: Repository<Organisation>,
         @InjectRepository(OrganisationStripeAccount)
         private readonly stripeRepo: Repository<OrganisationStripeAccount>,
+        @InjectRepository(OrganisationSubscription)
+        private readonly subscriptionRepo: Repository<OrganisationSubscription>,
         @InjectDataSource() private readonly dataSource: DataSource,
     ) {}
 
@@ -66,6 +69,36 @@ export class OrganisationsService {
         if (!stripe || stripe.onboardedAt) return;
         stripe.onboardedAt = new Date();
         await this.stripeRepo.save(stripe);
+    }
+
+    /** Upsert the satellite row the first time a company org's Stripe Billing
+     * customer + subscription are created. */
+    async setSubscription(
+        organisationId: string,
+        stripeCustomerId: string,
+        stripeSubscriptionId: string,
+    ): Promise<void> {
+        await this.subscriptionRepo.upsert(
+            { organisationId, stripeCustomerId, stripeSubscriptionId },
+            { conflictPaths: ['organisationId'] },
+        );
+    }
+
+    /**
+     * Writes the cached read model that PermissionGuard and BillingService both
+     * read — see trialState() in src/common/trial.ts. Called right after
+     * provisioning a subscription, and by the customer.subscription.* webhook
+     * on every later status change, so the two never read a stale value.
+     */
+    async updateBillingCache(
+        organisationId: string,
+        trialEndsAt: Date | null,
+        subscriptionStatus: string | null,
+    ): Promise<void> {
+        await this.orgRepo.update(
+            { id: organisationId },
+            { trialEndsAt, subscriptionStatus },
+        );
     }
 
     /**

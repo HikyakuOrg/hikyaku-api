@@ -78,11 +78,11 @@ export class PermissionGuard implements CanActivate {
             throw new BadRequestException('Missing X-Organisation-Slug header');
         }
 
-        // trial_ends_at rides along on the org lookup the guard already makes, so
-        // enforcing the trial costs no extra round-trip.
+        // trial_ends_at/subscription_status ride along on the org lookup the
+        // guard already makes, so enforcing the trial costs no extra round-trip.
         const { data: org } = await this.supabase
             .from('organisations')
-            .select('id, trial_ends_at')
+            .select('id, trial_ends_at, subscription_status')
             .eq('slug', slug)
             .maybeSingle();
         if (!org) {
@@ -115,9 +115,17 @@ export class PermissionGuard implements CanActivate {
             ) === true;
 
         if (!allowExpiredTrial) {
-            const trialEndsAt = (org as { trial_ends_at?: string | null })
-                .trial_ends_at;
-            if (isTrialExpired(trialEndsAt ? new Date(trialEndsAt) : null)) {
+            const orgRow = org as {
+                trial_ends_at?: string | null;
+                subscription_status?: string | null;
+            };
+            const trialEndsAt = orgRow.trial_ends_at;
+            if (
+                isTrialExpired(
+                    orgRow.subscription_status,
+                    trialEndsAt ? new Date(trialEndsAt) : null,
+                )
+            ) {
                 // 402 rather than 403: the request was authorised and the caller
                 // has done nothing wrong, so the frontend keys the trial-ended
                 // dialog off this status alone and leaves 403 meaning "not

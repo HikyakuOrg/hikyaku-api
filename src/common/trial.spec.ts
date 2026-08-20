@@ -7,40 +7,70 @@ const DAY = 24 * HOUR;
 const offset = (ms: number) => new Date(NOW.getTime() + ms);
 
 describe('trialState', () => {
-    // The whole migration rests on this: a null deadline marks an org the trial
-    // never applied to, so reading it as expired would lock out every personal
-    // org and every org created before the column existed.
-    it('treats a missing deadline as "none", not "expired"', () => {
-        expect(trialState(null, NOW)).toBe('none');
-        expect(trialState(undefined, NOW)).toBe('none');
+    // No Stripe subscription applies — a personal org, or a company org
+    // BillingService has not provisioned yet. Must stay unrestricted.
+    it('treats a null status as "none", regardless of any stray deadline', () => {
+        expect(trialState(null, null, NOW)).toBe('none');
+        expect(trialState(undefined, undefined, NOW)).toBe('none');
+        expect(trialState(null, offset(-30 * DAY), NOW)).toBe('none');
     });
 
-    it('is active while the deadline is in the future', () => {
-        expect(trialState(offset(7 * DAY), NOW)).toBe('active');
-        expect(trialState(offset(1), NOW)).toBe('active');
+    // The regression that matters most: every company org that predated Stripe
+    // billing was backfilled to this sentinel and must never be locked out by
+    // it, or silently re-enrolled into a trial it was never told it was on.
+    it('treats "grandfathered" as permanently unrestricted', () => {
+        expect(trialState('grandfathered', null, NOW)).toBe('none');
+        expect(trialState('grandfathered', offset(-30 * DAY), NOW)).toBe('none');
     });
 
-    it('is expired once the deadline has passed', () => {
-        expect(trialState(offset(-1), NOW)).toBe('expired');
-        expect(trialState(offset(-30 * DAY), NOW)).toBe('expired');
+    it('is active while trialing and the deadline is in the future', () => {
+        expect(trialState('trialing', offset(7 * DAY), NOW)).toBe('active');
+        expect(trialState('trialing', offset(1), NOW)).toBe('active');
+    });
+
+    it('is expired once trialing but the cached deadline has passed', () => {
+        // Belt-and-suspenders: status can lag a Stripe webhook that has not
+        // landed yet, so the deadline is still honoured even while trialing.
+        expect(trialState('trialing', offset(-1), NOW)).toBe('expired');
+        expect(trialState('trialing', offset(-30 * DAY), NOW)).toBe('expired');
     });
 
     // The comparison is strictly-greater, so the deadline instant itself is over.
-    it('counts the exact deadline as expired', () => {
-        expect(trialState(NOW, NOW)).toBe('expired');
+    it('counts the exact deadline as expired while trialing', () => {
+        expect(trialState('trialing', NOW, NOW)).toBe('expired');
+    });
+
+    it('treats a paying subscription as unrestricted', () => {
+        expect(trialState('active', offset(-30 * DAY), NOW)).toBe('none');
+    });
+
+    it.each(['canceled', 'incomplete_expired', 'unpaid'])(
+        'refuses access for a "%s" subscription',
+        (status) => {
+            expect(trialState(status, null, NOW)).toBe('expired');
+        },
+    );
+
+    // Anything this module does not recognise — a future Stripe status, or a
+    // typo — must fail open rather than lock an org out of a state this list
+    // never anticipated.
+    it('fails open for an unrecognised status', () => {
+        expect(trialState('some_future_status', null, NOW)).toBe('none');
     });
 });
 
 describe('isTrialExpired', () => {
-    it('refuses access only for an elapsed deadline', () => {
-        expect(isTrialExpired(null, NOW)).toBe(false);
-        expect(isTrialExpired(offset(HOUR), NOW)).toBe(false);
-        expect(isTrialExpired(offset(-HOUR), NOW)).toBe(true);
+    it('refuses access only for a blocked state', () => {
+        expect(isTrialExpired(null, null, NOW)).toBe(false);
+        expect(isTrialExpired('trialing', offset(HOUR), NOW)).toBe(false);
+        expect(isTrialExpired('trialing', offset(-HOUR), NOW)).toBe(true);
+        expect(isTrialExpired('canceled', null, NOW)).toBe(true);
+        expect(isTrialExpired('grandfathered', offset(-HOUR), NOW)).toBe(false);
     });
 });
 
 describe('trialDaysRemaining', () => {
-    it('is null when no trial applies', () => {
+    it('is null when no deadline applies', () => {
         expect(trialDaysRemaining(null, NOW)).toBeNull();
     });
 

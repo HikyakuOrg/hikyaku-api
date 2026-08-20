@@ -32,6 +32,18 @@ export class Organisation {
     @Column({ name: 'trial_ends_at', type: 'timestamptz', nullable: true })
     trialEndsAt: Date | null;
 
+    /**
+     * Cached Stripe subscription status ('trialing', 'active', 'canceled', ...),
+     * or the 'grandfathered' sentinel backfilled onto every company org that
+     * predates Stripe billing. NULL means no Stripe subscription has been
+     * provisioned yet — a personal org, or a company org
+     * BillingService.ensureSubscription() has not reached yet. Synced from
+     * Stripe by the subscription webhook; read through trialState() in
+     * src/common/trial.ts rather than compared directly.
+     */
+    @Column({ name: 'subscription_status', type: 'text', nullable: true })
+    subscriptionStatus: string | null;
+
     @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
     createdAt: Date;
 }
