@@ -23,6 +23,15 @@ export class OrganisationSubscription {
     @Column({ name: 'stripe_subscription_id', type: 'text', nullable: true })
     stripeSubscriptionId: string | null;
 
+    /**
+     * Synced from the `customer.updated` webhook. Read by the
+     * `enforce_shift_allowance` DB trigger (AddShiftUsageMetering) to decide
+     * whether an org past its free shift allowance may keep going as billable
+     * overage, or must be blocked until a card is on file.
+     */
+    @Column({ name: 'has_payment_method', type: 'boolean', default: false })
+    hasPaymentMethod: boolean;
+
     @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
     createdAt: Date;
 }

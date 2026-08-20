@@ -1,4 +1,4 @@
-import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiGuardErrors } from 'src/common/swagger/api-errors.decorator';
 import { ApiOrganisationSlugHeader } from 'src/common/swagger/tenant-header.decorator';
@@ -6,6 +6,11 @@ import { AllowExpiredTrial } from 'src/auth/decorators/allow-expired-trial.decor
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
 import { BillingService } from './billing.service';
 import { TrialStatusDto } from './dto/trial-status.dto';
+import { ShiftUsageStatusDto } from './dto/shift-usage.dto';
+import {
+    BillingPortalSessionDto,
+    CreateBillingPortalSessionDto,
+} from './dto/create-billing-portal-session.dto';
 
 /**
  * Billing state for the active organisation.
@@ -38,5 +43,47 @@ export class BillingController {
         @Req() req: Request & { organisationId: string },
     ): Promise<TrialStatusDto> {
         return this.billing.getTrialStatus(req.organisationId);
+    }
+
+    @Get('usage')
+    @AllowExpiredTrial()
+    @ApiOperation({
+        summary: 'Shift usage for the active organisation this billing period.',
+        description:
+            'Read-only mirror of what the enforce_shift_allowance() DB trigger is ' +
+            'deciding on. Exempt from the expired-trial block for the same reason ' +
+            'as GET /billing/trial — an org that is blocked must still be able to ' +
+            'read why.',
+    })
+    @ApiOrganisationSlugHeader()
+    @ApiGuardErrors()
+    @ApiOkResponse({ type: ShiftUsageStatusDto })
+    getShiftUsage(
+        @Req() req: Request & { organisationId: string },
+    ): Promise<ShiftUsageStatusDto> {
+        return this.billing.getShiftUsageStatus(req.organisationId);
+    }
+
+    @Post('portal')
+    @AllowExpiredTrial()
+    @ApiOperation({
+        summary: "Create a Stripe Billing Portal session for the active organisation.",
+        description:
+            'Used by the "Add payment method" action once an org has exhausted its ' +
+            'free shift allowance. Exempt from the expired-trial block: adding a ' +
+            'payment method is exactly what an org needs to be able to do once ' +
+            'blocked.',
+    })
+    @ApiOrganisationSlugHeader()
+    @ApiGuardErrors()
+    @ApiOkResponse({ type: BillingPortalSessionDto })
+    createPortalSession(
+        @Req() req: Request & { organisationId: string },
+        @Body() body: CreateBillingPortalSessionDto,
+    ): Promise<BillingPortalSessionDto> {
+        return this.billing.createBillingPortalSession(
+            req.organisationId,
+            body.returnUrl,
+        );
     }
 }

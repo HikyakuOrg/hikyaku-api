@@ -1,4 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import type Stripe from 'stripe';
 import {
     trialDaysRemaining,
     trialState,
@@ -20,6 +24,29 @@ import type { Organisation } from 'src/organisations/organisation.entity';
 const ORGANISATION_PRICE_LOOKUP_KEY = 'hikyaku_organisation_monthly';
 
 /**
+ * Metered shift-overage prices, one per org type, both riding the same Stripe
+ * Meter (SHIFT_METER_EVENT_NAME). Owned by create-stripe-subscriptions.ps1
+ * alongside ORGANISATION_PRICE_LOOKUP_KEY — see its "Shift usage metering"
+ * CONFIG block for the actual free allowance / block size / rate.
+ */
+const PERSONAL_SHIFT_OVERAGE_PRICE_LOOKUP_KEY = 'hikyaku_personal_shift_overage';
+const ORGANISATION_SHIFT_OVERAGE_PRICE_LOOKUP_KEY =
+    'hikyaku_organisation_shift_overage';
+
+/** Must match the Meter's event_name created by create-stripe-subscriptions.ps1. */
+const SHIFT_METER_EVENT_NAME = 'shift_created';
+
+/**
+ * Free shift allowance per billing period, by org type. Mirrors the PLACEHOLDER
+ * values hardcoded in enforce_shift_allowance() (AddShiftUsageMetering migration)
+ * and $PersonalShiftsFree/$OrganisationShiftsFree in create-stripe-subscriptions.ps1
+ * — all three must move together, since this copy only drives the read-only usage
+ * endpoint (§ getShiftUsageStatus); the DB trigger is what actually enforces it.
+ */
+const PERSONAL_SHIFTS_FREE = 30;
+const ORGANISATION_SHIFTS_FREE = 600;
+
+/**
  * Trial state for one organisation, as the dashboard consumes it.
  *
  * The end date is returned alongside the derived fields rather than instead of
@@ -37,6 +64,21 @@ export interface TrialStatus {
 }
 
 /**
+ * Shift usage for one organisation's current billing period, as the dashboard
+ * consumes it — read-only mirror of what enforce_shift_allowance() (the DB
+ * trigger doing the actual enforcement) is deciding on. Lets the frontend show a
+ * usage indicator and explain a block before it happens, the same relationship
+ * TrialStatus has to the trial-expiry guard in PermissionGuard.
+ */
+export interface ShiftUsageStatus {
+    shiftsUsedThisPeriod: number;
+    freeAllowance: number;
+    hasPaymentMethod: boolean;
+    /** ISO 8601 — start of next calendar month, when the free allowance resets. */
+    periodEnd: string;
+}
+
+/**
  * The subset of a Stripe `customer.subscription.*` webhook payload this
  * service needs. Declared locally rather than importing the SDK's wide
  * `Stripe.Subscription` type, matching the pattern already used for Checkout
@@ -50,6 +92,21 @@ export interface SubscriptionEventPayload {
     metadata: Record<string, string> | null;
 }
 
+/**
+ * The subset of a `customer.updated` webhook payload this service needs, same
+ * declared-locally-not-imported reasoning as SubscriptionEventPayload above.
+ * `default_payment_method` comes through as a bare id string on a webhook
+ * payload (Stripe does not expand it there) — the `{ id }` shape is only for
+ * callers that pass an already-expanded customer object.
+ */
+export interface CustomerEventPayload {
+    id: string;
+    metadata: Record<string, string> | null;
+    invoice_settings?: {
+        default_payment_method: string | { id: string } | null;
+    } | null;
+}
+
 @Injectable()
 export class BillingService {
     private readonly logger = new Logger(BillingService.name);
@@ -57,6 +114,12 @@ export class BillingService {
     constructor(
         private readonly organisations: OrganisationsService,
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
+        // Only for the stripe.shift_usage_events outbox (§ reportShiftUsage) and
+        // the vrp_optimization count (§ getShiftUsageStatus) — both internal
+        // detail tables with no reason to grow a full entity/repository of their
+        // own, same judgment call as OrganisationsService.getAccountsForUser's
+        // raw multi-table query.
+        @InjectDataSource() private readonly dataSource: DataSource,
     ) {}
 
     /**
@@ -98,18 +161,7 @@ export class BillingService {
             return org;
         }
 
-        const prices = await this.stripe.prices.list({
-            lookup_keys: [ORGANISATION_PRICE_LOOKUP_KEY],
-            active: true,
-            limit: 1,
-        });
-        const price = prices.data[0];
-        if (!price) {
-            throw new Error(
-                `No active Stripe price found for lookup_key "${ORGANISATION_PRICE_LOOKUP_KEY}". ` +
-                    'Run create-stripe-subscriptions.ps1 against this Stripe account first.',
-            );
-        }
+        const price = await this.resolveActivePrice(ORGANISATION_PRICE_LOOKUP_KEY);
         const trialDays = price.recurring?.trial_period_days ?? 0;
 
         const customer = await this.stripe.customers.create({
@@ -156,6 +208,263 @@ export class BillingService {
         );
 
         return { ...org, trialEndsAt, subscriptionStatus: subscription.status };
+    }
+
+    /** Shared by ensureSubscription and every shift-overage price lookup below. */
+    private async resolveActivePrice(lookupKey: string): Promise<Stripe.Price> {
+        const prices = await this.stripe.prices.list({
+            lookup_keys: [lookupKey],
+            active: true,
+            limit: 1,
+        });
+        const price = prices.data[0];
+        if (!price) {
+            throw new Error(
+                `No active Stripe price found for lookup_key "${lookupKey}". ` +
+                    'Run create-stripe-subscriptions.ps1 against this Stripe account first.',
+            );
+        }
+        return price;
+    }
+
+    /**
+     * Creates the Stripe customer + a subscription holding *only* the metered
+     * shift-overage item — no trial, no base fee. Covers two cases that both
+     * need billing without ever going through the trial flow in
+     * ensureSubscription(): personal orgs (which have no Stripe presence at
+     * all otherwise), and grandfathered/legacy company orgs, which
+     * ensureSubscription() deliberately skips forever (its `subscriptionStatus
+     * != null` guard) so they are never silently re-enrolled in a fresh trial.
+     */
+    private async provisionMeteredOnlyBilling(
+        org: Organisation,
+        overageLookupKey: string,
+    ): Promise<{ customerId: string; subscriptionId: string }> {
+        const overagePrice = await this.resolveActivePrice(overageLookupKey);
+
+        const customer = await this.stripe.customers.create({
+            name: org.name,
+            metadata: { organisationId: org.id },
+        });
+        const subscription = await this.stripe.subscriptions.create({
+            customer: customer.id,
+            items: [{ price: overagePrice.id }],
+            metadata: { organisationId: org.id },
+        });
+
+        await this.organisations.setSubscription(
+            org.id,
+            customer.id,
+            subscription.id,
+        );
+
+        this.logger.log(
+            `Provisioned metered-only Stripe billing for org ${org.id} ` +
+                `(customer ${customer.id}, subscription ${subscription.id})`,
+        );
+
+        return { customerId: customer.id, subscriptionId: subscription.id };
+    }
+
+    /**
+     * Ensures an org has a Stripe subscription that includes its shift-overage
+     * price, provisioning whatever is missing along the way. Self-healing by
+     * design: called from reportShiftUsage() on a poll and from
+     * createBillingPortalSession() on demand, so an org that has never been
+     * provisioned gets caught up automatically rather than needing its own
+     * creation hook. Three cases land here: a personal org's very first shift, a
+     * fresh company org whose ensureSubscription() trial call hasn't run yet,
+     * and a grandfathered company org that ensureSubscription() will never touch
+     * (see provisionMeteredOnlyBilling's docstring) — the first two get a real
+     * subscription via ensureSubscription(), the third gets metered-only billing
+     * directly, same as a personal org.
+     */
+    private async ensureShiftOverageSubscriptionItem(
+        org: Organisation,
+    ): Promise<{ customerId: string }> {
+        let sub = await this.organisations.getSubscription(org.id);
+        const overageLookupKey =
+            org.orgType === 'personal'
+                ? PERSONAL_SHIFT_OVERAGE_PRICE_LOOKUP_KEY
+                : ORGANISATION_SHIFT_OVERAGE_PRICE_LOOKUP_KEY;
+
+        if (!sub?.stripeSubscriptionId) {
+            if (org.orgType === 'company' && org.subscriptionStatus == null) {
+                await this.ensureSubscription(org);
+                sub = await this.organisations.getSubscription(org.id);
+            } else {
+                const provisioned = await this.provisionMeteredOnlyBilling(
+                    org,
+                    overageLookupKey,
+                );
+                return { customerId: provisioned.customerId };
+            }
+        }
+
+        if (!sub?.stripeSubscriptionId || !sub.stripeCustomerId) {
+            // ensureSubscription() only provisions once org.subscriptionStatus is
+            // null (see its own docstring) — if it ran and this is still empty,
+            // something upstream is broken; surface it rather than looping.
+            throw new Error(
+                `Organisation ${org.id} still has no Stripe subscription after provisioning.`,
+            );
+        }
+
+        const overagePrice = await this.resolveActivePrice(overageLookupKey);
+
+        const items = await this.stripe.subscriptionItems.list({
+            subscription: sub.stripeSubscriptionId,
+            limit: 100,
+        });
+        const alreadyAttached = items.data.some(
+            (item) => item.price.id === overagePrice.id,
+        );
+        if (!alreadyAttached) {
+            await this.stripe.subscriptionItems.create({
+                subscription: sub.stripeSubscriptionId,
+                price: overagePrice.id,
+            });
+            this.logger.log(
+                `Attached shift-overage price ${overagePrice.id} to subscription ${sub.stripeSubscriptionId} (org ${org.id})`,
+            );
+        }
+
+        return { customerId: sub.stripeCustomerId };
+    }
+
+    /**
+     * Batches stripe.shift_usage_events (the outbox log_shift_usage_event()
+     * writes on every shift insert — see AddShiftUsageMetering) into one Stripe
+     * meter event per organisation per tick, rather than one per shift. Polling
+     * every minute keeps every event comfortably inside Stripe's acceptance
+     * window for meter event timestamps regardless of meter type.
+     *
+     * A failure for one org (e.g. its price was archived) is logged and its rows
+     * are left unreported — picked up again on the next tick — rather than
+     * aborting the whole batch.
+     */
+    @Cron(CronExpression.EVERY_MINUTE)
+    async reportShiftUsage(): Promise<void> {
+        const batches: { organisation_id: string; count: number; ids: string[] }[] =
+            await this.dataSource.query(`
+                SELECT organisation_id,
+                       count(*)::int      AS count,
+                       array_agg(id)      AS ids
+                  FROM stripe.shift_usage_events
+                 WHERE reported_at IS NULL
+                 GROUP BY organisation_id
+            `);
+
+        for (const batch of batches) {
+            try {
+                const org = await this.organisations.getOrFail(
+                    batch.organisation_id,
+                );
+                const { customerId } =
+                    await this.ensureShiftOverageSubscriptionItem(org);
+
+                await this.stripe.billing.meterEvents.create({
+                    event_name: SHIFT_METER_EVENT_NAME,
+                    payload: {
+                        value: String(batch.count),
+                        stripe_customer_id: customerId,
+                    },
+                });
+
+                await this.dataSource.query(
+                    `UPDATE stripe.shift_usage_events
+                        SET reported_at = now()
+                      WHERE id = ANY($1::bigint[])`,
+                    [batch.ids],
+                );
+            } catch (err) {
+                this.logger.error(
+                    `Failed to report ${batch.count} shift(s) for org ${batch.organisation_id}: ${String(err)}`,
+                );
+            }
+        }
+    }
+
+    /**
+     * Shift usage for the dashboard's usage indicator / block-explanation UI.
+     * Purely read-only — enforce_shift_allowance() (the DB trigger) is the
+     * actual enforcement, this only mirrors what it's deciding on. See
+     * ShiftUsageStatus for field meanings.
+     */
+    async getShiftUsageStatus(organisationId: string): Promise<ShiftUsageStatus> {
+        const org = await this.organisations.getOrFail(organisationId);
+        const now = new Date();
+        const periodEnd = new Date(
+            Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+        );
+
+        const [{ count }]: { count: number }[] = await this.dataSource.query(
+            `SELECT count(*)::int AS count
+               FROM public.vrp_optimization
+              WHERE organisation_id = $1
+                AND created_at >= date_trunc('month', now())`,
+            [organisationId],
+        );
+        const sub = await this.organisations.getSubscription(organisationId);
+
+        return {
+            shiftsUsedThisPeriod: count,
+            freeAllowance:
+                org.orgType === 'personal'
+                    ? PERSONAL_SHIFTS_FREE
+                    : ORGANISATION_SHIFTS_FREE,
+            hasPaymentMethod: sub?.hasPaymentMethod ?? false,
+            periodEnd: periodEnd.toISOString(),
+        };
+    }
+
+    /**
+     * Stripe's hosted Billing Portal — the smallest way to let an org add a
+     * payment method today, since no Checkout/Elements card-collection flow
+     * exists anywhere in the app yet (see the trial's own
+     * missing_payment_method comment above). Requires a Billing Portal
+     * configuration to exist on the Stripe account (dashboard or API,
+     * one-time setup).
+     */
+    async createBillingPortalSession(
+        organisationId: string,
+        returnUrl: string,
+    ): Promise<{ url: string }> {
+        const org = await this.organisations.getOrFail(organisationId);
+        const { customerId } = await this.ensureShiftOverageSubscriptionItem(org);
+
+        const session = await this.stripe.billingPortal.sessions.create({
+            customer: customerId,
+            return_url: returnUrl,
+        });
+
+        return { url: session.url };
+    }
+
+    /**
+     * Applies a `customer.updated` webhook event to has_payment_method — the
+     * column enforce_shift_allowance() reads to decide whether an org past its
+     * free shift allowance is blocked or billed as overage. Keyed off the
+     * customer's own metadata.organisationId, stamped at creation time in
+     * ensureSubscription()/provisionPersonalShiftBilling() above, same
+     * race-safety reasoning as syncSubscriptionFromStripe below.
+     */
+    async syncPaymentMethodFromStripe(
+        customer: CustomerEventPayload,
+    ): Promise<void> {
+        const organisationId = customer.metadata?.organisationId;
+        if (!organisationId) {
+            this.logger.warn(
+                `Ignoring customer.updated webhook for ${customer.id}: no organisationId metadata`,
+            );
+            return;
+        }
+
+        const hasPaymentMethod = !!customer.invoice_settings?.default_payment_method;
+        await this.organisations.updatePaymentMethodStatus(
+            organisationId,
+            hasPaymentMethod,
+        );
     }
 
     /**

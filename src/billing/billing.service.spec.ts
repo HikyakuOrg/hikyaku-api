@@ -1,9 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
+import { getDataSourceToken } from '@nestjs/typeorm';
 import { BillingService } from './billing.service';
 import { OrganisationsService } from 'src/organisations/organisations.service';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { Organisation } from 'src/organisations/organisation.entity';
+import type { OrganisationSubscription } from 'src/organisations/organisation-subscription.entity';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -21,35 +23,65 @@ function org(overrides: Partial<Organisation> = {}): Organisation {
     };
 }
 
+function subscriptionRow(
+    overrides: Partial<OrganisationSubscription> = {},
+): OrganisationSubscription {
+    return {
+        organisationId: 'org-1',
+        organisation: undefined as never,
+        stripeCustomerId: 'cus_1',
+        stripeSubscriptionId: 'sub_1',
+        hasPaymentMethod: false,
+        createdAt: new Date(),
+        ...overrides,
+    };
+}
+
 describe('BillingService', () => {
     let service: BillingService;
     let organisations: {
         getOrFail: jest.Mock;
         setSubscription: jest.Mock;
         updateBillingCache: jest.Mock;
+        getSubscription: jest.Mock;
+        updatePaymentMethodStatus: jest.Mock;
     };
     let stripe: {
         prices: { list: jest.Mock };
         customers: { create: jest.Mock };
         subscriptions: { create: jest.Mock };
+        subscriptionItems: { list: jest.Mock; create: jest.Mock };
+        billing: { meterEvents: { create: jest.Mock } };
+        billingPortal: { sessions: { create: jest.Mock } };
     };
+    let dsQuery: jest.Mock;
 
     beforeEach(async () => {
         organisations = {
             getOrFail: jest.fn(),
             setSubscription: jest.fn(),
             updateBillingCache: jest.fn(),
+            getSubscription: jest.fn().mockResolvedValue(null),
+            updatePaymentMethodStatus: jest.fn(),
         };
         stripe = {
             prices: { list: jest.fn() },
             customers: { create: jest.fn() },
             subscriptions: { create: jest.fn() },
+            subscriptionItems: {
+                list: jest.fn().mockResolvedValue({ data: [] }),
+                create: jest.fn(),
+            },
+            billing: { meterEvents: { create: jest.fn() } },
+            billingPortal: { sessions: { create: jest.fn() } },
         };
+        dsQuery = jest.fn().mockResolvedValue([]);
         const module: TestingModule = await Test.createTestingModule({
             providers: [
                 BillingService,
                 { provide: OrganisationsService, useValue: organisations },
                 { provide: STRIPE_CLIENT, useValue: stripe },
+                { provide: getDataSourceToken(), useValue: { query: dsQuery } },
             ],
         }).compile();
         service = module.get(BillingService);
@@ -243,6 +275,266 @@ describe('BillingService', () => {
 
             expect(organisations.setSubscription).not.toHaveBeenCalled();
             expect(organisations.updateBillingCache).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('getShiftUsageStatus', () => {
+        it('reports usage against the personal free allowance', async () => {
+            organisations.getOrFail.mockResolvedValue(org({ orgType: 'personal' }));
+            dsQuery.mockResolvedValue([{ count: 12 }]);
+            organisations.getSubscription.mockResolvedValue(
+                subscriptionRow({ hasPaymentMethod: true }),
+            );
+
+            const status = await service.getShiftUsageStatus('org-1');
+
+            expect(status.shiftsUsedThisPeriod).toBe(12);
+            expect(status.freeAllowance).toBe(30);
+            expect(status.hasPaymentMethod).toBe(true);
+        });
+
+        it('reports usage against the company free allowance, with hasPaymentMethod false when unprovisioned', async () => {
+            organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
+            dsQuery.mockResolvedValue([{ count: 601 }]);
+            organisations.getSubscription.mockResolvedValue(null);
+
+            const status = await service.getShiftUsageStatus('org-1');
+
+            expect(status.shiftsUsedThisPeriod).toBe(601);
+            expect(status.freeAllowance).toBe(600);
+            expect(status.hasPaymentMethod).toBe(false);
+        });
+    });
+
+    describe('reportShiftUsage', () => {
+        it('provisions metered-only billing for an unprovisioned personal org, reports one summed meter event, and marks the batch reported', async () => {
+            dsQuery.mockImplementation((sql: string) => {
+                if (sql.includes('FROM stripe.shift_usage_events')) {
+                    return Promise.resolve([
+                        { organisation_id: 'org-1', count: 5, ids: ['1', '2', '3', '4', '5'] },
+                    ]);
+                }
+                return Promise.resolve([]);
+            });
+            organisations.getOrFail.mockResolvedValue(org({ orgType: 'personal' }));
+            organisations.getSubscription.mockResolvedValue(null);
+            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
+            stripe.subscriptions.create.mockResolvedValue({ id: 'sub_new' });
+
+            await service.reportShiftUsage();
+
+            expect(stripe.customers.create).toHaveBeenCalledWith(
+                expect.objectContaining({ metadata: { organisationId: 'org-1' } }),
+            );
+            expect(stripe.subscriptions.create).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    customer: 'cus_new',
+                    items: [{ price: 'price_overage' }],
+                }),
+            );
+            expect(organisations.setSubscription).toHaveBeenCalledWith(
+                'org-1',
+                'cus_new',
+                'sub_new',
+            );
+            expect(stripe.billing.meterEvents.create).toHaveBeenCalledWith({
+                event_name: 'shift_created',
+                payload: { value: '5', stripe_customer_id: 'cus_new' },
+            });
+            expect(dsQuery).toHaveBeenCalledWith(
+                expect.stringContaining('UPDATE stripe.shift_usage_events'),
+                [['1', '2', '3', '4', '5']],
+            );
+        });
+
+        it('provisions metered-only billing (no trial) for a grandfathered company org rather than calling the trial flow', async () => {
+            dsQuery.mockImplementation((sql: string) => {
+                if (sql.includes('FROM stripe.shift_usage_events')) {
+                    return Promise.resolve([
+                        { organisation_id: 'org-1', count: 2, ids: ['1', '2'] },
+                    ]);
+                }
+                return Promise.resolve([]);
+            });
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'company', subscriptionStatus: 'grandfathered' }),
+            );
+            organisations.getSubscription.mockResolvedValue(null);
+            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
+            stripe.subscriptions.create.mockResolvedValue({ id: 'sub_new' });
+
+            await service.reportShiftUsage();
+
+            // Never touches the trial-subscription path — no trial_period_days,
+            // no trial_settings — and never re-lists the company base price.
+            expect(stripe.subscriptions.create).toHaveBeenCalledWith(
+                expect.not.objectContaining({ trial_period_days: expect.anything() }),
+            );
+            expect(stripe.prices.list).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    lookup_keys: ['hikyaku_organisation_shift_overage'],
+                }),
+            );
+        });
+
+        it('attaches the overage price to an already-provisioned subscription that lacks it', async () => {
+            dsQuery.mockImplementation((sql: string) => {
+                if (sql.includes('FROM stripe.shift_usage_events')) {
+                    return Promise.resolve([
+                        { organisation_id: 'org-1', count: 1, ids: ['9'] },
+                    ]);
+                }
+                return Promise.resolve([]);
+            });
+            organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
+            organisations.getSubscription.mockResolvedValue(subscriptionRow());
+            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.subscriptionItems.list.mockResolvedValue({ data: [] });
+
+            await service.reportShiftUsage();
+
+            expect(stripe.subscriptionItems.create).toHaveBeenCalledWith({
+                subscription: 'sub_1',
+                price: 'price_overage',
+            });
+            expect(stripe.billing.meterEvents.create).toHaveBeenCalledWith({
+                event_name: 'shift_created',
+                payload: { value: '1', stripe_customer_id: 'cus_1' },
+            });
+        });
+
+        it('does not attach the overage price again when it is already on the subscription', async () => {
+            dsQuery.mockImplementation((sql: string) => {
+                if (sql.includes('FROM stripe.shift_usage_events')) {
+                    return Promise.resolve([
+                        { organisation_id: 'org-1', count: 1, ids: ['9'] },
+                    ]);
+                }
+                return Promise.resolve([]);
+            });
+            organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
+            organisations.getSubscription.mockResolvedValue(subscriptionRow());
+            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.subscriptionItems.list.mockResolvedValue({
+                data: [{ price: { id: 'price_overage' } }],
+            });
+
+            await service.reportShiftUsage();
+
+            expect(stripe.subscriptionItems.create).not.toHaveBeenCalled();
+        });
+
+        it('logs and leaves the batch unreported when one organisation fails, without aborting the rest', async () => {
+            dsQuery.mockImplementation((sql: string) => {
+                if (sql.includes('FROM stripe.shift_usage_events')) {
+                    return Promise.resolve([
+                        { organisation_id: 'org-broken', count: 3, ids: ['1'] },
+                        { organisation_id: 'org-1', count: 2, ids: ['2'] },
+                    ]);
+                }
+                return Promise.resolve([]);
+            });
+            organisations.getOrFail.mockImplementation((id: string) =>
+                id === 'org-broken'
+                    ? Promise.reject(new NotFoundException('Organisation not found'))
+                    : Promise.resolve(org({ orgType: 'company' })),
+            );
+            organisations.getSubscription.mockResolvedValue(subscriptionRow());
+            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.subscriptionItems.list.mockResolvedValue({
+                data: [{ price: { id: 'price_overage' } }],
+            });
+
+            await expect(service.reportShiftUsage()).resolves.toBeUndefined();
+
+            expect(stripe.billing.meterEvents.create).toHaveBeenCalledTimes(1);
+            expect(stripe.billing.meterEvents.create).toHaveBeenCalledWith({
+                event_name: 'shift_created',
+                payload: { value: '2', stripe_customer_id: 'cus_1' },
+            });
+        });
+    });
+
+    describe('createBillingPortalSession', () => {
+        it('provisions billing for an org with no Stripe presence yet, then creates a portal session', async () => {
+            organisations.getOrFail.mockResolvedValue(org({ orgType: 'personal' }));
+            organisations.getSubscription.mockResolvedValue(null);
+            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
+            stripe.subscriptions.create.mockResolvedValue({ id: 'sub_new' });
+            stripe.billingPortal.sessions.create.mockResolvedValue({
+                url: 'https://billing.stripe.com/session/abc',
+            });
+
+            const result = await service.createBillingPortalSession(
+                'org-1',
+                'https://acme.hikyaku.org/dashboard/settings/billing',
+            );
+
+            expect(stripe.billingPortal.sessions.create).toHaveBeenCalledWith({
+                customer: 'cus_new',
+                return_url: 'https://acme.hikyaku.org/dashboard/settings/billing',
+            });
+            expect(result).toEqual({ url: 'https://billing.stripe.com/session/abc' });
+        });
+
+        it('reuses an already-provisioned customer', async () => {
+            organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
+            organisations.getSubscription.mockResolvedValue(subscriptionRow());
+            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.subscriptionItems.list.mockResolvedValue({
+                data: [{ price: { id: 'price_overage' } }],
+            });
+            stripe.billingPortal.sessions.create.mockResolvedValue({
+                url: 'https://billing.stripe.com/session/xyz',
+            });
+
+            await service.createBillingPortalSession('org-1', 'https://return.example');
+
+            expect(stripe.customers.create).not.toHaveBeenCalled();
+            expect(stripe.billingPortal.sessions.create).toHaveBeenCalledWith({
+                customer: 'cus_1',
+                return_url: 'https://return.example',
+            });
+        });
+    });
+
+    describe('syncPaymentMethodFromStripe', () => {
+        it('marks the org as having a payment method when the customer has a default one', async () => {
+            await service.syncPaymentMethodFromStripe({
+                id: 'cus_1',
+                metadata: { organisationId: 'org-1' },
+                invoice_settings: { default_payment_method: 'pm_123' },
+            });
+
+            expect(organisations.updatePaymentMethodStatus).toHaveBeenCalledWith(
+                'org-1',
+                true,
+            );
+        });
+
+        it('marks the org as having no payment method when the default is cleared', async () => {
+            await service.syncPaymentMethodFromStripe({
+                id: 'cus_1',
+                metadata: { organisationId: 'org-1' },
+                invoice_settings: { default_payment_method: null },
+            });
+
+            expect(organisations.updatePaymentMethodStatus).toHaveBeenCalledWith(
+                'org-1',
+                false,
+            );
+        });
+
+        it('ignores an event with no organisationId metadata', async () => {
+            await service.syncPaymentMethodFromStripe({
+                id: 'cus_1',
+                metadata: null,
+            });
+
+            expect(organisations.updatePaymentMethodStatus).not.toHaveBeenCalled();
         });
     });
 });

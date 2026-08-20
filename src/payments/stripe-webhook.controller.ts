@@ -11,7 +11,10 @@ import { ApiExcludeEndpoint } from '@nestjs/swagger';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
 import { BillingService } from 'src/billing/billing.service';
-import type { SubscriptionEventPayload } from 'src/billing/billing.service';
+import type {
+    CustomerEventPayload,
+    SubscriptionEventPayload,
+} from 'src/billing/billing.service';
 import { PaymentsService } from './payments.service';
 import type { FulfillableCheckoutSession } from './payments.service';
 
@@ -103,6 +106,17 @@ export class StripeWebhookController {
             const subscription =
                 event.data.object as unknown as SubscriptionEventPayload;
             await this.billingService.syncSubscriptionFromStripe(subscription);
+        }
+
+        // Keeps stripe.organisation_subscriptions.has_payment_method — the
+        // column enforce_shift_allowance() reads to decide whether an org past
+        // its free shift allowance is blocked or billed as overage — in sync
+        // with whether the org's Stripe customer actually has a default payment
+        // method. Fires whenever a customer is created, updated, or attaches one
+        // via the Billing Portal (BillingService.createBillingPortalSession).
+        if (event.type === 'customer.updated') {
+            const customer = event.data.object as unknown as CustomerEventPayload;
+            await this.billingService.syncPaymentMethodFromStripe(customer);
         }
 
         return { received: true };

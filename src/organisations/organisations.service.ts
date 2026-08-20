@@ -101,6 +101,28 @@ export class OrganisationsService {
         );
     }
 
+    /** The Stripe billing satellite row for an org, or null if never provisioned. */
+    getSubscription(
+        organisationId: string,
+    ): Promise<OrganisationSubscription | null> {
+        return this.subscriptionRepo.findOne({ where: { organisationId } });
+    }
+
+    /**
+     * Synced by the `customer.updated` webhook (StripeWebhookController), keyed
+     * off the customer's own `metadata.organisationId` the same way subscription
+     * events already are. Read by the `enforce_shift_allowance` DB trigger.
+     */
+    async updatePaymentMethodStatus(
+        organisationId: string,
+        hasPaymentMethod: boolean,
+    ): Promise<void> {
+        await this.subscriptionRepo.update(
+            { organisationId },
+            { hasPaymentMethod },
+        );
+    }
+
     /**
      * Return slug + stripeAccountId for all orgs the user is a member of.
      * Callers enrich with live Stripe data.
