@@ -34,3 +34,16 @@ export type TzdataWorkerMessage =
     | { type: 'log'; message: string }
     | { type: 'status'; phase: Extract<TzdataImportPhase, 'downloading' | 'importing' | 'completed' | 'skipped_locked_elsewhere'> };
 
+/**
+ * Defense-in-depth scrub for log/error text that might carry a DB credential.
+ * The real fix is never putting the password in argv (child_process embeds
+ * argv verbatim in "Command failed: ..." errors — see tzdata-import.worker.ts)
+ * — this is a second layer in case any other error message ever carries a
+ * connection string.
+ */
+export function redactSecrets(text: string): string {
+    return text
+        .replace(/password='[^']*'/gi, "password='***'")
+        .replace(/:\/\/([^:/@\s]+):([^@/\s]+)@/g, '://$1:***@');
+}
+

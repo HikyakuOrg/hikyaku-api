@@ -21,6 +21,7 @@ import {
     TIMEZONE_BOUNDARY_URL,
     TIMEZONE_BOUNDARY_SHA256,
     TIMEZONE_BOUNDARY_INNER_FILE,
+    redactSecrets,
     type TzdataWorkerMessage,
 } from './tzdata.constants';
 
@@ -29,7 +30,7 @@ import {
 const ADVISORY_LOCK_KEY = 727_002_026;
 
 function log(message: string): void {
-    parentPort?.postMessage({ type: 'log', message } satisfies TzdataWorkerMessage);
+    parentPort?.postMessage({ type: 'log', message: redactSecrets(message) } satisfies TzdataWorkerMessage);
 }
 
 /** Reports a phase transition — TzdataService surfaces this via GET /api/v1/tzdata/status. */
@@ -42,19 +43,27 @@ function quotePgValue(value: string): string {
     return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 }
 
-function buildPgConnectionString(dbUrl: string): string {
+/**
+ * Builds the libpq DSN and separates out the password: child_process embeds
+ * the full argv verbatim in "Command failed: ..." errors on a non-zero exit,
+ * so a password baked into this string ends up in plaintext in application
+ * logs (and anywhere they're shipped, e.g. Sentry) the moment ogr2ogr fails.
+ * The password travels to the child via PGPASSWORD (a standard libpq env
+ * fallback) instead — see the `env` option below.
+ */
+function buildPgConnectionString(dbUrl: string): { dsn: string; password: string } {
     const url = new URL(dbUrl);
     const parts: Record<string, string> = {
         host: url.hostname,
         port: url.port || '5432',
         dbname: url.pathname.replace(/^\//, '') || 'postgres',
         user: decodeURIComponent(url.username),
-        password: decodeURIComponent(url.password),
         sslmode: 'require',
     };
-    return Object.entries(parts)
+    const dsn = Object.entries(parts)
         .map(([key, value]) => `${key}=${quotePgValue(value)}`)
         .join(' ');
+    return { dsn, password: decodeURIComponent(url.password) };
 }
 
 /** Downloads the release asset to `destPath`, verifying its sha256 as it streams. */
@@ -123,9 +132,11 @@ async function run(): Promise<void> {
             // GDAL's /vsizip/ virtual filesystem reads the geojson straight out
             // of the downloaded archive — no separate unzip step/dependency.
             const inputPath = `/vsizip/${zipPath}/${TIMEZONE_BOUNDARY_INNER_FILE}`;
+            const { dsn, password } = buildPgConnectionString(dbUrl);
             const result = await ogr2ogr(inputPath, {
                 format: 'PostgreSQL',
-                destination: `PG:${buildPgConnectionString(dbUrl)}`,
+                destination: `PG:${dsn}`,
+                env: { PGPASSWORD: password },
                 skipFailures: false,
                 timeout: 0,
                 options: [
@@ -134,7 +145,15 @@ async function run(): Promise<void> {
                     '-nlt', 'PROMOTE_TO_MULTI',
                     '-lco', 'GEOMETRY_NAME=geom',
                     '-t_srs', 'EPSG:4326',
-                    '--config', 'PG_USE_COPY', 'YES',
+                    // NOT PG_USE_COPY=YES: appending via COPY writes an explicit
+                    // NULL into the "id" column (its NOT NULL + sequence default
+                    // only apply when a column is omitted from the row, and
+                    // GDAL's COPY writer includes it anyway) — fails with
+                    // "null value in column id violates not-null constraint".
+                    // The regular INSERT path correctly omits unset-FID columns
+                    // and lets the DB assign id via its default; ~450 rows makes
+                    // the COPY speed advantage irrelevant here.
+                    '--config', 'PG_USE_COPY', 'NO',
                 ],
             });
             if (result.details) log(`ogr2ogr: ${result.details}`);

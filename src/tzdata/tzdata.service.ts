@@ -3,7 +3,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
-import { TZDATA_SCHEMA, TZDATA_TABLE, TzdataImportPhase, TzdataWorkerMessage } from './tzdata.constants';
+import { TZDATA_SCHEMA, TZDATA_TABLE, TzdataImportPhase, TzdataWorkerMessage, redactSecrets } from './tzdata.constants';
 import { TzdataStatusDto } from './dto/tzdata-status.dto';
 
 @Injectable()
@@ -76,9 +76,13 @@ export class TzdataService implements OnApplicationBootstrap {
             }
         });
         worker.on('error', (err) => {
-            const message = err instanceof Error ? err.message : String(err);
+            // Defense-in-depth redaction: the worker already keeps the DB
+            // password out of argv (see tzdata-import.worker.ts), so this
+            // shouldn't ever be live, but an Error crossing the worker_threads
+            // boundary bypasses the worker's own redacted log() entirely.
+            const message = redactSecrets(err instanceof Error ? err.message : String(err));
             this.logger.error(
-                `Timezone import worker crashed: ${err instanceof Error ? err.stack : message}`,
+                `Timezone import worker crashed: ${redactSecrets(err instanceof Error ? err.stack ?? message : message)}`,
             );
             this.setPhase('failed', message);
         });
