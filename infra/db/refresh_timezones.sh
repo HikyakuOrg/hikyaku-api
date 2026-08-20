@@ -31,6 +31,8 @@ if [ -z "${DB_PASSWORD:-}" ]; then
   echo
 fi
 
+export PGPASSWORD="$DB_PASSWORD"
+
 DB_SCHEMA="tzdata"
 DB_TABLE="timezone"
 
