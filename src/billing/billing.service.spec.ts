@@ -14,6 +14,7 @@ function org(overrides: Partial<Organisation> = {}): Organisation {
         id: 'org-1',
         slug: 'acme',
         name: 'Acme',
+        vanitySlug: 'acme',
         orgType: 'company',
         createdBy: 'u1',
         createdAt: new Date(),
@@ -32,6 +33,7 @@ function subscriptionRow(
         stripeCustomerId: 'cus_1',
         stripeSubscriptionId: 'sub_1',
         hasPaymentMethod: false,
+        hasVanityUrlEntitlement: false,
         createdAt: new Date(),
         ...overrides,
     };
@@ -45,6 +47,8 @@ describe('BillingService', () => {
         updateBillingCache: jest.Mock;
         getSubscription: jest.Mock;
         updatePaymentMethodStatus: jest.Mock;
+        updateVanityUrlEntitlement: jest.Mock;
+        findByStripeCustomerId: jest.Mock;
     };
     let stripe: {
         prices: { list: jest.Mock };
@@ -53,6 +57,7 @@ describe('BillingService', () => {
         subscriptionItems: { list: jest.Mock; create: jest.Mock };
         billing: { meterEvents: { create: jest.Mock } };
         billingPortal: { sessions: { create: jest.Mock } };
+        entitlements: { activeEntitlements: { list: jest.Mock } };
     };
     let dsQuery: jest.Mock;
 
@@ -63,6 +68,8 @@ describe('BillingService', () => {
             updateBillingCache: jest.fn(),
             getSubscription: jest.fn().mockResolvedValue(null),
             updatePaymentMethodStatus: jest.fn(),
+            updateVanityUrlEntitlement: jest.fn(),
+            findByStripeCustomerId: jest.fn(),
         };
         stripe = {
             prices: { list: jest.fn() },
@@ -74,6 +81,11 @@ describe('BillingService', () => {
             },
             billing: { meterEvents: { create: jest.fn() } },
             billingPortal: { sessions: { create: jest.fn() } },
+            entitlements: {
+                activeEntitlements: {
+                    list: jest.fn().mockResolvedValue({ data: [] }),
+                },
+            },
         };
         dsQuery = jest.fn().mockResolvedValue([]);
         const module: TestingModule = await Test.createTestingModule({
@@ -209,6 +221,16 @@ describe('BillingService', () => {
                 'org-1',
                 new Date(trialEnd * 1000),
                 'trialing',
+            );
+            // Eager entitlement sync right after provisioning — the new
+            // customer has no entitlements yet (default empty mock), so the
+            // vanity host must not appear entitled before the webhook confirms it.
+            expect(stripe.entitlements.activeEntitlements.list).toHaveBeenCalledWith({
+                customer: 'cus_1',
+            });
+            expect(organisations.updateVanityUrlEntitlement).toHaveBeenCalledWith(
+                'org-1',
+                false,
             );
             expect(status.state).toBe('active');
             expect(status.daysRemaining).toBe(7);
@@ -535,6 +557,90 @@ describe('BillingService', () => {
             });
 
             expect(organisations.updatePaymentMethodStatus).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('syncVanityUrlEntitlementFromStripe', () => {
+        it('marks the org entitled when the vanity_url feature is in the active summary', async () => {
+            organisations.findByStripeCustomerId.mockResolvedValue(
+                subscriptionRow(),
+            );
+
+            await service.syncVanityUrlEntitlementFromStripe({
+                customer: 'cus_1',
+                entitlements: { data: [{ lookup_key: 'vanity_url' }] },
+            });
+
+            expect(organisations.updateVanityUrlEntitlement).toHaveBeenCalledWith(
+                'org-1',
+                true,
+            );
+        });
+
+        it('marks the org unentitled when vanity_url is absent from the active summary', async () => {
+            organisations.findByStripeCustomerId.mockResolvedValue(
+                subscriptionRow(),
+            );
+
+            await service.syncVanityUrlEntitlementFromStripe({
+                customer: 'cus_1',
+                entitlements: { data: [{ lookup_key: 'plugins' }] },
+            });
+
+            expect(organisations.updateVanityUrlEntitlement).toHaveBeenCalledWith(
+                'org-1',
+                false,
+            );
+        });
+
+        it('ignores an event for a customer with no matching organisation', async () => {
+            organisations.findByStripeCustomerId.mockResolvedValue(null);
+
+            await service.syncVanityUrlEntitlementFromStripe({
+                customer: 'cus_unknown',
+                entitlements: { data: [{ lookup_key: 'vanity_url' }] },
+            });
+
+            expect(organisations.updateVanityUrlEntitlement).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('getVanityUrlStatus', () => {
+        it('is entitled when the cached flag is true', async () => {
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'company', subscriptionStatus: 'active' }),
+            );
+            organisations.getSubscription.mockResolvedValue(
+                subscriptionRow({ hasVanityUrlEntitlement: true }),
+            );
+
+            expect(await service.getVanityUrlStatus('org-1')).toEqual({
+                hasVanityUrlEntitlement: true,
+            });
+        });
+
+        it('is entitled for a grandfathered company org even with no cached flag', async () => {
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'company', subscriptionStatus: 'grandfathered' }),
+            );
+            organisations.getSubscription.mockResolvedValue(null);
+
+            expect(await service.getVanityUrlStatus('org-1')).toEqual({
+                hasVanityUrlEntitlement: true,
+            });
+        });
+
+        it('is not entitled once the cached flag is false and the org is not grandfathered', async () => {
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'company', subscriptionStatus: 'canceled' }),
+            );
+            organisations.getSubscription.mockResolvedValue(
+                subscriptionRow({ hasVanityUrlEntitlement: false }),
+            );
+
+            expect(await service.getVanityUrlStatus('org-1')).toEqual({
+                hasVanityUrlEntitlement: false,
+            });
         });
     });
 });

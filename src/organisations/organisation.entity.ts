@@ -16,6 +16,19 @@ export class Organisation {
     @Column({ type: 'text' })
     name: string;
 
+    /**
+     * Human-readable booking subdomain derived from `name`, e.g.
+     * 'acme-couriers'. NULL for personal orgs and any company org whose name
+     * has no sluggable characters. Set by the `set_organisation_vanity_slug`
+     * DB trigger (AddOrganisationVanitySlug) on INSERT and on UPDATE OF
+     * name/org_type — never written from application code. Whether it
+     * currently resolves to anything depends on the org's live vanity_url
+     * entitlement; see
+     * `get_booking_organisation()`.
+     */
+    @Column({ name: 'vanity_slug', type: 'text', nullable: true })
+    vanitySlug: string | null;
+
     /** 'personal' | 'company' — determines whether Stripe Connect onboarding is required. */
     @Column({ name: 'org_type', type: 'text', default: 'personal' })
     orgType: string;

@@ -4,6 +4,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import type Stripe from 'stripe';
 import {
+    hasVanityUrlEntitlement,
     trialDaysRemaining,
     trialState,
     type TrialState,
@@ -35,6 +36,16 @@ const ORGANISATION_SHIFT_OVERAGE_PRICE_LOOKUP_KEY =
 
 /** Must match the Meter's event_name created by create-stripe-subscriptions.ps1. */
 const SHIFT_METER_EVENT_NAME = 'shift_created';
+
+/**
+ * The lookup_key of the Stripe Entitlement Feature gating vanity subdomains,
+ * created by create-stripe-subscriptions.ps1 -WithEntitlements (see
+ * $OrganisationFeatures) and attached to the hikyaku_organisation product.
+ * Only company orgs can hold it — personal orgs never get a vanity_slug at
+ * all (see AddOrganisationVanitySlug), so their Stripe customer is never
+ * checked for it.
+ */
+const VANITY_URL_ENTITLEMENT_LOOKUP_KEY = 'vanity_url';
 
 /**
  * Free shift allowance per billing period, by org type. Mirrors the PLACEHOLDER
@@ -105,6 +116,23 @@ export interface CustomerEventPayload {
     invoice_settings?: {
         default_payment_method: string | { id: string } | null;
     } | null;
+}
+
+/**
+ * The subset of an `entitlements.active_entitlement_summary.updated` webhook
+ * payload this service needs, same declared-locally-not-imported reasoning as
+ * the payload types above. Unlike the subscription/customer webhooks, this
+ * event carries no `metadata.organisationId` — only the customer id, so the
+ * org is resolved via OrganisationsService.findByStripeCustomerId instead.
+ */
+export interface EntitlementSummaryEventPayload {
+    customer: string;
+    entitlements: { data: { lookup_key: string }[] };
+}
+
+/** Read by the dashboard's Business Information page. */
+export interface VanityUrlStatus {
+    hasVanityUrlEntitlement: boolean;
 }
 
 @Injectable()
@@ -202,6 +230,11 @@ export class BillingService {
             trialEndsAt,
             subscription.status,
         );
+
+        // Eager sync so a brand-new trialing org's vanity host works
+        // immediately rather than waiting on the first
+        // entitlements.active_entitlement_summary.updated webhook.
+        await this.syncVanityUrlEntitlementForCustomer(org.id, customer.id);
 
         this.logger.log(
             `Provisioned Stripe subscription ${subscription.id} for org ${org.id} (status=${subscription.status})`,
@@ -465,6 +498,77 @@ export class BillingService {
             organisationId,
             hasPaymentMethod,
         );
+    }
+
+    /**
+     * Shared by the eager sync in ensureSubscription() and the webhook
+     * handler below. activeEntitlements.list() takes no lookup_key filter
+     * (only `customer`), so the match against
+     * VANITY_URL_ENTITLEMENT_LOOKUP_KEY happens client-side.
+     */
+    private async syncVanityUrlEntitlementForCustomer(
+        organisationId: string,
+        stripeCustomerId: string,
+    ): Promise<void> {
+        const entitlements = await this.stripe.entitlements.activeEntitlements.list({
+            customer: stripeCustomerId,
+        });
+        const hasEntitlement = entitlements.data.some(
+            (e) => e.lookup_key === VANITY_URL_ENTITLEMENT_LOOKUP_KEY,
+        );
+        await this.organisations.updateVanityUrlEntitlement(
+            organisationId,
+            hasEntitlement,
+        );
+    }
+
+    /**
+     * Applies an `entitlements.active_entitlement_summary.updated` webhook
+     * event to has_vanity_url_entitlement — the column
+     * get_booking_organisation()/get_tracking_details() read to decide
+     * whether a company org's vanity_slug host currently resolves. Keyed off
+     * the customer id (this event carries no organisationId metadata, unlike
+     * the subscription/customer webhooks), resolved via
+     * OrganisationsService.findByStripeCustomerId.
+     */
+    async syncVanityUrlEntitlementFromStripe(
+        payload: EntitlementSummaryEventPayload,
+    ): Promise<void> {
+        const sub = await this.organisations.findByStripeCustomerId(
+            payload.customer,
+        );
+        if (!sub) {
+            this.logger.warn(
+                `Ignoring entitlements webhook for customer ${payload.customer}: no matching organisation`,
+            );
+            return;
+        }
+
+        const hasEntitlement = payload.entitlements.data.some(
+            (e) => e.lookup_key === VANITY_URL_ENTITLEMENT_LOOKUP_KEY,
+        );
+        await this.organisations.updateVanityUrlEntitlement(
+            sub.organisationId,
+            hasEntitlement,
+        );
+    }
+
+    /**
+     * Vanity-URL entitlement state for the Business Information settings
+     * page. Combines the cached flag with the grandfathered sentinel via
+     * hasVanityUrlEntitlement() — the same decision
+     * get_booking_organisation()/get_tracking_details() make in Postgres, so
+     * the settings page and the vanity host itself never disagree.
+     */
+    async getVanityUrlStatus(organisationId: string): Promise<VanityUrlStatus> {
+        const org = await this.organisations.getOrFail(organisationId);
+        const sub = await this.organisations.getSubscription(organisationId);
+        return {
+            hasVanityUrlEntitlement: hasVanityUrlEntitlement(
+                org.subscriptionStatus,
+                sub?.hasVanityUrlEntitlement ?? false,
+            ),
+        };
     }
 
     /**

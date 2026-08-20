@@ -13,6 +13,7 @@ import type { StripeClient } from 'src/stripe/stripe.provider';
 import { BillingService } from 'src/billing/billing.service';
 import type {
     CustomerEventPayload,
+    EntitlementSummaryEventPayload,
     SubscriptionEventPayload,
 } from 'src/billing/billing.service';
 import { PaymentsService } from './payments.service';
@@ -117,6 +118,19 @@ export class StripeWebhookController {
         if (event.type === 'customer.updated') {
             const customer = event.data.object as unknown as CustomerEventPayload;
             await this.billingService.syncPaymentMethodFromStripe(customer);
+        }
+
+        // Keeps stripe.organisation_subscriptions.has_vanity_url_entitlement
+        // — the column get_booking_organisation()/get_tracking_details() read
+        // to decide whether a company org's vanity_slug host currently
+        // resolves — in sync with the customer's live vanity_url entitlement.
+        // Fires whenever an entitlement is granted or revoked (e.g. the
+        // subscription is canceled and the Organisation plan's features fall
+        // away).
+        if (event.type === 'entitlements.active_entitlement_summary.updated') {
+            const summary =
+                event.data.object as unknown as EntitlementSummaryEventPayload;
+            await this.billingService.syncVanityUrlEntitlementFromStripe(summary);
         }
 
         return { received: true };

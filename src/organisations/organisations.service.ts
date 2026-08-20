@@ -44,6 +44,18 @@ export class OrganisationsService {
         return this.stripeRepo.findOne({ where: { stripeAccountId } });
     }
 
+    /**
+     * Resolves an org from its Stripe Billing customer id — needed by the
+     * entitlements webhook, whose payload carries only `customer`, unlike the
+     * `customer.subscription.*`/`customer.updated` webhooks which carry
+     * `metadata.organisationId` directly.
+     */
+    findByStripeCustomerId(
+        stripeCustomerId: string,
+    ): Promise<OrganisationSubscription | null> {
+        return this.subscriptionRepo.findOne({ where: { stripeCustomerId } });
+    }
+
     /** Upsert the satellite row when a new connected account is created. */
     async setStripeAccount(
         organisationId: string,
@@ -120,6 +132,23 @@ export class OrganisationsService {
         await this.subscriptionRepo.update(
             { organisationId },
             { hasPaymentMethod },
+        );
+    }
+
+    /**
+     * Synced by the `entitlements.active_entitlement_summary.updated`
+     * webhook (BillingService.syncVanityUrlEntitlementFromStripe), and
+     * eagerly once right after a company org's Stripe customer is created.
+     * Read by `get_booking_organisation()`/`get_tracking_details()` to decide
+     * whether the org's vanity_slug host currently resolves.
+     */
+    async updateVanityUrlEntitlement(
+        organisationId: string,
+        hasVanityUrlEntitlement: boolean,
+    ): Promise<void> {
+        await this.subscriptionRepo.update(
+            { organisationId },
+            { hasVanityUrlEntitlement },
         );
     }
 

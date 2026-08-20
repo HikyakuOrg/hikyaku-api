@@ -7,6 +7,7 @@ import { PermissionGuard } from 'src/auth/guards/permission.guard';
 import { BillingService } from './billing.service';
 import { TrialStatusDto } from './dto/trial-status.dto';
 import { ShiftUsageStatusDto } from './dto/shift-usage.dto';
+import { VanityUrlStatusDto } from './dto/vanity-url-status.dto';
 import {
     BillingPortalSessionDto,
     CreateBillingPortalSessionDto,
@@ -62,6 +63,26 @@ export class BillingController {
         @Req() req: Request & { organisationId: string },
     ): Promise<ShiftUsageStatusDto> {
         return this.billing.getShiftUsageStatus(req.organisationId);
+    }
+
+    @Get('vanity-url')
+    @AllowExpiredTrial()
+    @ApiOperation({
+        summary: 'Vanity URL entitlement state for the active organisation.',
+        description:
+            'Whether the organisation is currently entitled to a vanity ' +
+            'booking subdomain. Exempt from the expired-trial block for the ' +
+            'same reason as the other endpoints on this controller — an org ' +
+            'whose vanity host has stopped resolving because its trial ended ' +
+            'must still be able to read why.',
+    })
+    @ApiOrganisationSlugHeader()
+    @ApiGuardErrors()
+    @ApiOkResponse({ type: VanityUrlStatusDto })
+    getVanityUrlStatus(
+        @Req() req: Request & { organisationId: string },
+    ): Promise<VanityUrlStatusDto> {
+        return this.billing.getVanityUrlStatus(req.organisationId);
     }
 
     @Post('portal')

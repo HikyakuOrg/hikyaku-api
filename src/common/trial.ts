@@ -86,6 +86,26 @@ export function isTrialExpired(
 }
 
 /**
+ * Whether an organisation is currently entitled to the `vanity_url` Stripe
+ * Entitlement Feature. Mirrors `get_booking_organisation()`/
+ * `get_tracking_details()`'s DB-side match condition exactly, so a caller in
+ * Node (BillingService's status endpoint) and a caller in Postgres (the
+ * vanity host itself) never disagree about whether a given org's vanity
+ * subdomain should work.
+ *
+ * 'grandfathered' is unconditionally entitled, same "unrestricted,
+ * permanently" reasoning as trialState() above — a grandfathered company org
+ * never gets a Stripe customer, so there is no cached flag to read for it.
+ * Every other org depends on the cached flag alone.
+ */
+export function hasVanityUrlEntitlement(
+    subscriptionStatus: string | null | undefined,
+    cachedFlag: boolean,
+): boolean {
+    return subscriptionStatus === 'grandfathered' || cachedFlag;
+}
+
+/**
  * Whole days left, floored, for the sidebar countdown. Null when no deadline
  * applies; 0 once the deadline passes rather than a negative number, so the UI
  * never has to special-case the sign.

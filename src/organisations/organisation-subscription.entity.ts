@@ -32,6 +32,15 @@ export class OrganisationSubscription {
     @Column({ name: 'has_payment_method', type: 'boolean', default: false })
     hasPaymentMethod: boolean;
 
+    /**
+     * Synced from the `entitlements.active_entitlement_summary.updated`
+     * webhook (and eagerly once at subscription provisioning). Read by
+     * `get_booking_organisation()`/`get_tracking_details()` to decide whether
+     * a company org's `vanity_slug` host currently resolves.
+     */
+    @Column({ name: 'has_vanity_url_entitlement', type: 'boolean', default: false })
+    hasVanityUrlEntitlement: boolean;
+
     @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
     createdAt: Date;
 }
