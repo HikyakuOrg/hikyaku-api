@@ -8,10 +8,9 @@ services:
         - /bin/sh
         - -c
         - |
-          apk add --no-cache bash unzip postgresql16-client gdal-tools gdal-driver-pg
-          chmod +x setup_db.sh refresh_timezones.sh
+          apk add --no-cache bash postgresql16-client
+          chmod +x setup_db.sh
           ./setup_db.sh
-          ./refresh_timezones.sh
     environment:
       DB_HOST: xxxxx.pooler.supabase.com
       DB_PORT: 5432

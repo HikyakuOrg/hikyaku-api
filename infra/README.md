@@ -46,13 +46,15 @@ See [Optional: LAN / tailnet access](#optional-lan--tailnet-access) to change th
    | `photon/photon-1.1.0.jar` + `photon/photon_data/` | `photon` | jar and prebuilt index (see Photon mount below) |
    | `valhalla_tiles/` | `valhalla` | created automatically on first boot |
 
-3. In `db` folder, 
-  - run `docker compose up -d` to create the database and seed data.
+3. In `db` folder, run `docker compose up -d` to create the database and seed
+   data (or run `setup_db.sh` directly).
 
-**OR**
-  
-  - run `refresh_timezones` to populate the timezone table(Timezones may need to be refreshed depending on geopolitical changes).
-  - run `setup_db.sh` to create the database and seed data.
+   `tzdata.timezone` is no longer seeded here: the API populates it itself, in
+   a background worker thread, the first time it boots against an empty table
+   (see `src/tzdata`). It's pinned to a specific timezone-boundary-builder
+   release + checksum; bumping that for a geopolitical timezone change means
+   updating `src/tzdata/tzdata.constants.ts` and truncating the table so the
+   next boot re-imports.
 
 ### `.env.prod` — wiring the API to the spatial services
 

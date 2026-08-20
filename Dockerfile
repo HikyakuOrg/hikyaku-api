@@ -15,6 +15,10 @@ RUN pnpm build
 FROM node:22-alpine AS runner
 
 RUN npm install -g pnpm@11.20.0
+# ogr2ogr (Node wrapper, in dependencies) shells out to the GDAL CLI tools
+# below to import tzdata.timezone in the background on first boot — see
+# src/tzdata.
+RUN apk add --no-cache gdal-tools gdal-driver-pg
 
 WORKDIR /app
 

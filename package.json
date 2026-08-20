@@ -45,6 +45,7 @@
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.2",
     "nodemailer": "^9.0.3",
+    "ogr2ogr": "^7.0.0",
     "pg": "^8.22.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
@@ -98,7 +99,8 @@
     "collectCoverageFrom": [
       "**/*.(t|j)s",
       "!**/*.spec.ts",
-      "!main.ts"
+      "!main.ts",
+      "!tzdata/tzdata-import.worker.ts"
     ],
     "coverageDirectory": "../coverage",
     "coverageThreshold": {
