@@ -3,6 +3,7 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Organisation } from './organisation.entity';
 import { OrganisationStripeAccount } from './organisation-stripe-account.entity';
+import { OrganisationSubscription } from './organisation-subscription.entity';
 
 @Injectable()
 export class OrganisationsService {
@@ -11,6 +12,8 @@ export class OrganisationsService {
         private readonly orgRepo: Repository<Organisation>,
         @InjectRepository(OrganisationStripeAccount)
         private readonly stripeRepo: Repository<OrganisationStripeAccount>,
+        @InjectRepository(OrganisationSubscription)
+        private readonly subscriptionRepo: Repository<OrganisationSubscription>,
         @InjectDataSource() private readonly dataSource: DataSource,
     ) {}
 
@@ -41,6 +44,18 @@ export class OrganisationsService {
         return this.stripeRepo.findOne({ where: { stripeAccountId } });
     }
 
+    /**
+     * Resolves an org from its Stripe Billing customer id — needed by the
+     * entitlements webhook, whose payload carries only `customer`, unlike the
+     * `customer.subscription.*`/`customer.updated` webhooks which carry
+     * `metadata.organisationId` directly.
+     */
+    findByStripeCustomerId(
+        stripeCustomerId: string,
+    ): Promise<OrganisationSubscription | null> {
+        return this.subscriptionRepo.findOne({ where: { stripeCustomerId } });
+    }
+
     /** Upsert the satellite row when a new connected account is created. */
     async setStripeAccount(
         organisationId: string,
@@ -66,6 +81,75 @@ export class OrganisationsService {
         if (!stripe || stripe.onboardedAt) return;
         stripe.onboardedAt = new Date();
         await this.stripeRepo.save(stripe);
+    }
+
+    /** Upsert the satellite row the first time a company org's Stripe Billing
+     * customer + subscription are created. */
+    async setSubscription(
+        organisationId: string,
+        stripeCustomerId: string,
+        stripeSubscriptionId: string,
+    ): Promise<void> {
+        await this.subscriptionRepo.upsert(
+            { organisationId, stripeCustomerId, stripeSubscriptionId },
+            { conflictPaths: ['organisationId'] },
+        );
+    }
+
+    /**
+     * Writes the cached read model that PermissionGuard and BillingService both
+     * read — see trialState() in src/common/trial.ts. Called right after
+     * provisioning a subscription, and by the customer.subscription.* webhook
+     * on every later status change, so the two never read a stale value.
+     */
+    async updateBillingCache(
+        organisationId: string,
+        trialEndsAt: Date | null,
+        subscriptionStatus: string | null,
+    ): Promise<void> {
+        await this.orgRepo.update(
+            { id: organisationId },
+            { trialEndsAt, subscriptionStatus },
+        );
+    }
+
+    /** The Stripe billing satellite row for an org, or null if never provisioned. */
+    getSubscription(
+        organisationId: string,
+    ): Promise<OrganisationSubscription | null> {
+        return this.subscriptionRepo.findOne({ where: { organisationId } });
+    }
+
+    /**
+     * Synced by the `customer.updated` webhook (StripeWebhookController), keyed
+     * off the customer's own `metadata.organisationId` the same way subscription
+     * events already are. Read by the `enforce_shift_allowance` DB trigger.
+     */
+    async updatePaymentMethodStatus(
+        organisationId: string,
+        hasPaymentMethod: boolean,
+    ): Promise<void> {
+        await this.subscriptionRepo.update(
+            { organisationId },
+            { hasPaymentMethod },
+        );
+    }
+
+    /**
+     * Synced by the `entitlements.active_entitlement_summary.updated`
+     * webhook (BillingService.syncVanityUrlEntitlementFromStripe), and
+     * eagerly once right after a company org's Stripe customer is created.
+     * Read by `get_booking_organisation()`/`get_tracking_details()` to decide
+     * whether the org's vanity_slug host currently resolves.
+     */
+    async updateVanityUrlEntitlement(
+        organisationId: string,
+        hasVanityUrlEntitlement: boolean,
+    ): Promise<void> {
+        await this.subscriptionRepo.update(
+            { organisationId },
+            { hasVanityUrlEntitlement },
+        );
     }
 
     /**

@@ -17,6 +17,7 @@ import { IssuingModule } from './issuing/issuing.module';
 import { MailerModule } from './mailer/mailer.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { OrganisationsModule } from './organisations/organisations.module';
+import { BillingModule } from './billing/billing.module';
 import { ConnectModule } from './connect/connect.module';
 import { CustomersModule } from './customers/customers.module';
 import { ServicesModule } from './services/services.module';
@@ -51,6 +52,7 @@ const sentryEnabled = !!process.env.SENTRY_DSN;
     MailerModule,
     InvitationsModule,
     OrganisationsModule,
+    BillingModule,
     ConnectModule,
     CustomersModule,
     ServicesModule,

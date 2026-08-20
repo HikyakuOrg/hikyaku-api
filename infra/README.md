@@ -7,7 +7,14 @@ build spatial stack, and nothing spatial is exposed to the internet.
 | File | Compose project | Services |
 |------|-----------------|----------|
 | `docker-compose.yml` | `hikyaku-api` | `hikyaku` (+ `cloudflare_tunnel` in prod) |
+| `docker-compose.staging.yml` | `hikyaku-api-staging` | `hikyaku-staging` (+ `cloudflare_tunnel` in staging) |
 | `spatial-docker-compose.yml` | `hikyaku-spatial` | `valhalla`, `vroom`, `photon` |
+
+Staging runs alongside prod on the same host (distinct container name, no published
+ports) and shares the one `hikyaku-spatial` stack over `hikyaku-net` — there's no
+separate staging spatial stack. It tracks the `staging` branch: pushing to `staging`
+builds and pushes `ghcr.io/hikyakuorg/hikyaku-api:staging` (see
+`.github/workflows/docker-ghcr.yml`), which this compose file pulls.
 
 ## How they connect
 
@@ -34,6 +41,7 @@ See [Optional: LAN / tailnet access](#optional-lan--tailnet-access) to change th
    | Path | Used by | Notes |
    |------|---------|-------|
    | `.env.prod` | `hikyaku` | API secrets + the spatial URLs below |
+   | `.env.staging` | `hikyaku-staging` | Same shape as `.env.prod`, pointed at staging secrets/DB |
    | `vroom-conf/config.yml` | `vroom` | point `routingServers.valhalla` at `http://valhalla:8002` |
    | `photon/photon-1.1.0.jar` + `photon/photon_data/` | `photon` | jar and prebuilt index (see Photon mount below) |
    | `valhalla_tiles/` | `valhalla` | created automatically on first boot |
@@ -62,8 +70,11 @@ PHOTON_URL=http://photon:2322
 # spatial stack
 docker compose -f spatial-docker-compose.yml up -d
 
-# api stack
+# api stack (prod)
 docker compose up -d
+
+# api stack (staging)
+docker compose -f docker-compose.staging.yml up -d
 ```
 
 > **First boot is slow.** Valhalla downloads the Australia-Oceania PBF and builds

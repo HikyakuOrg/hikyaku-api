@@ -1,0 +1,23 @@
+name: hikyaku-api-staging
+
+services:
+  hikyaku:
+    image: ghcr.io/hikyakuorg/hikyaku-api:staging
+    container_name: hikyaku-staging
+    env_file:
+      - ./.env.staging
+    networks: [hikyaku-net]
+    restart: unless-stopped
+
+# Staging gets its own cloudflare tunnel (separate hostname/token from prod).
+  # cloudflare_tunnel:
+  #   image: cloudflare/cloudflared
+  #   restart: unless-stopped
+  #   command: tunnel run
+  #   environment:
+  #     - TUNNEL_TOKEN=xxxxxxx
+  #   networks: [hikyaku-net]
+
+networks:
+  hikyaku-net:
+    external: true

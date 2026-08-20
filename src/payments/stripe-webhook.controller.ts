@@ -10,6 +10,12 @@ import {
 import { ApiExcludeEndpoint } from '@nestjs/swagger';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
+import { BillingService } from 'src/billing/billing.service';
+import type {
+    CustomerEventPayload,
+    EntitlementSummaryEventPayload,
+    SubscriptionEventPayload,
+} from 'src/billing/billing.service';
 import { PaymentsService } from './payments.service';
 import type { FulfillableCheckoutSession } from './payments.service';
 
@@ -28,6 +34,7 @@ export class StripeWebhookController {
     constructor(
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
         private readonly paymentsService: PaymentsService,
+        private readonly billingService: BillingService,
     ) {}
 
     /**
@@ -82,6 +89,48 @@ export class StripeWebhookController {
             if (session.payment_status === 'paid') {
                 await this.paymentsService.fulfillCheckoutSession(session);
             }
+        }
+
+        // Keeps organisations.trial_ends_at/subscription_status — the cache
+        // PermissionGuard and BillingService.getTrialStatus both read — in sync
+        // with Stripe for every status transition after
+        // BillingService.ensureSubscription() creates the subscription
+        // (trialing -> canceled at trial end, or -> active once a payment
+        // method exists). `created` is included so this self-heals even if the
+        // synchronous write in ensureSubscription() failed after Stripe's API
+        // call succeeded.
+        if (
+            event.type === 'customer.subscription.created' ||
+            event.type === 'customer.subscription.updated' ||
+            event.type === 'customer.subscription.deleted'
+        ) {
+            const subscription =
+                event.data.object as unknown as SubscriptionEventPayload;
+            await this.billingService.syncSubscriptionFromStripe(subscription);
+        }
+
+        // Keeps stripe.organisation_subscriptions.has_payment_method — the
+        // column enforce_shift_allowance() reads to decide whether an org past
+        // its free shift allowance is blocked or billed as overage — in sync
+        // with whether the org's Stripe customer actually has a default payment
+        // method. Fires whenever a customer is created, updated, or attaches one
+        // via the Billing Portal (BillingService.createBillingPortalSession).
+        if (event.type === 'customer.updated') {
+            const customer = event.data.object as unknown as CustomerEventPayload;
+            await this.billingService.syncPaymentMethodFromStripe(customer);
+        }
+
+        // Keeps stripe.organisation_subscriptions.has_vanity_url_entitlement
+        // — the column get_booking_organisation()/get_tracking_details() read
+        // to decide whether a company org's vanity_slug host currently
+        // resolves — in sync with the customer's live vanity_url entitlement.
+        // Fires whenever an entitlement is granted or revoked (e.g. the
+        // subscription is canceled and the Organisation plan's features fall
+        // away).
+        if (event.type === 'entitlements.active_entitlement_summary.updated') {
+            const summary =
+                event.data.object as unknown as EntitlementSummaryEventPayload;
+            await this.billingService.syncVanityUrlEntitlementFromStripe(summary);
         }
 
         return { received: true };
