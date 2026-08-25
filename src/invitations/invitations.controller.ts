@@ -109,7 +109,8 @@ export class InvitationsController {
             'Claims the invitation atomically, then writes the membership and ' +
             'copies its permission grants. Idempotent against a repeated call: ' +
             'the second attempt finds nothing pending and 404s. The caller must ' +
-            'have a verified email address.',
+            'have a verified email address. Takes no tenant header — the caller ' +
+            'is not yet a member of the organisation being joined.',
     })
     @ApiParam({ name: 'id', format: 'uuid' })
     @ApiAuthErrors()
@@ -136,7 +137,9 @@ export class InvitationsController {
         summary: 'Decline an invitation.',
         description:
             'Marks it declined without joining. Like accept, a second call on the ' +
-            'same invitation 404s rather than succeeding again.',
+            'same invitation 404s rather than succeeding again. Takes no tenant ' +
+            'header — the caller is not yet a member of the organisation the ' +
+            'invitation is for.',
     })
     @ApiParam({ name: 'id', format: 'uuid' })
     @ApiAuthErrors()
