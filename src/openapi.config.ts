@@ -60,6 +60,7 @@ export function buildOpenApiConfig() {
                 'geocode',
                 'Address search, autocomplete and reverse geocoding.',
             )
+            .addTag('health', 'Liveness probe for uptime monitors.')
             .build()
     );
 }
