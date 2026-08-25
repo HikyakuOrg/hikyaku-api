@@ -22,6 +22,7 @@ import { CustomersModule } from './customers/customers.module';
 import { ServicesModule } from './services/services.module';
 import { RoutingModule } from './routing/routing.module';
 import { OptimisationModule } from './optimisation/optimisation.module';
+import { HealthModule } from './health/health.module';
 
 // Error tracking is opt-in: only wire up Sentry when a DSN is configured.
 const sentryEnabled = !!process.env.SENTRY_DSN;
@@ -56,6 +57,7 @@ const sentryEnabled = !!process.env.SENTRY_DSN;
     ServicesModule,
     RoutingModule,
     OptimisationModule,
+    HealthModule,
   ],
   controllers: [],
   providers: [
