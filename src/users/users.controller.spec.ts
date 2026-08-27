@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ValidationPipe, ExecutionContext } from '@nestjs/common';
+import {
+    ValidationPipe,
+    ExecutionContext,
+    UnauthorizedException,
+} from '@nestjs/common';
 import {
     FastifyAdapter,
     NestFastifyApplication,
@@ -8,6 +12,7 @@ import request = require('supertest');
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
+import { TokenVerifier } from 'src/auth/token-verifier.service';
 import { Reflector } from '@nestjs/core';
 import { SUPABASE_CLIENT } from 'src/supabase/supabase.provider';
 
@@ -29,15 +34,26 @@ const bypassGuardValue = {
 async function buildApp(options: {
     bypass?: boolean;
     supabase?: {
-        auth: { getUser: jest.Mock };
         from: jest.Mock;
     };
+    // PermissionGuard now authenticates via TokenVerifier rather than calling
+    // supabase.auth directly (see token-verifier.service.ts). Defaults to an
+    // always-reject stub — a caller with no valid token — so the "missing
+    // Authorization header" tests need no override; a test that needs a real
+    // authenticated caller passes its own verify() mock.
+    tokenVerifier?: { verify: jest.Mock };
 }): Promise<NestFastifyApplication> {
     const { bypass = false } = options;
-    const supabase = options.supabase ?? {
-        auth: { getUser: jest.fn() },
-        from: jest.fn(),
-    };
+    const supabase = options.supabase ?? { from: jest.fn() };
+    const tokenVerifier =
+        options.tokenVerifier ??
+        {
+            verify: jest
+                .fn()
+                .mockRejectedValue(
+                    new UnauthorizedException('Missing Authorization header'),
+                ),
+        };
 
     const builder = Test.createTestingModule({
         controllers: [UsersController],
@@ -46,6 +62,7 @@ async function buildApp(options: {
             PermissionGuard,
             Reflector,
             { provide: SUPABASE_CLIENT, useValue: supabase },
+            { provide: TokenVerifier, useValue: tokenVerifier },
         ],
     });
 
@@ -86,7 +103,7 @@ describe('UsersController (integration)', () => {
     // =========================================================================
     describe('POST /api/v1/users', () => {
         it('returns 401 when Authorization header is absent', async () => {
-            const supabase = { auth: { getUser: jest.fn() }, from: jest.fn() };
+            const supabase = { from: jest.fn() };
             app = await buildApp({ supabase });
             return request(app.getHttpServer())
                 .post('/api/v1/users')
@@ -100,15 +117,13 @@ describe('UsersController (integration)', () => {
                 eq: jest.fn().mockReturnThis(),
                 maybeSingle: jest.fn().mockResolvedValue({ data: null }),
             };
-            const supabase = {
-                auth: {
-                    getUser: jest
-                        .fn()
-                        .mockResolvedValue({ data: { user: { id: 'u1' } }, error: null }),
-                },
-                from: jest.fn().mockReturnValue(chain),
+            const supabase = { from: jest.fn().mockReturnValue(chain) };
+            const tokenVerifier = {
+                verify: jest
+                    .fn()
+                    .mockResolvedValue({ id: 'u1', email: 'u1@example.com' }),
             };
-            app = await buildApp({ supabase });
+            app = await buildApp({ supabase, tokenVerifier });
             return request(app.getHttpServer())
                 .post('/api/v1/users')
                 .set('Authorization', 'Bearer valid-token')

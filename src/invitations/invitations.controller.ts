@@ -28,6 +28,8 @@ import {
 } from 'src/common/swagger/api-errors.decorator';
 import { ApiOrganisationSlugHeader } from 'src/common/swagger/tenant-header.decorator';
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
+import { AuthedUser } from 'src/auth/authed-user';
+import { NeedsFullUser } from 'src/auth/decorators/needs-full-user.decorator';
 import { RequirePermission } from 'src/auth/decorators/required-permission.decorator';
 import { SkipOrgContext } from 'src/auth/decorators/skip-org-context.decorator';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
@@ -38,12 +40,6 @@ import {
     PendingInvitationDto,
 } from './dto/invitation-results.dto';
 import { InvitationsService } from './invitations.service';
-
-type AuthedUser = {
-    id: string;
-    email: string;
-    email_confirmed_at?: string | null;
-};
 
 /**
  * Only the create route is org-scoped. The other three are @SkipOrgContext by
@@ -103,6 +99,7 @@ export class InvitationsController {
     @Post(':id/accept')
     @HttpCode(HttpStatus.OK)
     @SkipOrgContext()
+    @NeedsFullUser() // accept() gates on email_confirmed_at, which is not a JWT claim.
     @ApiOperation({
         summary: 'Accept an invitation and join the organisation.',
         description:

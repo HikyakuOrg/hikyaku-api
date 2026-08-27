@@ -7,15 +7,33 @@ import {
     HttpStatus,
     Inject,
     Injectable,
-    UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { ALLOW_EXPIRED_TRIAL_KEY } from 'src/auth/decorators/allow-expired-trial.decorator';
+import { NEEDS_FULL_USER_KEY } from 'src/auth/decorators/needs-full-user.decorator';
 import { PERMISSION_KEY } from 'src/auth/decorators/required-permission.decorator';
 import { SKIP_ORG_CONTEXT_KEY } from 'src/auth/decorators/skip-org-context.decorator';
+import { TokenVerifier } from 'src/auth/token-verifier.service';
 import { isTrialExpired } from 'src/common/trial';
 import { SUPABASE_CLIENT } from 'src/supabase/supabase.provider';
+
+/**
+ * Row shape of the single collapsed organisations query in canActivate(). Both
+ * embeds are LEFT joins (no `!inner`) on purpose: an inner join on
+ * `team_members` would drop the organisation row entirely for a non-member,
+ * making "unknown organisation" and "not a member" indistinguishable — a left
+ * embed returns the org with an empty array instead, so both branches (and
+ * both error messages) still come out of one round trip. `user_permission` is
+ * only present in the select when a permission is required (see canActivate).
+ */
+interface OrgGuardRow {
+    id: string;
+    trial_ends_at: string | null;
+    subscription_status: string | null;
+    team_members: { id: string }[];
+    user_permission?: { app_permission: { permission: string } }[];
+}
 
 // Single tenant-isolation boundary: validates the bearer token, resolves the
 // active organisation from the X-Organisation-Slug header, verifies the user is
@@ -30,6 +48,7 @@ export class PermissionGuard implements CanActivate {
     constructor(
         @Inject(SUPABASE_CLIENT)
         private readonly supabase: SupabaseClient,
+        private readonly tokenVerifier: TokenVerifier,
         private readonly reflector: Reflector,
     ) { }
 
@@ -43,27 +62,18 @@ export class PermissionGuard implements CanActivate {
                 SKIP_ORG_CONTEXT_KEY,
                 context.getHandler(),
             ) === true;
+        const needsFullUser =
+            this.reflector.get<boolean>(
+                NEEDS_FULL_USER_KEY,
+                context.getHandler(),
+            ) === true;
 
         const request = context.switchToHttp().getRequest();
         const authHeader: string | undefined = request.headers['authorization'];
 
-        if (!authHeader) {
-            throw new UnauthorizedException('Missing Authorization header');
-        }
-
-        const parts = authHeader.split(' ');
-        if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
-            throw new UnauthorizedException('Invalid Authorization header format');
-        }
-
-        const token = parts[1];
-
-        const { data, error } = await this.supabase.auth.getUser(token);
-        if (error || !data.user) {
-            throw new UnauthorizedException('Invalid or expired token');
-        }
-
-        request.user = data.user;
+        request.user = needsFullUser
+            ? await this.tokenVerifier.verifyFull(authHeader)
+            : await this.tokenVerifier.verify(authHeader);
 
         // Endpoints that run before a tenant is chosen (e.g. /organisations/me)
         // only need authentication.
@@ -78,36 +88,46 @@ export class PermissionGuard implements CanActivate {
             throw new BadRequestException('Missing X-Organisation-Slug header');
         }
 
-        // trial_ends_at/subscription_status ride along on the org lookup the
-        // guard already makes, so enforcing the trial costs no extra round-trip.
-        const { data: org } = await this.supabase
+        const userId: string = request.user.id;
+
+        // One round trip for everything the rest of this guard needs:
+        // trial_ends_at/subscription_status ride along on the org lookup,
+        // team_members answers membership, and (when a permission is
+        // required) user_permission answers that too — see OrgGuardRow for
+        // why both embeds are left joins.
+        const baseSelect = 'id, trial_ends_at, subscription_status, team_members(id)';
+        const select = requiredPermission
+            ? `${baseSelect}, user_permission(app_permission!inner(permission))`
+            : baseSelect;
+
+        const query = this.supabase
             .from('organisations')
-            .select('id, trial_ends_at, subscription_status')
+            .select(select)
             .eq('slug', slug)
-            .maybeSingle();
-        if (!org) {
-            throw new ForbiddenException('Unknown organisation');
+            .eq('team_members.id', userId);
+        if (requiredPermission) {
+            query.eq('user_permission.user_id', userId);
+            query.eq('user_permission.app_permission.permission', requiredPermission);
         }
 
-        const { data: membership } = await this.supabase
-            .from('team_members')
-            .select('id')
-            .eq('organisation_id', org.id)
-            .eq('id', data.user.id)
-            .maybeSingle();
-        if (!membership) {
+        const { data } = await query.maybeSingle();
+        if (!data) {
+            throw new ForbiddenException('Unknown organisation');
+        }
+        const org = data as unknown as OrgGuardRow;
+
+        if (org.team_members.length === 0) {
             throw new ForbiddenException(
                 'You are not a member of this organisation',
             );
         }
 
-        request.organisationId = org.id as string;
+        request.organisationId = org.id;
 
         // After membership, before permissions. After, so a non-member learns
         // nothing about an org's billing state — they get the same 403 either way.
         // Before, because "your trial ended" explains the failure and "missing
-        // permission" would not; it also saves the permission query when the
-        // answer cannot be yes regardless.
+        // permission" would not.
         const allowExpiredTrial =
             this.reflector.get<boolean>(
                 ALLOW_EXPIRED_TRIAL_KEY,
@@ -115,14 +135,10 @@ export class PermissionGuard implements CanActivate {
             ) === true;
 
         if (!allowExpiredTrial) {
-            const orgRow = org as {
-                trial_ends_at?: string | null;
-                subscription_status?: string | null;
-            };
-            const trialEndsAt = orgRow.trial_ends_at;
+            const trialEndsAt = org.trial_ends_at;
             if (
                 isTrialExpired(
-                    orgRow.subscription_status,
+                    org.subscription_status,
                     trialEndsAt ? new Date(trialEndsAt) : null,
                 )
             ) {
@@ -141,15 +157,7 @@ export class PermissionGuard implements CanActivate {
             return true;
         }
 
-        const { data: permRow } = await this.supabase
-            .from('user_permission')
-            .select('app_permission!inner(permission)')
-            .eq('organisation_id', org.id)
-            .eq('user_id', data.user.id)
-            .eq('app_permission.permission', requiredPermission)
-            .maybeSingle();
-
-        if (!permRow) {
+        if (!org.user_permission || org.user_permission.length === 0) {
             throw new ForbiddenException(
                 `Missing required permission: ${requiredPermission}`,
             );

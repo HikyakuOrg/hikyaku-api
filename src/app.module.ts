@@ -5,6 +5,7 @@ import { SentryModule, SentryGlobalFilter } from '@sentry/nestjs/setup';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { dataSourceOptions } from './database/data-source';
 import { SupabaseModule } from './supabase/supabase.module';
+import { AuthModule } from './auth/auth.module';
 import { GeocodeModule } from './geocode/geocode.module';
 import { DatabaseModule } from './database/database.module';
 import { ConfigModule } from '@nestjs/config';
@@ -36,6 +37,7 @@ const sentryEnabled = !!process.env.SENTRY_DSN;
       envFilePath: ['.env.local', '.env'],
     }),
     SupabaseModule,
+    AuthModule,
     ScheduleModule.forRoot(),
     TasksModule,
     // Schema is Supabase-owned: synchronize stays off and migrations are NOT run
