@@ -34,11 +34,11 @@ interface ClaimedRow {
 /**
  * Drains stripe.shift_usage_events into Stripe Billing Meters.
  *
- * Replaces BillingService's @Cron(EVERY_MINUTE), and fixes a live billing bug
- * while it is at it. The cron read `WHERE reported_at IS NULL`, posted to Stripe,
- * then marked the rows reported — with nothing in between. Two replicas ticking
- * in the same minute both read the same rows and both reported them, so every
- * shift was billed once per running replica.
+ * Replaces BillingService's every-minute scheduled job, and fixes a live billing
+ * bug while it is at it. That job read `WHERE reported_at IS NULL`, posted to
+ * Stripe, then marked the rows reported — with nothing in between. Two replicas
+ * ticking in the same minute both read the same rows and both reported them, so
+ * every shift was billed once per running replica.
  *
  * The fix is a claim step. The UPDATE ... RETURNING is atomic, so exactly one
  * reporter walks away with any given row, and only the ids that came back are
@@ -111,7 +111,7 @@ export class ShiftUsageReporter implements OnApplicationBootstrap {
     /**
      * Takes ownership of the unreported rows.
      *
-     * This is the statement the cron did not have. UPDATE ... RETURNING is
+     * This is the statement the old job did not have. UPDATE ... RETURNING is
      * atomic: two replicas racing here get disjoint sets, and whichever loses a
      * given row simply does not see it.
      *

@@ -173,7 +173,7 @@ describe('AssignmentService', () => {
     });
 
     describe('the feature flag', () => {
-        it('does nothing at all in nightly mode', async () => {
+        it('does nothing at all in nightly mode — the emergency stop', async () => {
             process.env.ASSIGNMENT_MODE = 'nightly';
             const { service, query } = build();
 
@@ -189,16 +189,16 @@ describe('AssignmentService', () => {
             expect(query).not.toHaveBeenCalled();
         });
 
-        it('defaults to nightly when the variable is unset', () => {
+        it('defaults to instant now that there is no scheduler to fall back to', () => {
             delete process.env.ASSIGNMENT_MODE;
             const { service } = build();
-            expect(service.mode).toBe('nightly');
+            expect(service.mode).toBe('instant');
         });
 
-        it('defaults to nightly for an unrecognised value', () => {
+        it('treats an unrecognised value as instant rather than silently stopping', () => {
             process.env.ASSIGNMENT_MODE = 'aggressive';
             const { service } = build();
-            expect(service.mode).toBe('nightly');
+            expect(service.mode).toBe('instant');
         });
     });
 

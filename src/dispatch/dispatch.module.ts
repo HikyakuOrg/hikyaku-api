@@ -13,14 +13,19 @@ import { ShiftPlanWriter } from './shift-plan.writer';
 /**
  * Dispatch: getting a package onto a van.
  *
- * The successor to TasksModule. What used to be a clock — a five-minute tick
- * checking whether it was 2am somewhere, and a thirty-second tick asking whether
- * the queue had anything — becomes an event pipeline: assignment runs inside the
- * request that creates the package, and the follow-up solve is woken by a
- * NOTIFY rather than polled for.
+ * The successor to TasksModule, which no longer exists. What used to be a clock
+ * — a five-minute tick checking whether it was 2am somewhere, and a
+ * thirty-second tick asking whether the queue had anything — is an event
+ * pipeline: assignment runs inside the request that creates the package, and the
+ * follow-up solve is woken by a NOTIFY.
  *
- * The queue survives that change (durability and retry are not things
- * LISTEN/NOTIFY can provide); the schedule does not.
+ * The queue survives that change, because durability and retry are not things
+ * LISTEN/NOTIFY can provide. The schedule does not: there is no scheduled job
+ * left anywhere in this codebase, and Nest's scheduling package is no longer a
+ * dependency. The single remaining timer is ReplanWorker's sixty-second pgmq
+ * sweep, which exists
+ * because a NOTIFY fired while the listener is reconnecting reaches nobody —
+ * see SWEEP_MS there for why that is a backstop and not a scheduler.
  */
 @Module({
     imports: [
@@ -36,14 +41,6 @@ import { ShiftPlanWriter } from './shift-plan.writer';
         AssignmentService,
         ReplanWorker,
     ],
-    exports: [
-        QueueService,
-        AssignmentService,
-        ShiftPlanWriter,
-        PgNotifyService,
-        // Only so the outgoing nightly consumer can hand a replan over. Drops
-        // out of the exports with TasksModule.
-        ReplanWorker,
-    ],
+    exports: [QueueService, AssignmentService, ShiftPlanWriter, PgNotifyService],
 })
 export class DispatchModule { }

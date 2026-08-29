@@ -169,12 +169,19 @@ export class AssignmentService {
     ) { }
 
     /**
-     * `nightly` keeps the endpoints live but inert, so the API can deploy ahead
-     * of the clients and the switch to `instant` is a config change rather than
-     * a release. The cron removal is what makes `instant` the only mode.
+     * `instant` is now the default, and effectively the only mode.
+     *
+     * The flag existed so the API could deploy ahead of the clients with the new
+     * endpoints live but inert, and so "turn it on" and "delete the fallback"
+     * were two reversible steps rather than one irreversible one. The fallback is
+     * gone: there is no nightly scheduler left to pick up what Tier 1 declines.
+     *
+     * ASSIGNMENT_MODE=nightly still switches Tier 1 off, but it is now an
+     * emergency stop rather than a rollout stage -- set it and packages stay
+     * PENDING until a dispatcher assigns them by hand.
      */
     get mode(): 'nightly' | 'instant' {
-        return process.env.ASSIGNMENT_MODE === 'instant' ? 'instant' : 'nightly';
+        return process.env.ASSIGNMENT_MODE === 'nightly' ? 'nightly' : 'instant';
     }
 
     /**

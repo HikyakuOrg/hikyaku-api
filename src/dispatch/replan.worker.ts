@@ -175,10 +175,15 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     /**
-     * Processes one queue message. Public so the nightly consumer can hand over
-     * a replan it happened to read first, during the window where both exist.
+     * Processes one queue message.
+     *
+     * This worker is now the only consumer of the queue. A leftover nightly
+     * payload from before the scheduler was removed carries no `kind` and is
+     * archived rather than retried -- there is nothing left that knows how to run
+     * a whole-warehouse nightly solve, and cycling it forever would be worse than
+     * dropping it.
      */
-    async handleMessage(message: PgmqMessage): Promise<void> {
+    private async handleMessage(message: PgmqMessage): Promise<void> {
         const body = message.message as Record<string, unknown>;
 
         try {

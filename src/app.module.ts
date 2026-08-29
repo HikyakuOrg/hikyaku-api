@@ -8,8 +8,6 @@ import { SupabaseModule } from './supabase/supabase.module';
 import { GeocodeModule } from './geocode/geocode.module';
 import { DatabaseModule } from './database/database.module';
 import { ConfigModule } from '@nestjs/config';
-import { ScheduleModule } from '@nestjs/schedule';
-import { TasksModule } from './tasks/tasks.module';
 import { DispatchModule } from './dispatch/dispatch.module';
 import { UsersModule } from './users/users.module';
 import { StripeModule } from './stripe/stripe.module';
@@ -39,9 +37,7 @@ const sentryEnabled = !!process.env.SENTRY_DSN;
       envFilePath: ['.env.local', '.env'],
     }),
     SupabaseModule,
-    ScheduleModule.forRoot(),
     DispatchModule,
-    TasksModule,
     // Schema is Supabase-owned: synchronize stays off and migrations are NOT run
     // on boot (both enforced in dataSourceOptions). autoLoadEntities keeps Nest's
     // existing per-module entity discovery. See src/database/data-source.ts.

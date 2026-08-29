@@ -60,17 +60,6 @@ export class QueueService {
     }
 
     /**
-     * Sends a single nightly message to the queue (warehouse ID + run date).
-     * Removed with the scheduler.
-     */
-    async enqueue(warehouseId: string, runDate: string): Promise<void> {
-        await this.dataSource.query(
-            `SELECT pgmq.send($1, $2::jsonb)`,
-            [QUEUE_NAME, JSON.stringify({ warehouseId, runDate })],
-        );
-    }
-
-    /**
      * Sends an arbitrary payload onto the queue. Used for on-demand runs, which
      * carry `{ kind: 'on_demand', ... }`, and for replans, which carry
      * `{ kind: 'replan', ... }`.

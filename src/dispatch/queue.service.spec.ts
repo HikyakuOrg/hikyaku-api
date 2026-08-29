@@ -40,14 +40,48 @@ describe('QueueService', () => {
         });
     });
 
-    it('enqueue calls pgmq.send with the serialised message', async () => {
-        await service.enqueue('wh-1', '2026-05-09');
+    it('enqueuePayload calls pgmq.send with the serialised message', async () => {
+        await service.enqueuePayload({ kind: 'replan', optimisationId: 'shift-1' });
         const [sql, params] = dsQuery.mock.calls[0] as [string, unknown[]];
         expect(sql).toContain('pgmq.send');
         expect(params[0]).toBe('warehouse-optimization');
         const msg = JSON.parse(params[1] as string);
-        expect(msg.warehouseId).toBe('wh-1');
-        expect(msg.runDate).toBe('2026-05-09');
+        expect(msg.kind).toBe('replan');
+        expect(msg.optimisationId).toBe('shift-1');
+    });
+
+    describe('enqueueReplan', () => {
+        it('sends the message and rings the doorbell on the caller’s transaction', async () => {
+            // Both inside the transaction on purpose: a rolled-back assignment
+            // must not leave a queued replan for a plan that never happened, and
+            // a committed one must not be missed because the process died between
+            // COMMIT and send.
+            const runnerQuery = jest.fn().mockResolvedValue([]);
+            await service.enqueueReplan({ query: runnerQuery } as never, {
+                kind: 'replan',
+                optimisationId: 'shift-1',
+                warehouseId: 'wh-1',
+                organisationId: 'org-1',
+            });
+
+            expect(runnerQuery.mock.calls[0][0]).toContain('pgmq.send');
+            expect(runnerQuery.mock.calls[1][0]).toContain('pg_notify');
+            expect(runnerQuery.mock.calls[1][1]).toEqual([
+                'hikyaku_shift_replan',
+                'shift-1',
+            ]);
+            // Never on the pool: it has to be the caller's transaction.
+            expect(dsQuery).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('readBatch', () => {
+        it('reads up to the requested number of messages', async () => {
+            await service.readBatch(1800, 20);
+            const [sql, params] = dsQuery.mock.calls[0] as [string, unknown[]];
+            expect(sql).toContain('pgmq.read');
+            expect(params).toEqual(['warehouse-optimization', 1800, 20]);
+        });
     });
 
     describe('readOne', () => {

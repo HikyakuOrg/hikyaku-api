@@ -369,9 +369,9 @@ export class BillingService {
      *
      * Just the Stripe half. Which rows to report, and the claim that stops two
      * replicas reporting the same ones, belong to ShiftUsageReporter -- this used
-     * to be an @Cron(EVERY_MINUTE) that did the reading, the reporting and the
-     * marking with nothing in between, which is exactly how every shift came to
-     * be billed once per running replica.
+     * to be an every-minute scheduled job that did the reading, the reporting
+     * and the marking with nothing in between, which is exactly how every shift
+     * came to be billed once per running replica.
      *
      * `identifier` is Stripe's own idempotency key for meter events: a reporter
      * that posts successfully and then dies before marking the rows reported will
