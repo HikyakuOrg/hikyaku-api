@@ -8,6 +8,7 @@
   "packageManager": "pnpm@11.20.0",
   "scripts": {
     "build": "nest build",
+    "openapi:emit": "ts-node -r tsconfig-paths/register src/openapi.emit.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",

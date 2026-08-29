@@ -57,6 +57,14 @@ export function buildOpenApiConfig() {
             .addTag('routing', 'Road-network route previews.')
             .addTag('optimisation', 'Vehicle routing runs and their results.')
             .addTag(
+                'packages',
+                'Package creation, and the shift assignment it triggers.',
+            )
+            .addTag(
+                'shifts',
+                'Shift lifecycle and hand edits to a shift’s package set.',
+            )
+            .addTag(
                 'geocode',
                 'Address search, autocomplete and reverse geocoding.',
             )
