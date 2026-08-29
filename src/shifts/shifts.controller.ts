@@ -5,7 +5,6 @@ import {
     Get,
     HttpCode,
     HttpStatus,
-    NotImplementedException,
     Param,
     ParseUUIDPipe,
     Post,
@@ -27,6 +26,7 @@ import {
     ShiftPlanDto,
     ShiftVersionDto,
 } from './dto/shift-result.dto';
+import { ShiftsService } from './shifts.service';
 
 @ApiTags('shifts')
 @ApiBearerAuth('bearer')
@@ -35,6 +35,8 @@ import {
 @Controller('api/v1/shifts')
 @UseGuards(PermissionGuard)
 export class ShiftsController {
+    constructor(private readonly shifts: ShiftsService) { }
+
     @Post()
     @HttpCode(HttpStatus.CREATED)
     @RequirePermission('shifts.assign')
@@ -63,9 +65,7 @@ export class ShiftsController {
         @Body() dto: CreateShiftDto,
         @Req() req: Request & { organisationId: string; user: { id: string } },
     ): Promise<ShiftDto> {
-        void dto;
-        void req;
-        throw new NotImplementedException();
+        return this.shifts.create(req.organisationId, dto);
     }
 
     @Get(':id/version')
@@ -82,9 +82,7 @@ export class ShiftsController {
         @Param('id', ParseUUIDPipe) id: string,
         @Req() req: Request & { organisationId: string },
     ): Promise<ShiftVersionDto> {
-        void id;
-        void req;
-        throw new NotImplementedException();
+        return this.shifts.version(req.organisationId, id);
     }
 
     @Post(':id/dispatch')
@@ -106,9 +104,7 @@ export class ShiftsController {
         @Param('id', ParseUUIDPipe) id: string,
         @Req() req: Request & { organisationId: string },
     ): Promise<ShiftDto> {
-        void id;
-        void req;
-        throw new NotImplementedException();
+        return this.shifts.dispatch(req.organisationId, id);
     }
 
     @Post(':id/packages')
@@ -133,10 +129,7 @@ export class ShiftsController {
         @Body() dto: AddPackagesToShiftDto,
         @Req() req: Request & { organisationId: string },
     ): Promise<ShiftPlanDto> {
-        void id;
-        void dto;
-        void req;
-        throw new NotImplementedException();
+        return this.shifts.addPackages(req.organisationId, id, dto);
     }
 
     @Delete(':id/packages/:packageId')
@@ -161,9 +154,6 @@ export class ShiftsController {
         @Param('packageId', ParseUUIDPipe) packageId: string,
         @Req() req: Request & { organisationId: string },
     ): Promise<ShiftPlanDto> {
-        void id;
-        void packageId;
-        void req;
-        throw new NotImplementedException();
+        return this.shifts.removePackage(req.organisationId, id, packageId);
     }
 }

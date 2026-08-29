@@ -12,6 +12,7 @@ import {
     MAX_EVICTIONS,
     MAX_STOPS,
     pickVictims,
+    scheduleArrivals,
     SHIFT_WINDOW_SECONDS,
     TIME_PER_STOP,
     tryInsert,
@@ -626,5 +627,26 @@ describe('the shift window', () => {
             ctx(),
         );
         expect(result.feasible).toBe(false);
+    });
+});
+
+describe('scheduleArrivals', () => {
+    it('returns nothing for an empty route', () => {
+        expect(scheduleArrivals(DEPOT, DEPARTURE, [])).toEqual([]);
+    });
+
+    it('walks a fixed order, adding service time between stops', () => {
+        const arrivals = scheduleArrivals(DEPOT, DEPARTURE, [east(4), east(8)]);
+        expect(arrivals[0]).toBeCloseTo(DEPARTURE + driveSeconds(4) * 1000, -2);
+        expect(arrivals[1]).toBeCloseTo(
+            arrivals[0] + (TIME_PER_STOP + driveSeconds(4)) * 1000,
+            -2,
+        );
+    });
+
+    it('honours measured legs, so a rewrite after a removal uses real numbers when it has them', () => {
+        const measured = { [legKey(DEPOT, east(4))]: 120 };
+        const arrivals = scheduleArrivals(DEPOT, DEPARTURE, [east(4)], measured);
+        expect(arrivals[0]).toBe(DEPARTURE + 120_000);
     });
 });

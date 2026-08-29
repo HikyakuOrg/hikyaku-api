@@ -273,6 +273,23 @@ function timeRoute(
 }
 
 /**
+ * Arrival time at each point of a fixed visiting order, epoch ms.
+ *
+ * The dispatcher-override and manual-removal paths do not choose an order — a
+ * human already did, or the order simply survives a deletion — but they still
+ * have to rewrite every ETA on the route, because removing stop 2 moves stops
+ * 3..n earlier.
+ */
+export function scheduleArrivals(
+    depot: GeoPoint,
+    departureMs: number,
+    order: readonly GeoPoint[],
+    measured?: Readonly<Record<string, number>>,
+): number[] {
+    return timeRoute(depot, departureMs, order, measured).arrivalsMs;
+}
+
+/**
  * Total drive time of a route in seconds, ignoring service and deadlines. Used
  * only to price a detour against the route the shift already has.
  */

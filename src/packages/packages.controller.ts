@@ -3,11 +3,11 @@ import {
     Controller,
     HttpCode,
     HttpStatus,
-    NotImplementedException,
     Param,
     ParseUUIDPipe,
     Post,
     Req,
+    Res,
     UseGuards,
 } from '@nestjs/common';
 import { ApiBody, ApiResponse, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
@@ -24,6 +24,18 @@ import {
     BulkCreatePackagesResultDto,
     CreatePackageResultDto,
 } from './dto/package-result.dto';
+import { PackagesService } from './packages.service';
+
+/**
+ * The slice of the Fastify reply this controller needs.
+ *
+ * Declared here rather than imported: `fastify` is a transitive dependency of
+ * @nestjs/platform-fastify and is not a direct one, so importing its types would
+ * couple this file to a package.json entry that does not exist.
+ */
+interface StatusReply {
+    status(code: number): { send(body: unknown): unknown };
+}
 
 @ApiTags('packages')
 @ApiBearerAuth('bearer')
@@ -32,6 +44,8 @@ import {
 @Controller('api/v1/packages')
 @UseGuards(PermissionGuard)
 export class PackagesController {
+    constructor(private readonly packages: PackagesService) { }
+
     @Post()
     @HttpCode(HttpStatus.CREATED)
     @RequirePermission('packages.add')
@@ -59,13 +73,22 @@ export class PackagesController {
             'organisation are reported as unknown (400), never as a conflict.',
         type: ApiErrorDto,
     })
-    create(
+    async create(
         @Body() dto: CreatePackageDto,
         @Req() req: Request & { organisationId: string; user: { id: string } },
-    ): Promise<CreatePackageResultDto> {
-        void dto;
-        void req;
-        throw new NotImplementedException();
+        // Written to directly rather than through @HttpCode, because the status
+        // depends on the outcome: a fresh create is 201, a replay is 200. Nest
+        // applies the decorator's status AFTER a passthrough handler returns, so
+        // it would overwrite anything set inside one.
+        @Res() reply: StatusReply,
+    ): Promise<void> {
+        const { result, replayed } = await this.packages.create(
+            req.organisationId,
+            dto,
+        );
+        reply
+            .status(replayed ? HttpStatus.OK : HttpStatus.CREATED)
+            .send(result);
     }
 
     @Post('bulk')
@@ -85,9 +108,7 @@ export class PackagesController {
         @Body() dto: BulkCreatePackagesDto,
         @Req() req: Request & { organisationId: string; user: { id: string } },
     ): Promise<BulkCreatePackagesResultDto> {
-        void dto;
-        void req;
-        throw new NotImplementedException();
+        return this.packages.createBulk(req.organisationId, dto);
     }
 
     @Post(':id/reassign')
@@ -110,8 +131,6 @@ export class PackagesController {
         @Param('id', ParseUUIDPipe) id: string,
         @Req() req: Request & { organisationId: string },
     ): Promise<CreatePackageResultDto> {
-        void id;
-        void req;
-        throw new NotImplementedException();
+        return this.packages.reassign(req.organisationId, id);
     }
 }

@@ -1,15 +1,22 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+    ConflictException,
+    Injectable,
+    Logger,
+    NotFoundException,
+} from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, QueryRunner } from 'typeorm';
 import { ValhallaService } from 'src/valhalla/valhalla.service';
 import { QueueService } from './queue.service';
 import { ShiftPlanWriter, type PlanStop } from './shift-plan.writer';
 import {
+    cheapestPosition,
     chooseBest,
     DISPATCH_LEAD_S,
     isGreyBand,
     legKey,
     pickVictims,
+    scheduleArrivals,
     tryInsert,
     type CandidateShift,
     type GeoPoint,
@@ -42,6 +49,13 @@ export interface AssignedShiftResult {
     stopIndex: number;
     estimatedArrival: string | null;
     revision: number;
+}
+
+/** One package's verdict after a dispatcher pinned it to a chosen shift. */
+export interface ShiftPackageVerdict {
+    packageId: string;
+    added: boolean;
+    warning: string | null;
 }
 
 export interface AssignmentOutcome {
@@ -207,6 +221,404 @@ export class AssignmentService {
             results.set(packageId, await this.assign(organisationId, packageId));
         }
         return results;
+    }
+
+    /**
+     * Dispatcher override: pin these packages to this shift.
+     *
+     * Candidate selection is skipped -- a human chose the shift -- but
+     * feasibility still runs, and a package that breaks a deadline is reported
+     * as a warning rather than refused. The dispatcher is allowed to be wrong on
+     * purpose; what they are not allowed to do is be wrong without being told.
+     *
+     * Also the persistence half of POST /optimisation/adhoc, which is why it
+     * takes a shift that already exists rather than opening one.
+     */
+    async assignToShift(
+        organisationId: string,
+        shiftId: string,
+        packageIds: string[],
+    ): Promise<{ verdicts: ShiftPackageVerdict[]; revision: number }> {
+        const shift = await this.loadShiftForEdit(organisationId, shiftId);
+        const rows = await this.loadPackagesForShift(organisationId, packageIds);
+        const found = new Map(rows.map((r) => [r.id, r]));
+
+        const runner = this.dataSource.createQueryRunner();
+        await runner.connect();
+        await runner.startTransaction();
+        try {
+            await runner.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+                `assign:${shift.warehouseId}`,
+            ]);
+
+            const verdicts: ShiftPackageVerdict[] = [];
+            const now = new Date();
+            const ctx: InsertionContext = {
+                nowMs: now.getTime(),
+                shiftDayEndMs: endOfLocalDayMs(now, shift.timezone),
+            };
+            let working = shift.candidate.shift;
+            const added: string[] = [];
+
+            for (const packageId of packageIds) {
+                const row = found.get(packageId);
+                if (!row) {
+                    verdicts.push({ packageId, added: false, warning: 'unknown package' });
+                    continue;
+                }
+                if (row.optimisation_id && row.optimisation_id !== shiftId) {
+                    verdicts.push({
+                        packageId,
+                        added: false,
+                        warning: 'already assigned to another shift',
+                    });
+                    continue;
+                }
+                if (row.lon == null || row.lat == null) {
+                    verdicts.push({
+                        packageId,
+                        added: false,
+                        warning: 'recipient has no geocode',
+                    });
+                    continue;
+                }
+
+                const incoming = this.toIncoming(row);
+                const attempt = cheapestPosition(working, incoming, ctx);
+                const newStop: RouteStop = {
+                    packageId,
+                    lon: incoming.lon,
+                    lat: incoming.lat,
+                    weightG: incoming.weightG,
+                    deadlineMs: incoming.deadlineMs,
+                    status: 'ASSIGNED',
+                    evictionCount: incoming.evictionCount,
+                    createdAtMs: incoming.createdAtMs,
+                };
+
+                if (attempt.feasible) {
+                    const stops = [...working.stops];
+                    stops.splice(attempt.index, 0, newStop);
+                    working = { ...working, stops };
+                    verdicts.push({ packageId, added: true, warning: null });
+                } else {
+                    // Appended rather than dropped: the dispatcher asked for it.
+                    working = { ...working, stops: [...working.stops, newStop] };
+                    verdicts.push({
+                        packageId,
+                        added: true,
+                        warning: this.warningFor(attempt.reason),
+                    });
+                }
+                added.push(packageId);
+            }
+
+            const revision = await this.rewrite(
+                runner,
+                { ...shift.candidate, shift: working },
+                'manual_add',
+            );
+            await this.planWriter.claimPackages(runner, shiftId, added);
+
+            await this.queue.enqueueReplan(runner, {
+                kind: 'replan',
+                optimisationId: shiftId,
+                warehouseId: shift.warehouseId,
+                organisationId,
+            });
+            await runner.commitTransaction();
+
+            return { verdicts, revision };
+        } catch (err) {
+            if (runner.isTransactionActive) await runner.rollbackTransaction();
+            throw err;
+        } finally {
+            await runner.release();
+        }
+    }
+
+    /**
+     * Takes one package off a shift by hand and rewrites the remaining route.
+     *
+     * Refused once the package is loaded or moving: removing it from the plan
+     * does not remove it from the van, and a driver whose manifest silently
+     * disagrees with what is in the back is worse off than one with an extra
+     * stop. Never counts as an eviction -- nobody bumped it.
+     */
+    async removeFromShift(
+        organisationId: string,
+        shiftId: string,
+        packageId: string,
+    ): Promise<{ revision: number }> {
+        const shift = await this.loadShiftForEdit(organisationId, shiftId, {
+            allowDispatched: true,
+        });
+
+        const onRoute = shift.candidate.shift.stops.find(
+            (s) => s.packageId === packageId,
+        );
+        if (!onRoute) {
+            throw new NotFoundException('That package is not on this shift.');
+        }
+        if (onRoute.status !== 'ASSIGNED' && onRoute.status !== 'PENDING') {
+            throw new ConflictException(
+                `Package ${packageId} is ${onRoute.status} and can no longer be removed from the shift.`,
+            );
+        }
+
+        const runner = this.dataSource.createQueryRunner();
+        await runner.connect();
+        await runner.startTransaction();
+        try {
+            await runner.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+                `assign:${shift.warehouseId}`,
+            ]);
+
+            await this.planWriter.detach(runner, [packageId], {
+                incrementEviction: false,
+            });
+
+            const remaining = shift.candidate.shift.stops.filter(
+                (s) => s.packageId !== packageId,
+            );
+            const revision = await this.rewrite(
+                runner,
+                {
+                    ...shift.candidate,
+                    shift: { ...shift.candidate.shift, stops: remaining },
+                },
+                'manual_remove',
+            );
+
+            await this.queue.enqueueReplan(runner, {
+                kind: 'replan',
+                optimisationId: shiftId,
+                warehouseId: shift.warehouseId,
+                organisationId,
+            });
+            await runner.commitTransaction();
+            return { revision };
+        } catch (err) {
+            if (runner.isTransactionActive) await runner.rollbackTransaction();
+            throw err;
+        } finally {
+            await runner.release();
+        }
+    }
+
+    /**
+     * Detaches a package from whatever shift it is on so it can be assigned
+     * again -- the path for a deadline that changed after creation.
+     */
+    async unassign(organisationId: string, packageId: string): Promise<void> {
+        const rows: { optimisation_id: string | null; status: string | null }[] =
+            await this.dataSource.query(
+                `SELECT p.optimisation_id, latest.enums AS status
+                   FROM packages p
+                   LEFT JOIN LATERAL (
+                        SELECT ps.enums
+                          FROM package_timeline pt
+                          JOIN package_status  ps ON ps.id = pt.package_status
+                         WHERE pt.package_id = p.id
+                         ORDER BY pt.created_at DESC, pt.id DESC
+                         LIMIT 1
+                   ) latest ON true
+                  WHERE p.id = $1 AND p.organisation_id = $2`,
+                [packageId, organisationId],
+            );
+        const row = rows[0];
+        if (!row) throw new NotFoundException('Package not found.');
+
+        const status = row.status ?? 'PENDING';
+        if (status !== 'ASSIGNED' && status !== 'PENDING') {
+            throw new ConflictException(
+                `Package ${packageId} is ${status} and can no longer be moved.`,
+            );
+        }
+        if (!row.optimisation_id) return;
+
+        await this.removeFromShift(organisationId, row.optimisation_id, packageId);
+    }
+
+    /**
+     * Rewrites a shift's route from an in-memory stop list, returning the new
+     * revision. Shared by the two hand-edit paths, which differ only in what
+     * they did to the list first.
+     */
+    private async rewrite(
+        runner: QueryRunner,
+        candidate: Candidate,
+        reason: string,
+    ): Promise<number> {
+        const { routeId, solutionId } = candidate.routeId && candidate.solutionId
+            ? { routeId: candidate.routeId, solutionId: candidate.solutionId }
+            : await this.planWriter.ensureRoute(runner, candidate.shift.id);
+
+        await this.planWriter.snapshotRevision(
+            runner,
+            candidate.shift.id,
+            candidate.shift.revision,
+            reason,
+        );
+
+        const arrivals = scheduleArrivals(
+            candidate.shift.depot,
+            candidate.shift.departureMs,
+            candidate.shift.stops.map((s) => ({ lon: s.lon, lat: s.lat })),
+        );
+
+        await this.planWriter.writePlan(runner, {
+            optimisationId: candidate.shift.id,
+            routeId,
+            solutionId,
+            depot: candidate.shift.depot,
+            departureMs: candidate.shift.departureMs,
+            driverId: candidate.shift.driverId ?? '',
+            vehicleId: candidate.shift.vehicleId ?? '',
+            stops: candidate.shift.stops.map((s, i) => ({
+                packageId: s.packageId,
+                lon: s.lon,
+                lat: s.lat,
+                arrivalMs: arrivals[i],
+                weightG: s.weightG,
+            })),
+            reason,
+        });
+
+        return candidate.shift.revision + 1;
+    }
+
+    /** Loads one shift and its route for a hand edit, org-scoped. */
+    private async loadShiftForEdit(
+        organisationId: string,
+        shiftId: string,
+        opts: { allowDispatched?: boolean } = {},
+    ): Promise<{
+        candidate: Candidate;
+        warehouseId: string;
+        timezone: string | null;
+    }> {
+        const rows: (ShiftRow & {
+            status: string;
+            warehouse_id: string | null;
+            timezone: string | null;
+            depot_lon: number | null;
+            depot_lat: number | null;
+        })[] = await this.dataSource.query(
+            `SELECT v.id,
+                    v.revision,
+                    v.status,
+                    v.driver_id,
+                    v.vehicle_id,
+                    v.warehouse_id,
+                    v.scheduled_start,
+                    v.shift_date,
+                    veh.vehicle_gross_limits,
+                    vt.ors_vehicle_type,
+                    w.timezone,
+                    ST_X(w.warehouse_location::geometry) AS depot_lon,
+                    ST_Y(w.warehouse_location::geometry) AS depot_lat,
+                    route.route_id,
+                    route.solution_id
+               FROM vrp_optimization v
+               LEFT JOIN vehicles     veh ON veh.id = v.vehicle_id
+               LEFT JOIN vehicle_type vt  ON vt.id  = veh.vehicle_type
+               LEFT JOIN warehouse    w   ON w.id   = v.warehouse_id
+               LEFT JOIN LATERAL (
+                    SELECT r.id AS route_id, s.id AS solution_id
+                      FROM vrp_solution s
+                      JOIN vrp_route    r ON r.solution_id = s.id
+                     WHERE s.optimization_id = v.id
+                     ORDER BY r.id
+                     LIMIT 1
+               ) route ON true
+              WHERE v.id = $1 AND v.organisation_id = $2`,
+            [shiftId, organisationId],
+        );
+
+        const row = rows[0];
+        if (!row) throw new NotFoundException('Shift not found.');
+        if (row.status !== 'planned' && !opts.allowDispatched) {
+            throw new ConflictException(
+                `Shift is ${row.status} and is closed to changes.`,
+            );
+        }
+        if (!row.warehouse_id || row.depot_lon == null || row.depot_lat == null) {
+            throw new ConflictException(
+                'Shift has no warehouse location to plan a route from.',
+            );
+        }
+
+        const depot: GeoPoint = { lon: row.depot_lon, lat: row.depot_lat };
+        const now = new Date();
+        const stops = row.route_id
+            ? await this.loadStops([row.route_id])
+            : new Map<string, RouteStop[]>();
+
+        return {
+            warehouseId: row.warehouse_id,
+            timezone: row.timezone,
+            candidate: {
+                shift: {
+                    id: row.id,
+                    revision: Number(row.revision),
+                    driverId: row.driver_id,
+                    vehicleId: row.vehicle_id,
+                    capacityG: this.capacityGrams(row.vehicle_gross_limits),
+                    departureMs: row.scheduled_start
+                        ? new Date(row.scheduled_start).getTime()
+                        : Math.max(
+                            now.getTime(),
+                            localHourMs(now, row.timezone, DEFAULT_DEPARTURE_HOUR),
+                        ),
+                    depot,
+                    stops: row.route_id ? (stops.get(row.route_id) ?? []) : [],
+                },
+                profile: row.ors_vehicle_type ?? 'driving-car',
+                routeId: row.route_id,
+                solutionId: row.solution_id,
+                shiftDate: row.shift_date,
+                scheduledStart: row.scheduled_start,
+            },
+        };
+    }
+
+    private async loadPackagesForShift(
+        organisationId: string,
+        packageIds: string[],
+    ): Promise<PackageRow[]> {
+        if (packageIds.length === 0) return [];
+        return this.dataSource.query(
+            `SELECT p.id,
+                    p.organisation_id,
+                    p.warehouse_id,
+                    p.optimisation_id,
+                    p.eviction_count,
+                    p.created_at,
+                    pd.weight_kg,
+                    pdw.scheduled_arrival,
+                    ST_X(c.customer_location::geometry) AS lon,
+                    ST_Y(c.customer_location::geometry) AS lat
+               FROM packages p
+               LEFT JOIN package_dimensions      pd  ON pd.package_id  = p.id
+               LEFT JOIN package_delivery_window pdw ON pdw.package_id = p.id
+               LEFT JOIN customer                c   ON c.id = p.to_customer
+              WHERE p.id = ANY($1::uuid[]) AND p.organisation_id = $2`,
+            [packageIds, organisationId],
+        );
+    }
+
+    private warningFor(reason: string): string {
+        switch (reason) {
+            case 'weight':
+                return 'over the vehicle capacity';
+            case 'max_stops':
+                return 'past the stop limit for one shift';
+            case 'window':
+                return 'past the end of the driving window';
+            default:
+                return 'breaks a delivery deadline on this route';
+        }
     }
 
     // ── Tier 1 ───────────────────────────────────────────────────────────────
@@ -761,7 +1173,48 @@ export class AssignmentService {
             .map((r) => r.route_id)
             .filter((id): id is string => id !== null);
 
-        const stopRows: StopRow[] = routeIds.length === 0 ? [] : await this.dataSource.query(
+        const stopsByRoute = await this.loadStops(routeIds);
+
+        const defaultDepartureMs = Math.max(
+            now.getTime(),
+            localHourMs(now, timezone, DEFAULT_DEPARTURE_HOUR),
+        );
+
+        return shiftRows.map((row) => ({
+            shift: {
+                id: row.id,
+                revision: Number(row.revision),
+                driverId: row.driver_id,
+                vehicleId: row.vehicle_id,
+                capacityG: this.capacityGrams(row.vehicle_gross_limits),
+                departureMs: row.scheduled_start
+                    ? new Date(row.scheduled_start).getTime()
+                    : defaultDepartureMs,
+                depot,
+                stops: row.route_id ? (stopsByRoute.get(row.route_id) ?? []) : [],
+            },
+            profile: row.ors_vehicle_type ?? 'driving-car',
+            routeId: row.route_id,
+            solutionId: row.solution_id,
+            shiftDate: row.shift_date,
+            scheduledStart: row.scheduled_start,
+        }));
+    }
+
+    /**
+     * The job stops of one or more routes, in visiting order, with everything
+     * the eviction rule needs to judge them.
+     *
+     * The LATERAL breaks its tie on (created_at DESC, id DESC).
+     * package_timeline lost its (package_id, package_status) unique constraint
+     * in AllowStatusRevisits, so without the id tiebreak this returns an
+     * arbitrary one of a package's statuses the moment it revisits one.
+     */
+    private async loadStops(routeIds: string[]): Promise<Map<string, RouteStop[]>> {
+        const byRoute = new Map<string, RouteStop[]>();
+        if (routeIds.length === 0) return byRoute;
+
+        const rows: StopRow[] = await this.dataSource.query(
             `SELECT rs.route_id,
                     rs.step_index,
                     rs.package_id,
@@ -791,9 +1244,8 @@ export class AssignmentService {
             [routeIds],
         );
 
-        const stopsByRoute = new Map<string, RouteStop[]>();
-        for (const row of stopRows) {
-            const list = stopsByRoute.get(row.route_id) ?? [];
+        for (const row of rows) {
+            const list = byRoute.get(row.route_id) ?? [];
             list.push({
                 packageId: row.package_id,
                 lon: Number(row.lon),
@@ -806,33 +1258,9 @@ export class AssignmentService {
                 evictionCount: Number(row.eviction_count ?? 0),
                 createdAtMs: new Date(row.created_at).getTime(),
             });
-            stopsByRoute.set(row.route_id, list);
+            byRoute.set(row.route_id, list);
         }
-
-        const defaultDepartureMs = Math.max(
-            now.getTime(),
-            localHourMs(now, timezone, DEFAULT_DEPARTURE_HOUR),
-        );
-
-        return shiftRows.map((row) => ({
-            shift: {
-                id: row.id,
-                revision: Number(row.revision),
-                driverId: row.driver_id,
-                vehicleId: row.vehicle_id,
-                capacityG: this.capacityGrams(row.vehicle_gross_limits),
-                departureMs: row.scheduled_start
-                    ? new Date(row.scheduled_start).getTime()
-                    : defaultDepartureMs,
-                depot,
-                stops: row.route_id ? (stopsByRoute.get(row.route_id) ?? []) : [],
-            },
-            profile: row.ors_vehicle_type ?? 'driving-car',
-            routeId: row.route_id,
-            solutionId: row.solution_id,
-            shiftDate: row.shift_date,
-            scheduledStart: row.scheduled_start,
-        }));
+        return byRoute;
     }
 
     /**
