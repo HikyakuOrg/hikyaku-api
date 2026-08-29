@@ -1433,6 +1433,265 @@
         ]
       }
     },
+    "/api/v1/packages": {
+      "post": {
+        "operationId": "PackagesController_create",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePackageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Idempotent replay: a package with this tracking number and an identical payload already exists, and is returned unchanged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePackageResultDto"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Package created. `assignment.outcome` says whether it reached a shift — creation and assignment are separate transactions, so a package that could not be assigned is still created and returned with outcome `deferred`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePackageResultDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The tracking number belongs to a different package. Rows in another organisation are reported as unknown (400), never as a conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/packages/bulk": {
+      "post": {
+        "operationId": "PackagesController_createBulk",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkCreatePackagesDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Index-aligned per-package results. Assignment takes the per-warehouse lock once for the whole batch and emits a single replan, so importing N packages costs one lock acquisition rather than N. A failed entry carries `error` and does not fail the batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkCreatePackagesResultDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/packages/{id}/reassign": {
+      "post": {
+        "operationId": "PackagesController_reassign",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unassigns the package and runs assignment again — the path for a deadline that changed after creation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePackageResultDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The package is already loaded or in transit and cannot be moved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "packages"
+        ]
+      }
+    },
     "/api/v1/issuing/cards": {
       "post": {
         "description": "Restricted by Stripe to fuel merchant categories, so anything else is auto-declined. A Stripe cardholder is created for the driver on first issue, using their assigned warehouse as the billing address. Requires the organisation to have completed onboarding with the card_issuing capability active.",
@@ -3406,265 +3665,6 @@
         ]
       }
     },
-    "/api/v1/packages": {
-      "post": {
-        "operationId": "PackagesController_create",
-        "parameters": [
-          {
-            "name": "X-Organisation-Slug",
-            "in": "header",
-            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "example": "acme-logistics"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreatePackageDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Idempotent replay: a package with this tracking number and an identical payload already exists, and is returned unchanged.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreatePackageResultDto"
-                }
-              }
-            }
-          },
-          "201": {
-            "description": "Package created. `assignment.outcome` says whether it reached a shift — creation and assignment are separate transactions, so a package that could not be assigned is still created and returned with outcome `deferred`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreatePackageResultDto"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing, malformed or expired bearer token.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The tracking number belongs to a different package. Rows in another organisation are reported as unknown (400), never as a conflict.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "tags": [
-          "packages"
-        ]
-      }
-    },
-    "/api/v1/packages/bulk": {
-      "post": {
-        "operationId": "PackagesController_createBulk",
-        "parameters": [
-          {
-            "name": "X-Organisation-Slug",
-            "in": "header",
-            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "example": "acme-logistics"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BulkCreatePackagesDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Index-aligned per-package results. Assignment takes the per-warehouse lock once for the whole batch and emits a single replan, so importing N packages costs one lock acquisition rather than N. A failed entry carries `error` and does not fail the batch.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BulkCreatePackagesResultDto"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing, malformed or expired bearer token.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "tags": [
-          "packages"
-        ]
-      }
-    },
-    "/api/v1/packages/{id}/reassign": {
-      "post": {
-        "operationId": "PackagesController_reassign",
-        "parameters": [
-          {
-            "name": "X-Organisation-Slug",
-            "in": "header",
-            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "example": "acme-logistics"
-            }
-          },
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Unassigns the package and runs assignment again — the path for a deadline that changed after creation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreatePackageResultDto"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing, malformed or expired bearer token.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The package is already loaded or in transit and cannot be moved.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "tags": [
-          "packages"
-        ]
-      }
-    },
     "/api/v1/shifts": {
       "post": {
         "operationId": "ShiftsController_create",
@@ -5009,6 +5009,324 @@
         },
         "required": [
           "url"
+        ]
+      },
+      "PackageDimensionsDto": {
+        "type": "object",
+        "properties": {
+          "weightKg": {
+            "type": "number",
+            "description": "Weight in kilograms.",
+            "example": 2.5
+          },
+          "lengthCm": {
+            "type": "number",
+            "description": "Length in centimetres.",
+            "example": 30
+          },
+          "widthCm": {
+            "type": "number",
+            "description": "Width in centimetres.",
+            "example": 20
+          },
+          "heightCm": {
+            "type": "number",
+            "description": "Height in centimetres.",
+            "example": 15
+          }
+        },
+        "required": [
+          "weightKg",
+          "lengthCm",
+          "widthCm",
+          "heightCm"
+        ]
+      },
+      "CreatePackageDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Client-supplied packages.id. Both clients mint a UUID before the call so they can name the storage path for photos; supplying it here keeps that working and makes the create idempotent on replay. Omitted, the server generates one."
+          },
+          "warehouseId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "warehouse.id the package is dispatched from. Must belong to the active organisation."
+          },
+          "fromCustomerId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "customer.id of the sender."
+          },
+          "toCustomerId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "customer.id of the recipient. Its customer_location is the routed stop; a recipient with no geocode cannot be assigned."
+          },
+          "trackingNumber": {
+            "type": "string",
+            "description": "Human-facing tracking number. Omitted, the packages_set_tracking_number trigger generates one. Re-sending an existing number with an identical payload replays the original package instead of creating a second."
+          },
+          "deliveryNotes": {
+            "type": "string",
+            "description": "Free-text notes for the driver."
+          },
+          "dimensions": {
+            "$ref": "#/components/schemas/PackageDimensionsDto"
+          },
+          "deadlineAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Hard deadline — the promise made to the customer, stored in package_delivery_window.scheduled_arrival and never overwritten by the planner. Packages WITHOUT a deadline are the ones eligible to be bumped off a shift to make room for one that has a deadline."
+          },
+          "autoAssign": {
+            "type": "boolean",
+            "default": true,
+            "description": "Run assignment immediately after creation. The mobile create-shift wizard MUST send false: it creates packages then hands their ids to POST /api/v1/optimisation/adhoc, which rejects a package that already belongs to an optimisation."
+          }
+        },
+        "required": [
+          "warehouseId",
+          "fromCustomerId",
+          "toCustomerId",
+          "dimensions"
+        ]
+      },
+      "PackageDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trackingNumber": {
+            "type": "string",
+            "description": "Generated or client-supplied tracking number."
+          },
+          "organisationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "warehouseId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "fromCustomerId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "toCustomerId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deliveryNotes": {
+            "type": "string",
+            "nullable": true
+          },
+          "deadlineAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "The hard deadline (package_delivery_window.scheduled_arrival). Null means the package has no promise and may be bumped to make room."
+          },
+          "status": {
+            "type": "string",
+            "description": "Latest package_timeline status enum, e.g. PENDING, ASSIGNED."
+          }
+        },
+        "required": [
+          "id",
+          "createdAt",
+          "trackingNumber",
+          "organisationId",
+          "warehouseId",
+          "fromCustomerId",
+          "toCustomerId",
+          "deliveryNotes",
+          "deadlineAt",
+          "status"
+        ]
+      },
+      "AssignedShiftDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "vrp_optimization.id — a shift is a vrp_optimization row."
+          },
+          "driverId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "vehicleId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "shiftDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Warehouse-local service day."
+          },
+          "scheduledStart": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "stopIndex": {
+            "type": "number",
+            "description": "Zero-based position of this package among the route job steps, excluding the depot start/end steps."
+          },
+          "estimatedArrival": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Planner ETA (package_delivery_window.estimated_arrival). Rewritten on every replan; never a deadline."
+          },
+          "revision": {
+            "type": "number",
+            "description": "vrp_optimization.revision at the time of assignment. Clients compare this against GET /api/v1/shifts/{id}/version to detect a replan."
+          }
+        },
+        "required": [
+          "id",
+          "driverId",
+          "vehicleId",
+          "shiftDate",
+          "scheduledStart",
+          "stopIndex",
+          "estimatedArrival",
+          "revision"
+        ]
+      },
+      "AssignmentOutcomeDto": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "assigned",
+              "assigned_new_shift",
+              "deferred",
+              "skipped"
+            ],
+            "description": "`assigned` — joined an existing planned shift. `assigned_new_shift` — a new shift was opened for it, which consumes one shift from the organisation allowance. `deferred` — created but not assigned; it will be picked up by the next replan or by a dispatcher. `skipped` — assignment was not attempted."
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "no_capacity",
+              "no_free_driver_vehicle",
+              "shift_allowance_exhausted",
+              "no_geocode",
+              "auto_assign_disabled",
+              "deadline_infeasible"
+            ],
+            "description": "Set for `deferred` and `skipped`; null otherwise."
+          },
+          "shift": {
+            "nullable": true,
+            "description": "Present for `assigned` and `assigned_new_shift`.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AssignedShiftDto"
+              }
+            ]
+          },
+          "evictedPackageIds": {
+            "description": "Packages bumped off a shift to make room for this one. Each was re-assigned in the same request where possible; any that could not be are back at PENDING. Empty in the normal case.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "outcome",
+          "evictedPackageIds"
+        ]
+      },
+      "CreatePackageResultDto": {
+        "type": "object",
+        "properties": {
+          "package": {
+            "$ref": "#/components/schemas/PackageDto"
+          },
+          "assignment": {
+            "$ref": "#/components/schemas/AssignmentOutcomeDto"
+          }
+        },
+        "required": [
+          "package",
+          "assignment"
+        ]
+      },
+      "BulkCreatePackagesDto": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreatePackageDto"
+            }
+          }
+        },
+        "required": [
+          "packages"
+        ]
+      },
+      "BulkCreatePackageResultDto": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "number",
+            "description": "Index into the submitted packages array."
+          },
+          "result": {
+            "nullable": true,
+            "description": "Present when this entry succeeded.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CreatePackageResultDto"
+              }
+            ]
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Failure detail for this entry. One bad entry does not fail the batch."
+          }
+        },
+        "required": [
+          "index"
+        ]
+      },
+      "BulkCreatePackagesResultDto": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BulkCreatePackageResultDto"
+            }
+          }
+        },
+        "required": [
+          "results"
         ]
       },
       "IssueCardDto": {
@@ -6445,324 +6763,6 @@
           "id",
           "routeId",
           "unassignedPackageIds"
-        ]
-      },
-      "PackageDimensionsDto": {
-        "type": "object",
-        "properties": {
-          "weightKg": {
-            "type": "number",
-            "description": "Weight in kilograms.",
-            "example": 2.5
-          },
-          "lengthCm": {
-            "type": "number",
-            "description": "Length in centimetres.",
-            "example": 30
-          },
-          "widthCm": {
-            "type": "number",
-            "description": "Width in centimetres.",
-            "example": 20
-          },
-          "heightCm": {
-            "type": "number",
-            "description": "Height in centimetres.",
-            "example": 15
-          }
-        },
-        "required": [
-          "weightKg",
-          "lengthCm",
-          "widthCm",
-          "heightCm"
-        ]
-      },
-      "CreatePackageDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "description": "Client-supplied packages.id. Both clients mint a UUID before the call so they can name the storage path for photos; supplying it here keeps that working and makes the create idempotent on replay. Omitted, the server generates one."
-          },
-          "warehouseId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "warehouse.id the package is dispatched from. Must belong to the active organisation."
-          },
-          "fromCustomerId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "customer.id of the sender."
-          },
-          "toCustomerId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "customer.id of the recipient. Its customer_location is the routed stop; a recipient with no geocode cannot be assigned."
-          },
-          "trackingNumber": {
-            "type": "string",
-            "description": "Human-facing tracking number. Omitted, the packages_set_tracking_number trigger generates one. Re-sending an existing number with an identical payload replays the original package instead of creating a second."
-          },
-          "deliveryNotes": {
-            "type": "string",
-            "description": "Free-text notes for the driver."
-          },
-          "dimensions": {
-            "$ref": "#/components/schemas/PackageDimensionsDto"
-          },
-          "deadlineAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Hard deadline — the promise made to the customer, stored in package_delivery_window.scheduled_arrival and never overwritten by the planner. Packages WITHOUT a deadline are the ones eligible to be bumped off a shift to make room for one that has a deadline."
-          },
-          "autoAssign": {
-            "type": "boolean",
-            "default": true,
-            "description": "Run assignment immediately after creation. The mobile create-shift wizard MUST send false: it creates packages then hands their ids to POST /api/v1/optimisation/adhoc, which rejects a package that already belongs to an optimisation."
-          }
-        },
-        "required": [
-          "warehouseId",
-          "fromCustomerId",
-          "toCustomerId",
-          "dimensions"
-        ]
-      },
-      "PackageDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "trackingNumber": {
-            "type": "string",
-            "description": "Generated or client-supplied tracking number."
-          },
-          "organisationId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "warehouseId": {
-            "type": "string",
-            "format": "uuid",
-            "nullable": true
-          },
-          "fromCustomerId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "toCustomerId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "deliveryNotes": {
-            "type": "string",
-            "nullable": true
-          },
-          "deadlineAt": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true,
-            "description": "The hard deadline (package_delivery_window.scheduled_arrival). Null means the package has no promise and may be bumped to make room."
-          },
-          "status": {
-            "type": "string",
-            "description": "Latest package_timeline status enum, e.g. PENDING, ASSIGNED."
-          }
-        },
-        "required": [
-          "id",
-          "createdAt",
-          "trackingNumber",
-          "organisationId",
-          "warehouseId",
-          "fromCustomerId",
-          "toCustomerId",
-          "deliveryNotes",
-          "deadlineAt",
-          "status"
-        ]
-      },
-      "AssignedShiftDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "description": "vrp_optimization.id — a shift is a vrp_optimization row."
-          },
-          "driverId": {
-            "type": "string",
-            "format": "uuid",
-            "nullable": true
-          },
-          "vehicleId": {
-            "type": "string",
-            "format": "uuid",
-            "nullable": true
-          },
-          "shiftDate": {
-            "type": "string",
-            "format": "date",
-            "description": "Warehouse-local service day."
-          },
-          "scheduledStart": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true
-          },
-          "stopIndex": {
-            "type": "number",
-            "description": "Zero-based position of this package among the route job steps, excluding the depot start/end steps."
-          },
-          "estimatedArrival": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true,
-            "description": "Planner ETA (package_delivery_window.estimated_arrival). Rewritten on every replan; never a deadline."
-          },
-          "revision": {
-            "type": "number",
-            "description": "vrp_optimization.revision at the time of assignment. Clients compare this against GET /api/v1/shifts/{id}/version to detect a replan."
-          }
-        },
-        "required": [
-          "id",
-          "driverId",
-          "vehicleId",
-          "shiftDate",
-          "scheduledStart",
-          "stopIndex",
-          "estimatedArrival",
-          "revision"
-        ]
-      },
-      "AssignmentOutcomeDto": {
-        "type": "object",
-        "properties": {
-          "outcome": {
-            "type": "string",
-            "enum": [
-              "assigned",
-              "assigned_new_shift",
-              "deferred",
-              "skipped"
-            ],
-            "description": "`assigned` — joined an existing planned shift. `assigned_new_shift` — a new shift was opened for it, which consumes one shift from the organisation allowance. `deferred` — created but not assigned; it will be picked up by the next replan or by a dispatcher. `skipped` — assignment was not attempted."
-          },
-          "reason": {
-            "type": "string",
-            "nullable": true,
-            "enum": [
-              "no_capacity",
-              "no_free_driver_vehicle",
-              "shift_allowance_exhausted",
-              "no_geocode",
-              "auto_assign_disabled",
-              "deadline_infeasible"
-            ],
-            "description": "Set for `deferred` and `skipped`; null otherwise."
-          },
-          "shift": {
-            "nullable": true,
-            "description": "Present for `assigned` and `assigned_new_shift`.",
-            "type": "object",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/AssignedShiftDto"
-              }
-            ]
-          },
-          "evictedPackageIds": {
-            "description": "Packages bumped off a shift to make room for this one. Each was re-assigned in the same request where possible; any that could not be are back at PENDING. Empty in the normal case.",
-            "type": "array",
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        },
-        "required": [
-          "outcome",
-          "evictedPackageIds"
-        ]
-      },
-      "CreatePackageResultDto": {
-        "type": "object",
-        "properties": {
-          "package": {
-            "$ref": "#/components/schemas/PackageDto"
-          },
-          "assignment": {
-            "$ref": "#/components/schemas/AssignmentOutcomeDto"
-          }
-        },
-        "required": [
-          "package",
-          "assignment"
-        ]
-      },
-      "BulkCreatePackagesDto": {
-        "type": "object",
-        "properties": {
-          "packages": {
-            "maxItems": 500,
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/CreatePackageDto"
-            }
-          }
-        },
-        "required": [
-          "packages"
-        ]
-      },
-      "BulkCreatePackageResultDto": {
-        "type": "object",
-        "properties": {
-          "index": {
-            "type": "number",
-            "description": "Index into the submitted packages array."
-          },
-          "result": {
-            "nullable": true,
-            "description": "Present when this entry succeeded.",
-            "type": "object",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/CreatePackageResultDto"
-              }
-            ]
-          },
-          "error": {
-            "type": "string",
-            "nullable": true,
-            "description": "Failure detail for this entry. One bad entry does not fail the batch."
-          }
-        },
-        "required": [
-          "index"
-        ]
-      },
-      "BulkCreatePackagesResultDto": {
-        "type": "object",
-        "properties": {
-          "results": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/BulkCreatePackageResultDto"
-            }
-          }
-        },
-        "required": [
-          "results"
         ]
       },
       "CreateShiftDto": {
