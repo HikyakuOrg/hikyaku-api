@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CustomersModule } from 'src/customers/customers.module';
 import { BillingModule } from 'src/billing/billing.module';
+import { PackagesModule } from 'src/packages/packages.module';
 import { Payment } from './entities/payment.entity';
 import { PaymentsService } from './payments.service';
 import { StripeWebhookController } from './stripe-webhook.controller';
@@ -13,7 +14,14 @@ import { StripeWebhookController } from './stripe-webhook.controller';
 // one signing secret, so a new event type is a new `if` here rather than a new
 // webhook to register in the Stripe dashboard.
 @Module({
-    imports: [TypeOrmModule.forFeature([Payment]), CustomersModule, BillingModule],
+    imports: [
+        TypeOrmModule.forFeature([Payment]),
+        CustomersModule,
+        BillingModule,
+        // Fulfillment creates packages, and it needs them on the same
+        // transaction that marks the payment completed.
+        PackagesModule,
+    ],
     controllers: [StripeWebhookController],
     providers: [PaymentsService],
 })
