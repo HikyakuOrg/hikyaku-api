@@ -1,5 +1,4 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import type Stripe from 'stripe';
@@ -142,7 +141,7 @@ export class BillingService {
     constructor(
         private readonly organisations: OrganisationsService,
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
-        // Only for the stripe.shift_usage_events outbox (§ reportShiftUsage) and
+        // Only for the stripe.shift_usage_events outbox (§ ShiftUsageReporter) and
         // the vrp_optimization count (§ getShiftUsageStatus) — both internal
         // detail tables with no reason to grow a full entity/repository of their
         // own, same judgment call as OrganisationsService.getAccountsForUser's
@@ -302,7 +301,7 @@ export class BillingService {
     /**
      * Ensures an org has a Stripe subscription that includes its shift-overage
      * price, provisioning whatever is missing along the way. Self-healing by
-     * design: called from reportShiftUsage() on a poll and from
+     * design: called from ShiftUsageReporter on a wake-up and from
      * createBillingPortalSession() on demand, so an org that has never been
      * provisioned gets caught up automatically rather than needing its own
      * creation hook. Three cases land here: a personal org's very first shift, a
@@ -366,56 +365,35 @@ export class BillingService {
     }
 
     /**
-     * Batches stripe.shift_usage_events (the outbox log_shift_usage_event()
-     * writes on every shift insert — see AddShiftUsageMetering) into one Stripe
-     * meter event per organisation per tick, rather than one per shift. Polling
-     * every minute keeps every event comfortably inside Stripe's acceptance
-     * window for meter event timestamps regardless of meter type.
+     * Posts one organisation's claimed shifts to the Stripe Billing Meter.
      *
-     * A failure for one org (e.g. its price was archived) is logged and its rows
-     * are left unreported — picked up again on the next tick — rather than
-     * aborting the whole batch.
+     * Just the Stripe half. Which rows to report, and the claim that stops two
+     * replicas reporting the same ones, belong to ShiftUsageReporter -- this used
+     * to be an every-minute scheduled job that did the reading, the reporting
+     * and the marking with nothing in between, which is exactly how every shift
+     * came to be billed once per running replica.
+     *
+     * `identifier` is Stripe's own idempotency key for meter events: a reporter
+     * that posts successfully and then dies before marking the rows reported will
+     * re-post the same batch after the stale claim expires, and Stripe counts it
+     * once.
      */
-    @Cron(CronExpression.EVERY_MINUTE)
-    async reportShiftUsage(): Promise<void> {
-        const batches: { organisation_id: string; count: number; ids: string[] }[] =
-            await this.dataSource.query(`
-                SELECT organisation_id,
-                       count(*)::int      AS count,
-                       array_agg(id)      AS ids
-                  FROM stripe.shift_usage_events
-                 WHERE reported_at IS NULL
-                 GROUP BY organisation_id
-            `);
+    async reportShiftUsageBatch(
+        organisationId: string,
+        count: number,
+        identifier: string,
+    ): Promise<void> {
+        const org = await this.organisations.getOrFail(organisationId);
+        const { customerId } = await this.ensureShiftOverageSubscriptionItem(org);
 
-        for (const batch of batches) {
-            try {
-                const org = await this.organisations.getOrFail(
-                    batch.organisation_id,
-                );
-                const { customerId } =
-                    await this.ensureShiftOverageSubscriptionItem(org);
-
-                await this.stripe.billing.meterEvents.create({
-                    event_name: SHIFT_METER_EVENT_NAME,
-                    payload: {
-                        value: String(batch.count),
-                        stripe_customer_id: customerId,
-                    },
-                });
-
-                await this.dataSource.query(
-                    `UPDATE stripe.shift_usage_events
-                        SET reported_at = now()
-                      WHERE id = ANY($1::bigint[])`,
-                    [batch.ids],
-                );
-            } catch (err) {
-                this.logger.error(
-                    `Failed to report ${batch.count} shift(s) for org ${batch.organisation_id}: ${String(err)}`,
-                );
-            }
-        }
+        await this.stripe.billing.meterEvents.create({
+            event_name: SHIFT_METER_EVENT_NAME,
+            identifier,
+            payload: {
+                value: String(count),
+                stripe_customer_id: customerId,
+            },
+        });
     }
 
     /**

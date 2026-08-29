@@ -1,8 +1,8 @@
-import { randomBytes } from 'crypto';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, QueryRunner } from 'typeorm';
 import { CustomersService } from 'src/customers/customers.service';
+import { PackagesService, type PackageSpec } from 'src/packages/packages.service';
 
 /**
  * The only fields of a Checkout Session our fulfillment touches. Declared
@@ -43,11 +43,11 @@ interface BookingDetails {
 @Injectable()
 export class PaymentsService {
     private readonly logger = new Logger(PaymentsService.name);
-    private pendingStatusId: string | null = null;
 
     constructor(
         @InjectDataSource() private readonly dataSource: DataSource,
         private readonly customersService: CustomersService,
+        private readonly packages: PackagesService,
     ) {}
 
     /**
@@ -122,6 +122,7 @@ export class PaymentsService {
         const runner = this.dataSource.createQueryRunner();
         await runner.connect();
         await runner.startTransaction();
+        let createdPackageIds: string[] = [];
 
         try {
             // Re-lock and re-check — guards against concurrent retries that both
@@ -138,38 +139,48 @@ export class PaymentsService {
                 return;
             }
 
-            const pendingStatusId = await this.getPendingStatusId(runner);
-            let firstPackageId: string | null = null;
-
-            for (let i = 0; i < booking.receiver.length; i++) {
-                const receiver = booking.receiver[i];
-                const toCustomerId = receiverCustomerIds[i];
-
-                const packageRows: { id: string }[] = await runner.query(
-                    `INSERT INTO packages (from_customer, to_customer, tracking_number, delivery_notes)
-                     VALUES ($1, $2, $3, $4) RETURNING id`,
-                    [fromCustomerId, toCustomerId, this.generateTrackingNumber(), booking.deliveryNotes ?? null],
-                );
-                const packageId = packageRows[0].id;
-                firstPackageId ??= packageId;
-
-                await runner.query(
-                    `INSERT INTO package_dimensions (package_id, weight_kg, length_cm, width_cm, height_cm)
-                     VALUES ($1, $2, $3, $4, $5)`,
-                    [packageId, booking.sender.parcel.weight, booking.sender.parcel.length, booking.sender.parcel.width, booking.sender.parcel.height],
-                );
-
-                await runner.query(
-                    `INSERT INTO package_delivery_window (package_id, scheduled_departure, scheduled_arrival)
-                     VALUES ($1, $2::timestamptz, $3::timestamptz)`,
-                    [packageId, `${booking.sender.collectionDate}T00:00:00Z`, `${receiver.deliveryDate}T00:00:00Z`],
-                );
-
-                await runner.query(
-                    `INSERT INTO package_timeline (package_id, package_status) VALUES ($1, $2)`,
-                    [packageId, pendingStatusId],
+            // organisation_id is NOT NULL on packages, and the INSERT this
+            // replaces omitted it entirely -- which means this path could only
+            // ever have been failing. A booking with no organisation cannot
+            // produce a package, and saying so is better than writing a row that
+            // no dispatcher can see.
+            if (!payment.organisation_id) {
+                throw new Error(
+                    `Payment ${payment.id} has no organisation; cannot create packages for it.`,
                 );
             }
+
+            const warehouseId = await this.resolveWarehouse(
+                runner,
+                payment.organisation_id,
+                fromCustomerId,
+            );
+
+            const specs: PackageSpec[] = booking.receiver.map((receiver, i) => ({
+                warehouseId,
+                fromCustomerId,
+                toCustomerId: receiverCustomerIds[i],
+                deliveryNotes: booking.deliveryNotes ?? null,
+                weightKg: booking.sender.parcel.weight,
+                lengthCm: booking.sender.parcel.length,
+                widthCm: booking.sender.parcel.width,
+                heightCm: booking.sender.parcel.height,
+                scheduledDeparture: `${booking.sender.collectionDate}T00:00:00Z`,
+                // END of the promised day, not the start. Midnight at the top of
+                // the delivery date makes every booking instantly past-due, which
+                // is how these packages ended up permanently at priority 100.
+                deadlineAt: `${receiver.deliveryDate}T23:59:59.999Z`,
+            }));
+
+            // One call, on this transaction: the packages and the completed
+            // payment commit together, or a paid booking has no parcel.
+            const packageIds = await this.packages.createMany(
+                runner,
+                payment.organisation_id,
+                specs,
+            );
+            createdPackageIds = packageIds;
+            const firstPackageId = packageIds[0] ?? null;
 
             const paymentIntentId =
                 typeof session.payment_intent === 'string'
@@ -193,19 +204,63 @@ export class PaymentsService {
         } finally {
             await runner.release();
         }
+
+        // ── Step 4: Assign, AFTER the payment is safely committed ────────────
+        // Deliberately outside the transaction and deliberately not fatal. The
+        // customer has paid; a van that cannot take the parcel today is a
+        // dispatch problem, not a payment failure, and the package stays PENDING
+        // for the replan worker either way.
+        if (payment.organisation_id && createdPackageIds.length > 0) {
+            try {
+                await this.packages.assignCreated(
+                    payment.organisation_id,
+                    createdPackageIds,
+                );
+            } catch (err: unknown) {
+                this.logger.warn(
+                    `Assignment after payment ${payment.id} failed; packages remain pending: ${String(err)}`,
+                );
+            }
+        }
     }
 
-    private async getPendingStatusId(runner: QueryRunner): Promise<string> {
-        if (this.pendingStatusId) return this.pendingStatusId;
+    /**
+     * The depot nearest the sender.
+     *
+     * Bookings arrive from the public site with no warehouse at all -- the
+     * customer has no idea our depots exist -- so it has to be inferred, and the
+     * only signal available is where the parcel is being collected from. `<->` is
+     * the PostGIS distance operator, which uses the geometry index rather than
+     * measuring every warehouse.
+     *
+     * Throws when the organisation has none: a package with no warehouse is
+     * invisible to every candidate query and would sit unrouted forever, which is
+     * a worse outcome than a loud webhook failure Stripe will retry.
+     */
+    private async resolveWarehouse(
+        runner: QueryRunner,
+        organisationId: string,
+        senderCustomerId: string,
+    ): Promise<string> {
         const rows: { id: string }[] = await runner.query(
-            `SELECT id FROM package_status WHERE enums = 'PENDING' LIMIT 1`,
+            `SELECT w.id
+               FROM warehouse w
+               LEFT JOIN customer c ON c.id = $2
+              WHERE w.organisation_id = $1
+              ORDER BY CASE
+                         WHEN c.customer_location IS NULL THEN 1
+                         ELSE 0
+                       END,
+                       w.warehouse_location <-> c.customer_location
+              LIMIT 1`,
+            [organisationId, senderCustomerId],
         );
-        if (rows.length === 0) throw new Error("package_status row with enums = 'PENDING' not found");
-        this.pendingStatusId = String(rows[0].id);
-        return this.pendingStatusId;
-    }
 
-    private generateTrackingNumber(): string {
-        return `WDN${randomBytes(6).toString('hex').toUpperCase()}`;
+        if (rows.length === 0) {
+            throw new Error(
+                `Organisation ${organisationId} has no warehouse; a booked package would be unroutable.`,
+            );
+        }
+        return rows[0].id;
     }
 }

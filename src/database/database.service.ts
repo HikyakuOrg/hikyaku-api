@@ -14,6 +14,7 @@ import { VrpRoute } from 'src/entities/vrp-route.entity';
 import { VrpSolution } from 'src/entities/vrp-solution.entity';
 import type { OptimizationResponse } from '../vroom/vroom.types';
 import { orsProfileToValhallaCosting } from '../vroom/profile-map';
+import { SHIFT_WINDOW_SECONDS, TIME_PER_STOP } from '../dispatch/insertion';
 import type {
     AssignmentRow,
     BuildOptions,
@@ -24,14 +25,31 @@ import type {
     StepInsertRow,
 } from './database.types';
 
-/** Service time per delivery stop, in seconds (15 minutes). Hardcoded for now. */
-export const TIME_PER_STOP = 900;
+/**
+ * Service time per stop and the width of the operating window, re-exported from
+ * the pure insertion module rather than declared here.
+ *
+ * Tier 1 decides a route fits using these numbers and this file builds the VROOM
+ * request from them; two copies that could drift apart is a silent correctness
+ * bug, not a style question.
+ */
+export { TIME_PER_STOP, SHIFT_WINDOW_SECONDS };
 
 /** Reload/turnaround buffer added after a vehicle returns, in seconds (30 min). */
 const SETOFF_BUFFER_SECONDS = 1800;
 
-/** Width of the vehicle operating window once it has set off, in seconds (12h). */
-export const SHIFT_WINDOW_SECONDS = 12 * 60 * 60;
+/**
+ * `numeric` columns arrive from pg as STRINGS, not numbers.
+ *
+ * Both of the unit bugs this file used to carry start here:
+ * `typeof vehicle_gross_limits === 'number'` is always false, so every vehicle
+ * silently fell back to the 1000 default, and `typeof weight_kg === 'number'`
+ * is always false, so every package was sent to VROOM weighing one gram.
+ */
+function numeric(value: unknown, fallback: number): number {
+    const parsed = typeof value === 'string' ? Number(value) : value;
+    return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : fallback;
+}
 
 @Injectable()
 export class DatabaseService implements OnApplicationBootstrap {
@@ -180,10 +198,13 @@ export class DatabaseService implements OnApplicationBootstrap {
         ST_Y(c.customer_location::geometry)    AS customer_lat
       FROM   packages                p
       JOIN   LATERAL (
+               -- The id tiebreak matters since AllowStatusRevisits: a package can
+               -- now hold the same status twice, and without it this returns an
+               -- arbitrary one of the rows sharing a created_at.
                SELECT package_status
                FROM   package_timeline
                WHERE  package_id = p.id
-               ORDER  BY created_at DESC
+               ORDER  BY created_at DESC, id DESC
                LIMIT  1
              ) latest_status ON true
       LEFT   JOIN warehouse          w   ON w.id  = p.warehouse_id
@@ -251,7 +272,10 @@ export class DatabaseService implements OnApplicationBootstrap {
             );
         }
 
-        // 3b. On-demand: compute each vehicle's earliest set-off (epoch seconds).
+        // 3b. Earliest set-off per vehicle (epoch seconds). Only the on-demand
+        //     path pays for the query that works out when a returning vehicle can
+        //     go again; everything else departs now.
+        const nowEpoch = Math.floor(now.getTime() / 1000);
         const setOffByVehicle = opts.useTimeWindows
             ? await this.computeVehicleSetOffs(
                 runner,
@@ -268,19 +292,24 @@ export class DatabaseService implements OnApplicationBootstrap {
 
         assignments.forEach((a, index) => {
             const vehicleNumericId = index + 1;
-            const capacity =
-                typeof a.vehicle_gross_limits === 'number' ? a.vehicle_gross_limits : 1000;
+            // GRAMS. vehicle_gross_limits is kilograms and job amounts are grams,
+            // so sending it through unconverted advertised a 1000 kg van as
+            // holding one kilo and VROOM dropped almost everything. Converting the
+            // capacity up rather than the weights down keeps sub-kilo parcels.
+            const capacityG = numeric(a.vehicle_gross_limits, 1000) * 1000;
             const vehicle: BuildResult['request']['vehicles'][number] = {
                 id: vehicleNumericId,
                 profile: orsProfileToValhallaCosting(a.ors_vehicle_type),
                 start: warehouseCoords!,
                 end: warehouseCoords!,
-                capacity: [capacity],
+                capacity: [capacityG],
             };
-            if (opts.useTimeWindows) {
-                const setOff = setOffByVehicle[a.vehicle_id] ?? Math.floor(now.getTime() / 1000);
-                vehicle.time_window = [setOff, setOff + SHIFT_WINDOW_SECONDS];
-            }
+            // Always, not just on demand: job time windows below are absolute
+            // epoch seconds, and VROOM can only honour them if the vehicle is on
+            // the same clock. Arrivals come back absolute and are normalised back
+            // to relative-from-departure on the way into the database.
+            const setOff = setOffByVehicle[a.vehicle_id] ?? nowEpoch;
+            vehicle.time_window = [setOff, setOff + SHIFT_WINDOW_SECONDS];
             vehicles.push(vehicle);
             vehicleMap[vehicleNumericId] = a.vehicle_id;
             if (a.driver_id) {
@@ -288,11 +317,14 @@ export class DatabaseService implements OnApplicationBootstrap {
             }
         });
 
-        // 5. Build jobs array — apply priority rules and skip future-due packages.
+        // 5. Build jobs array. A deadline is now a hard time window rather than a
+        //    priority hint VROOM is free to ignore, which is also why a
+        //    future-dated package is no longer excluded: with a real window it is
+        //    just a job with a wide one, and dropping it meant a package promised
+        //    for next week never got planned until the night before.
         const jobs: BuildResult['request']['jobs'] = [];
         const jobMap: Record<number, string> = {};
         let excludedNoGeocode = 0;
-        let excludedFutureScheduled = 0;
 
         packages.forEach((pkg, index) => {
             if (pkg.customer_lon == null || pkg.customer_lat == null) {
@@ -300,44 +332,42 @@ export class DatabaseService implements OnApplicationBootstrap {
                 return;
             }
 
-            // VROOM expects weight in grams for capacity matching.
-            const weight =
-                typeof pkg.weight_kg === 'number' ? pkg.weight_kg * 1000 : 1;
+            // GRAMS, matching the vehicle capacity above.
+            const weightG = Math.max(1, Math.round(numeric(pkg.weight_kg, 0.001) * 1000));
 
             let priority = 0; // null scheduled_arrival → lowest priority
-            let skipProcessing = false;
+            const job: BuildResult['request']['jobs'][number] = {
+                id: index + 1,
+                service: TIME_PER_STOP,
+                location: [pkg.customer_lon, pkg.customer_lat],
+                amount: [weightG],
+                priority,
+            };
 
             if (pkg.scheduled_arrival) {
                 const arrivalDate = new Date(pkg.scheduled_arrival);
+                const deadlineEpoch = Math.floor(arrivalDate.getTime() / 1000);
                 if (arrivalDate < startOfDay) {
                     priority = 100; // past-due: highest priority
                 } else if (arrivalDate <= endOfDay) {
                     priority = 50; // due today: high priority
-                } else {
-                    skipProcessing = true; // future: skip tonight
                 }
+                // A window that has already closed is not a constraint VROOM can
+                // satisfy -- it would simply refuse the job. Past-due packages ride
+                // on priority alone, which is best effort, which is correct.
+                if (deadlineEpoch > nowEpoch) {
+                    job.time_windows = [[nowEpoch, deadlineEpoch]];
+                }
+                job.priority = priority;
             }
 
-            if (skipProcessing) {
-                excludedFutureScheduled++;
-                return;
-            }
-
-            const jobNumericId = index + 1;
-            jobs.push({
-                id: jobNumericId,
-                service: TIME_PER_STOP,
-                location: [pkg.customer_lon, pkg.customer_lat],
-                amount: [weight],
-                priority,
-            });
-            jobMap[jobNumericId] = pkg.id;
+            jobs.push(job);
+            jobMap[job.id] = pkg.id;
         });
 
         const skipReason = jobs.length === 0
             ? await this.explainNoEligibleJobs(runner, opts.warehouseId ?? null, packages.length, {
                 excludedNoGeocode,
-                excludedFutureScheduled,
             })
             : null;
 
@@ -362,7 +392,10 @@ export class DatabaseService implements OnApplicationBootstrap {
             jobMap,
             driverMap,
             organisationId,
-            timeWindowed: !!opts.useTimeWindows,
+            // Always true now: every vehicle carries a time window, so VROOM
+            // reports arrivals as absolute epoch seconds and they have to be
+            // normalised back to relative-from-departure before storage.
+            timeWindowed: true,
             skipReason,
             pinnedRoutes,
         };
@@ -417,7 +450,7 @@ export class DatabaseService implements OnApplicationBootstrap {
             driverId: string;
             vehicleId: string;
             profile: string;
-            capacity: number;
+            capacityG: number;
             packages: PinnedPackageRow[];
         }
         const groups = new Map<string, PinnedGroup>();
@@ -429,8 +462,8 @@ export class DatabaseService implements OnApplicationBootstrap {
                     driverId: row.driver_id,
                     vehicleId: row.vehicle_id,
                     profile: orsProfileToValhallaCosting(row.ors_vehicle_type),
-                    capacity:
-                        typeof row.vehicle_gross_limits === 'number' ? row.vehicle_gross_limits : 1000,
+                    // GRAMS, same conversion and same reason as the main solve.
+                    capacityG: numeric(row.vehicle_gross_limits, 1000) * 1000,
                     packages: [],
                 };
                 groups.set(key, group);
@@ -443,40 +476,44 @@ export class DatabaseService implements OnApplicationBootstrap {
             const jobs: BuildResult['request']['jobs'] = [];
             const jobPackageMap: Record<number, string> = {};
 
+            const setOffEpoch =
+                setOffByVehicle[group.vehicleId] ?? Math.floor(now.getTime() / 1000);
+
             group.packages.forEach((pkg, index) => {
                 if (pkg.customer_lon == null || pkg.customer_lat == null) return;
 
                 let priority = 0;
-                let skipProcessing = false;
+                const jobNumericId = index + 1;
+                const job: BuildResult['request']['jobs'][number] = {
+                    id: jobNumericId,
+                    service: TIME_PER_STOP,
+                    location: [pkg.customer_lon, pkg.customer_lat],
+                    amount: [Math.max(1, Math.round(numeric(pkg.weight_kg, 0.001) * 1000))],
+                    priority,
+                };
+
                 if (pkg.scheduled_arrival) {
                     const arrivalDate = new Date(pkg.scheduled_arrival);
+                    const deadlineEpoch = Math.floor(arrivalDate.getTime() / 1000);
                     if (arrivalDate < startOfDay) {
                         priority = 100;
                     } else if (arrivalDate <= endOfDay) {
                         priority = 50;
-                    } else {
-                        skipProcessing = true; // future: skip tonight, same as the main flow
                     }
+                    if (deadlineEpoch > setOffEpoch) {
+                        job.time_windows = [[setOffEpoch, deadlineEpoch]];
+                    }
+                    job.priority = priority;
                 }
-                if (skipProcessing) return;
 
-                const weight = typeof pkg.weight_kg === 'number' ? pkg.weight_kg * 1000 : 1;
-                const jobNumericId = index + 1;
-                jobs.push({
-                    id: jobNumericId,
-                    service: TIME_PER_STOP,
-                    location: [pkg.customer_lon, pkg.customer_lat],
-                    amount: [weight],
-                    priority,
-                });
+                jobs.push(job);
                 jobPackageMap[jobNumericId] = pkg.id;
             });
 
-            // Every package in this pair was unlocatable or future-dated —
-            // nothing to route yet.
+            // Every package in this pair was unlocatable — nothing to route yet.
             if (jobs.length === 0) continue;
 
-            const setOff = setOffByVehicle[group.vehicleId] ?? Math.floor(now.getTime() / 1000);
+            const setOff = setOffEpoch;
             pinnedRoutes.push({
                 driverId: group.driverId,
                 vehicleId: group.vehicleId,
@@ -489,7 +526,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                             profile: group.profile,
                             start: warehouseCoords,
                             end: warehouseCoords,
-                            capacity: [group.capacity],
+                            capacity: [group.capacityG],
                             time_window: [setOff, setOff + SHIFT_WINDOW_SECONDS],
                         },
                     ],
@@ -511,17 +548,13 @@ export class DatabaseService implements OnApplicationBootstrap {
         runner: QueryRunner,
         warehouseId: string | null,
         candidateCount: number,
-        excluded: { excludedNoGeocode: number; excludedFutureScheduled: number },
+        excluded: { excludedNoGeocode: number },
     ): Promise<string> {
         if (candidateCount > 0) {
-            const parts: string[] = [];
-            if (excluded.excludedNoGeocode > 0) {
-                parts.push(`${excluded.excludedNoGeocode} missing a geocoded customer location`);
-            }
-            if (excluded.excludedFutureScheduled > 0) {
-                parts.push(`${excluded.excludedFutureScheduled} scheduled for a future date`);
-            }
-            return `${candidateCount} candidate package(s) found but all were excluded (${parts.join(', ')}).`;
+            return (
+                `${candidateCount} candidate package(s) found but all were excluded ` +
+                `(${excluded.excludedNoGeocode} missing a geocoded customer location).`
+            );
         }
 
         // No candidates even before the geocode/date filters — find out whether
@@ -536,10 +569,11 @@ export class DatabaseService implements OnApplicationBootstrap {
         ) AS not_pending
       FROM   packages                p
       JOIN   LATERAL (
+               -- Same tiebreak as buildOptimizationRequest, same reason.
                SELECT package_status
                FROM   package_timeline
                WHERE  package_id = p.id
-               ORDER  BY created_at DESC
+               ORDER  BY created_at DESC, id DESC
                LIMIT  1
              ) latest_status ON true
       LEFT   JOIN package_assignment pa ON pa.package_id = p.id
@@ -1116,20 +1150,34 @@ export class DatabaseService implements OnApplicationBootstrap {
 
     /**
      * Records a package_timeline row moving each package to the given status.
-     * ON CONFLICT DO NOTHING matches the (package_id, package_status) unique
-     * constraint — re-running for a package already at this status is a no-op.
+     *
+     * The ON CONFLICT (package_id, package_status) DO NOTHING this used to carry
+     * became SQLSTATE 42P10 the moment AllowStatusRevisits dropped that unique
+     * constraint -- there is no index left for the inference to match. What the
+     * clause was really providing was idempotency, not history suppression, so a
+     * latest-status guard replaces it: re-stamping a status a package already
+     * holds is still a no-op, but a package that left ASSIGNED and came back now
+     * records both visits, which is what makes eviction expressible at all.
      */
     private async insertPackageTimelineStatus(
         runner: QueryRunner,
         packageIds: string[],
         statusId: number,
     ): Promise<void> {
-        const placeholders = packageIds.map((_, i) => `($${i + 1}, $${packageIds.length + 1})`).join(', ');
+        if (packageIds.length === 0) return;
         await runner.query(
             `INSERT INTO package_timeline (package_id, package_status)
-             VALUES ${placeholders}
-             ON CONFLICT (package_id, package_status) DO NOTHING`,
-            [...packageIds, statusId],
+             SELECT ids.id, $2::bigint
+               FROM unnest($1::uuid[]) AS ids(id)
+               LEFT JOIN LATERAL (
+                    SELECT pt.package_status
+                      FROM package_timeline pt
+                     WHERE pt.package_id = ids.id
+                     ORDER BY pt.created_at DESC, pt.id DESC
+                     LIMIT 1
+               ) latest ON true
+              WHERE latest.package_status IS DISTINCT FROM $2::bigint`,
+            [packageIds, statusId],
         );
     }
 

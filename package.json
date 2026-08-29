@@ -8,6 +8,7 @@
   "packageManager": "pnpm@11.20.0",
   "scripts": {
     "build": "nest build",
+    "openapi:emit": "ts-node -r tsconfig-paths/register src/openapi.emit.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -35,7 +36,6 @@
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.1.28",
     "@nestjs/platform-fastify": "^11.1.28",
-    "@nestjs/schedule": "^6.1.3",
     "@nestjs/swagger": "^11.4.6",
     "@nestjs/typeorm": "^11.0.3",
     "@sentry/nestjs": "^10.69.0",

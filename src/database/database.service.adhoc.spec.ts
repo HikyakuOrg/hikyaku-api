@@ -232,7 +232,11 @@ describe('DatabaseService.insertAdhocRoutes', () => {
         );
         expect(timelineCall).toBeDefined();
         // Only the routed package (pkg-a) is stamped — pkg-b was unassigned.
-        expect(timelineCall![1]).toEqual(['pkg-a', 4]);
+        // Array-valued now: AllowStatusRevisits removed the unique constraint the
+        // old ON CONFLICT clause inferred against, so the write is one statement
+        // over unnest() with a latest-status guard instead.
+        expect(timelineCall![1]).toEqual([['pkg-a'], 4]);
+        expect(String(timelineCall![0])).not.toContain('ON CONFLICT');
     });
 
     it('does not touch package_timeline when nothing was routed', async () => {

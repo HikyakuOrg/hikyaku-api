@@ -244,7 +244,7 @@ describe('DatabaseService', () => {
             expect(result.request.jobs[0].priority).toBe(100);
         });
 
-        it('skips packages with a future scheduled_arrival', async () => {
+        it('plans a future-dated package instead of dropping it', async () => {
             const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
             const runner = makeRunner(
                 jest.fn()
@@ -268,10 +268,134 @@ describe('DatabaseService', () => {
 
             const result = await service.buildOptimizationRequest(runner as never);
 
-            expect(result.request.jobs).toHaveLength(0);
-            expect(result.skipReason).toBe(
-                '1 candidate package(s) found but all were excluded (1 scheduled for a future date).',
+            // The old behaviour excluded it entirely, so a package promised for
+            // next week never got planned until the night before. With a real
+            // time window it is just a job with a wide one.
+            expect(result.request.jobs).toHaveLength(1);
+            expect(result.skipReason).toBeNull();
+            expect(result.request.jobs[0].time_windows).toEqual([
+                [expect.any(Number), Math.floor(future.getTime() / 1000)],
+            ]);
+        });
+
+        it('gives a package due today a hard time window, not just a priority', async () => {
+            const dueToday = new Date(Date.now() + 4 * 60 * 60 * 1000);
+            const runner = makeRunner(
+                jest.fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-today',
+                            tracking_number: 'TRK004',
+                            created_at: new Date(),
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: '2.5',
+                            scheduled_arrival: dueToday.toISOString(),
+                            customer_lon: 151.3,
+                            customer_lat: -33.9,
+                        },
+                    ])
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]),
             );
+
+            const result = await service.buildOptimizationRequest(runner as never);
+
+            expect(result.request.jobs[0].time_windows).toEqual([
+                [expect.any(Number), Math.floor(dueToday.getTime() / 1000)],
+            ]);
+            expect(result.request.jobs[0].priority).toBe(50);
+        });
+
+        it('leaves a past-due package on priority alone, with no closed window', async () => {
+            // A window that has already shut is not a constraint VROOM can meet --
+            // it would refuse the job outright. Best effort is the right answer.
+            const pastDue = new Date(Date.now() - 48 * 60 * 60 * 1000);
+            const runner = makeRunner(
+                jest.fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-late',
+                            tracking_number: 'TRK005',
+                            created_at: new Date(),
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: '2.5',
+                            scheduled_arrival: pastDue.toISOString(),
+                            customer_lon: 151.3,
+                            customer_lat: -33.9,
+                        },
+                    ])
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]),
+            );
+
+            const result = await service.buildOptimizationRequest(runner as never);
+
+            expect(result.request.jobs[0].time_windows).toBeUndefined();
+            expect(result.request.jobs[0].priority).toBe(100);
+        });
+
+        it('sends capacity and amounts in the same unit', async () => {
+            // The live bug this replaces: numeric columns arrive from pg as
+            // STRINGS, so `typeof x === 'number'` was false on both sides. Every
+            // vehicle fell back to a capacity of 1000 -- read as grams, one kilo --
+            // and every package was sent weighing one gram.
+            const runner = makeRunner(
+                jest.fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-heavy',
+                            tracking_number: 'TRK006',
+                            created_at: new Date(),
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: '2.5',
+                            scheduled_arrival: null,
+                            customer_lon: 151.3,
+                            customer_lat: -33.9,
+                        },
+                    ])
+                    .mockResolvedValueOnce([
+                        { ...ASSIGNMENT_ROW, vehicle_gross_limits: '1500' },
+                    ])
+                    .mockResolvedValueOnce([]),
+            );
+
+            const result = await service.buildOptimizationRequest(runner as never);
+
+            expect(result.request.vehicles[0].capacity).toEqual([1_500_000]);
+            expect(result.request.jobs[0].amount).toEqual([2_500]);
+        });
+
+        it('gives every vehicle a time window, so job windows are on the same clock', async () => {
+            const runner = makeRunner(
+                jest.fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-plain',
+                            tracking_number: 'TRK007',
+                            created_at: new Date(),
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: '1',
+                            scheduled_arrival: null,
+                            customer_lon: 151.3,
+                            customer_lat: -33.9,
+                        },
+                    ])
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]),
+            );
+
+            const result = await service.buildOptimizationRequest(runner as never);
+
+            expect(result.request.vehicles[0].time_window).toHaveLength(2);
+            expect(result.timeWindowed).toBe(true);
         });
 
         it('skips packages whose customer has no geocoded location', async () => {
@@ -464,7 +588,7 @@ describe('DatabaseService', () => {
                 expect(result.pinnedRoutes).toHaveLength(0);
             });
 
-            it('excludes a pinned package with a future scheduled_arrival from its route', async () => {
+            it('routes a future-dated pinned package under a wide time window', async () => {
                 const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
                 const runner = makeRunner(
                     jest.fn()
@@ -477,7 +601,27 @@ describe('DatabaseService', () => {
 
                 const result = await service.buildOptimizationRequest(runner as never);
 
-                expect(result.pinnedRoutes).toHaveLength(0);
+                expect(result.pinnedRoutes).toHaveLength(1);
+                expect(result.pinnedRoutes[0].request.jobs[0].time_windows).toEqual([
+                    [expect.any(Number), Math.floor(future.getTime() / 1000)],
+                ]);
+            });
+
+            it('converts the pinned vehicle capacity to grams as well', async () => {
+                const runner = makeRunner(
+                    jest.fn()
+                        .mockResolvedValueOnce([NORMAL_PACKAGE])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([
+                            { ...PINNED_ROW, vehicle_gross_limits: '3500' },
+                        ]),
+                );
+
+                const result = await service.buildOptimizationRequest(runner as never);
+
+                expect(result.pinnedRoutes[0].request.vehicles[0].capacity).toEqual([
+                    3_500_000,
+                ]);
             });
         });
     });
@@ -594,7 +738,11 @@ describe('DatabaseService', () => {
                 String(call[0]).includes('INSERT INTO package_timeline'),
             );
             expect(timelineCall).toBeDefined();
-            expect(timelineCall![1]).toEqual(['pkg-1', 1]);
+            // Array-valued now: the write is one statement over unnest() with a
+            // latest-status guard, because AllowStatusRevisits removed the unique
+            // constraint the old ON CONFLICT clause inferred against.
+            expect(timelineCall![1]).toEqual([['pkg-1'], 1]);
+            expect(timelineCall![0]).not.toContain('ON CONFLICT');
         });
 
         it('does not touch package_timeline when no packages were optimised', async () => {

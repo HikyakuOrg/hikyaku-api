@@ -9,8 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { GeocodeModule } from './geocode/geocode.module';
 import { DatabaseModule } from './database/database.module';
 import { ConfigModule } from '@nestjs/config';
-import { ScheduleModule } from '@nestjs/schedule';
-import { TasksModule } from './tasks/tasks.module';
+import { DispatchModule } from './dispatch/dispatch.module';
 import { UsersModule } from './users/users.module';
 import { StripeModule } from './stripe/stripe.module';
 import { PaymentsModule } from './payments/payments.module';
@@ -24,6 +23,8 @@ import { CustomersModule } from './customers/customers.module';
 import { ServicesModule } from './services/services.module';
 import { RoutingModule } from './routing/routing.module';
 import { OptimisationModule } from './optimisation/optimisation.module';
+import { PackagesModule } from './packages/packages.module';
+import { ShiftsModule } from './shifts/shifts.module';
 import { TzdataModule } from './tzdata/tzdata.module';
 import { HealthModule } from './health/health.module';
 
@@ -38,8 +39,7 @@ const sentryEnabled = !!process.env.SENTRY_DSN;
     }),
     SupabaseModule,
     AuthModule,
-    ScheduleModule.forRoot(),
-    TasksModule,
+    DispatchModule,
     // Schema is Supabase-owned: synchronize stays off and migrations are NOT run
     // on boot (both enforced in dataSourceOptions). autoLoadEntities keeps Nest's
     // existing per-module entity discovery. See src/database/data-source.ts.
@@ -62,6 +62,8 @@ const sentryEnabled = !!process.env.SENTRY_DSN;
     ServicesModule,
     RoutingModule,
     OptimisationModule,
+    PackagesModule,
+    ShiftsModule,
     TzdataModule,
     HealthModule,
   ],

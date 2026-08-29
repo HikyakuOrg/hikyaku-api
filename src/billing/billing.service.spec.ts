@@ -328,23 +328,19 @@ describe('BillingService', () => {
         });
     });
 
-    describe('reportShiftUsage', () => {
-        it('provisions metered-only billing for an unprovisioned personal org, reports one summed meter event, and marks the batch reported', async () => {
-            dsQuery.mockImplementation((sql: string) => {
-                if (sql.includes('FROM stripe.shift_usage_events')) {
-                    return Promise.resolve([
-                        { organisation_id: 'org-1', count: 5, ids: ['1', '2', '3', '4', '5'] },
-                    ]);
-                }
-                return Promise.resolve([]);
-            });
+    describe('reportShiftUsageBatch', () => {
+        // Which rows to report, and the claim that stops two replicas reporting
+        // the same ones, moved to ShiftUsageReporter. What is left here is the
+        // Stripe half: make sure the organisation can be billed, then post.
+
+        it('provisions metered-only billing for an unprovisioned personal org and posts the meter event', async () => {
             organisations.getOrFail.mockResolvedValue(org({ orgType: 'personal' }));
             organisations.getSubscription.mockResolvedValue(null);
             stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
             stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
             stripe.subscriptions.create.mockResolvedValue({ id: 'sub_new' });
 
-            await service.reportShiftUsage();
+            await service.reportShiftUsageBatch('org-1', 5, 'shift_usage_abc');
 
             expect(stripe.customers.create).toHaveBeenCalledWith(
                 expect.objectContaining({ metadata: { organisationId: 'org-1' } }),
@@ -362,23 +358,12 @@ describe('BillingService', () => {
             );
             expect(stripe.billing.meterEvents.create).toHaveBeenCalledWith({
                 event_name: 'shift_created',
+                identifier: 'shift_usage_abc',
                 payload: { value: '5', stripe_customer_id: 'cus_new' },
             });
-            expect(dsQuery).toHaveBeenCalledWith(
-                expect.stringContaining('UPDATE stripe.shift_usage_events'),
-                [['1', '2', '3', '4', '5']],
-            );
         });
 
         it('provisions metered-only billing (no trial) for a grandfathered company org rather than calling the trial flow', async () => {
-            dsQuery.mockImplementation((sql: string) => {
-                if (sql.includes('FROM stripe.shift_usage_events')) {
-                    return Promise.resolve([
-                        { organisation_id: 'org-1', count: 2, ids: ['1', '2'] },
-                    ]);
-                }
-                return Promise.resolve([]);
-            });
             organisations.getOrFail.mockResolvedValue(
                 org({ orgType: 'company', subscriptionStatus: 'grandfathered' }),
             );
@@ -387,7 +372,7 @@ describe('BillingService', () => {
             stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
             stripe.subscriptions.create.mockResolvedValue({ id: 'sub_new' });
 
-            await service.reportShiftUsage();
+            await service.reportShiftUsageBatch('org-1', 2, 'shift_usage_def');
 
             // Never touches the trial-subscription path — no trial_period_days,
             // no trial_settings — and never re-lists the company base price.
@@ -402,20 +387,12 @@ describe('BillingService', () => {
         });
 
         it('attaches the overage price to an already-provisioned subscription that lacks it', async () => {
-            dsQuery.mockImplementation((sql: string) => {
-                if (sql.includes('FROM stripe.shift_usage_events')) {
-                    return Promise.resolve([
-                        { organisation_id: 'org-1', count: 1, ids: ['9'] },
-                    ]);
-                }
-                return Promise.resolve([]);
-            });
             organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
             organisations.getSubscription.mockResolvedValue(subscriptionRow());
             stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
             stripe.subscriptionItems.list.mockResolvedValue({ data: [] });
 
-            await service.reportShiftUsage();
+            await service.reportShiftUsageBatch('org-1', 1, 'shift_usage_ghi');
 
             expect(stripe.subscriptionItems.create).toHaveBeenCalledWith({
                 subscription: 'sub_1',
@@ -423,19 +400,12 @@ describe('BillingService', () => {
             });
             expect(stripe.billing.meterEvents.create).toHaveBeenCalledWith({
                 event_name: 'shift_created',
+                identifier: 'shift_usage_ghi',
                 payload: { value: '1', stripe_customer_id: 'cus_1' },
             });
         });
 
         it('does not attach the overage price again when it is already on the subscription', async () => {
-            dsQuery.mockImplementation((sql: string) => {
-                if (sql.includes('FROM stripe.shift_usage_events')) {
-                    return Promise.resolve([
-                        { organisation_id: 'org-1', count: 1, ids: ['9'] },
-                    ]);
-                }
-                return Promise.resolve([]);
-            });
             organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
             organisations.getSubscription.mockResolvedValue(subscriptionRow());
             stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
@@ -443,39 +413,20 @@ describe('BillingService', () => {
                 data: [{ price: { id: 'price_overage' } }],
             });
 
-            await service.reportShiftUsage();
+            await service.reportShiftUsageBatch('org-1', 1, 'shift_usage_jkl');
 
             expect(stripe.subscriptionItems.create).not.toHaveBeenCalled();
         });
 
-        it('logs and leaves the batch unreported when one organisation fails, without aborting the rest', async () => {
-            dsQuery.mockImplementation((sql: string) => {
-                if (sql.includes('FROM stripe.shift_usage_events')) {
-                    return Promise.resolve([
-                        { organisation_id: 'org-broken', count: 3, ids: ['1'] },
-                        { organisation_id: 'org-1', count: 2, ids: ['2'] },
-                    ]);
-                }
-                return Promise.resolve([]);
-            });
-            organisations.getOrFail.mockImplementation((id: string) =>
-                id === 'org-broken'
-                    ? Promise.reject(new NotFoundException('Organisation not found'))
-                    : Promise.resolve(org({ orgType: 'company' })),
+        it('propagates a failure so the caller can release the claim', async () => {
+            organisations.getOrFail.mockRejectedValue(
+                new NotFoundException('Organisation not found'),
             );
-            organisations.getSubscription.mockResolvedValue(subscriptionRow());
-            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
-            stripe.subscriptionItems.list.mockResolvedValue({
-                data: [{ price: { id: 'price_overage' } }],
-            });
 
-            await expect(service.reportShiftUsage()).resolves.toBeUndefined();
-
-            expect(stripe.billing.meterEvents.create).toHaveBeenCalledTimes(1);
-            expect(stripe.billing.meterEvents.create).toHaveBeenCalledWith({
-                event_name: 'shift_created',
-                payload: { value: '2', stripe_customer_id: 'cus_1' },
-            });
+            await expect(
+                service.reportShiftUsageBatch('org-broken', 3, 'shift_usage_mno'),
+            ).rejects.toBeInstanceOf(NotFoundException);
+            expect(stripe.billing.meterEvents.create).not.toHaveBeenCalled();
         });
     });
 

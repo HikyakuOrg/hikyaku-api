@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
 import { OrganisationsModule } from 'src/organisations/organisations.module';
+import { DispatchModule } from 'src/dispatch/dispatch.module';
 import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
+import { ShiftUsageReporter } from './shift-usage.reporter';
 
 /**
  * Subscription and trial state. Owns no tables of its own — the trial deadline
@@ -15,9 +17,11 @@ import { BillingService } from './billing.service';
  * keeping organisations a pure data-owner keeps that growth out of it.
  */
 @Module({
-    imports: [OrganisationsModule],
+    // DispatchModule for PgNotifyService: metering is woken by the NOTIFY the
+    // shift-usage outbox trigger fires, not polled on a clock.
+    imports: [OrganisationsModule, DispatchModule],
     controllers: [BillingController],
-    providers: [BillingService],
+    providers: [BillingService, ShiftUsageReporter],
     exports: [BillingService],
 })
 export class BillingModule {}
