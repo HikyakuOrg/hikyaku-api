@@ -6,7 +6,8 @@ import { DatabaseService } from '../database/database.service';
 import { SchedulerRun } from 'src/entities/scheduler-run.entity';
 import { OptimisationRun } from 'src/entities/optimisation-run.entity';
 import { VroomService } from '../vroom/vroom.service';
-import { QueueService } from './queue.service';
+import { QueueService } from '../dispatch/queue.service';
+import { ReplanWorker } from '../dispatch/replan.worker';
 import type { SetOffOverride } from '../database/database.types';
 
 /** Target local hour at which nightly optimization runs. */
@@ -42,6 +43,7 @@ export class TasksService implements OnApplicationBootstrap {
         private readonly databaseService: DatabaseService,
         private readonly vroomService: VroomService,
         private readonly queueService: QueueService,
+        private readonly replanWorker: ReplanWorker,
     ) { }
 
     /**
@@ -80,6 +82,14 @@ export class TasksService implements OnApplicationBootstrap {
         if (!msg) return;
 
         const body = msg.message as Record<string, unknown>;
+
+        // Tier 2 replans share this queue. Whichever consumer reads one first
+        // hands it to the worker that knows how to solve it -- this branch
+        // disappears with the rest of the file once the crons are gone.
+        if (body.kind === 'replan') {
+            await this.replanWorker.handleMessage(msg);
+            return;
+        }
 
         // On-demand runs carry a `kind` discriminator; nightly runs don't.
         if (body.kind === 'on_demand') {

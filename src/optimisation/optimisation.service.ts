@@ -9,7 +9,7 @@ import {
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { OptimisationRun } from 'src/entities/optimisation-run.entity';
-import { QUEUE_NAME } from '../tasks/queue.service';
+import { QUEUE_NAME } from '../dispatch/queue.service';
 import {
     DatabaseService,
     SHIFT_WINDOW_SECONDS,

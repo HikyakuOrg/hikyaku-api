@@ -1,8 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { DataSource, QueryRunner } from 'typeorm';
 
 export const QUEUE_NAME = 'warehouse-optimization';
+
+/** The channel ReplanWorker listens on. NOTIFY is the wake; pgmq is the truth. */
+export const REPLAN_CHANNEL = 'hikyaku_shift_replan';
 
 export interface PgmqMessage {
     msg_id: bigint;
@@ -12,6 +15,24 @@ export interface PgmqMessage {
     message: Record<string, unknown>;
 }
 
+/** Ask Tier 2 to re-solve one shift with real time windows. */
+export interface ReplanPayload {
+    kind: 'replan';
+    optimisationId: string;
+    warehouseId: string;
+    organisationId: string;
+}
+
+/**
+ * The queue survives the scheduler.
+ *
+ * It stops being polled and starts being woken, but LISTEN/NOTIFY alone cannot
+ * replace it: a notification fired while the listener is reconnecting is
+ * delivered to nobody, and a replan that crashes mid-solve leaves no trace. pgmq
+ * supplies exactly the four things that would otherwise have to be rebuilt —
+ * visibility-timeout retry, safe consumption across replicas, an archive for
+ * audit, and durability across a restart.
+ */
 @Injectable()
 export class QueueService {
     private readonly logger = new Logger(QueueService.name);
@@ -40,6 +61,7 @@ export class QueueService {
 
     /**
      * Sends a single nightly message to the queue (warehouse ID + run date).
+     * Removed with the scheduler.
      */
     async enqueue(warehouseId: string, runDate: string): Promise<void> {
         await this.dataSource.query(
@@ -49,15 +71,35 @@ export class QueueService {
     }
 
     /**
-     * Sends an arbitrary payload onto the same queue. Used for on-demand runs,
-     * which carry `{ kind: 'on_demand', ... }` so the consumer can tell them
-     * apart from nightly `{ warehouseId, runDate }` messages.
+     * Sends an arbitrary payload onto the queue. Used for on-demand runs, which
+     * carry `{ kind: 'on_demand', ... }`, and for replans, which carry
+     * `{ kind: 'replan', ... }`.
      */
     async enqueuePayload(payload: Record<string, unknown>): Promise<void> {
         await this.dataSource.query(
             `SELECT pgmq.send($1, $2::jsonb)`,
             [QUEUE_NAME, JSON.stringify(payload)],
         );
+    }
+
+    /**
+     * Enqueues a replan AND fires the wake-up notification, both on the caller's
+     * open transaction.
+     *
+     * Inside the transaction on purpose: a rolled-back assignment must not leave
+     * a queued replan for a plan that never happened, and a committed one must
+     * never be missed because the send landed after the commit and the process
+     * died in between. Postgres holds NOTIFY until COMMIT for the same reason.
+     */
+    async enqueueReplan(runner: QueryRunner, payload: ReplanPayload): Promise<void> {
+        await runner.query(`SELECT pgmq.send($1, $2::jsonb)`, [
+            QUEUE_NAME,
+            JSON.stringify(payload),
+        ]);
+        await runner.query(`SELECT pg_notify($1, $2)`, [
+            REPLAN_CHANNEL,
+            payload.optimisationId,
+        ]);
     }
 
     /**
@@ -70,6 +112,19 @@ export class QueueService {
             [QUEUE_NAME, vtSeconds],
         );
         return rows[0] ?? null;
+    }
+
+    /**
+     * Reads up to `limit` messages, each invisible to other readers for
+     * `vtSeconds`. Batching is what makes a coalesced drain cheap: a 500-package
+     * import queues 500 replans for a handful of shifts, and reading them one
+     * round-trip at a time would cost more than the solves.
+     */
+    async readBatch(vtSeconds: number, limit: number): Promise<PgmqMessage[]> {
+        return this.dataSource.query(
+            `SELECT * FROM pgmq.read($1, $2, $3)`,
+            [QUEUE_NAME, vtSeconds, limit],
+        );
     }
 
     /**

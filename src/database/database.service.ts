@@ -14,6 +14,7 @@ import { VrpRoute } from 'src/entities/vrp-route.entity';
 import { VrpSolution } from 'src/entities/vrp-solution.entity';
 import type { OptimizationResponse } from '../vroom/vroom.types';
 import { orsProfileToValhallaCosting } from '../vroom/profile-map';
+import { SHIFT_WINDOW_SECONDS, TIME_PER_STOP } from '../dispatch/insertion';
 import type {
     AssignmentRow,
     BuildOptions,
@@ -24,14 +25,18 @@ import type {
     StepInsertRow,
 } from './database.types';
 
-/** Service time per delivery stop, in seconds (15 minutes). Hardcoded for now. */
-export const TIME_PER_STOP = 900;
+/**
+ * Service time per stop and the width of the operating window, re-exported from
+ * the pure insertion module rather than declared here.
+ *
+ * Tier 1 decides a route fits using these numbers and this file builds the VROOM
+ * request from them; two copies that could drift apart is a silent correctness
+ * bug, not a style question.
+ */
+export { TIME_PER_STOP, SHIFT_WINDOW_SECONDS };
 
 /** Reload/turnaround buffer added after a vehicle returns, in seconds (30 min). */
 const SETOFF_BUFFER_SECONDS = 1800;
-
-/** Width of the vehicle operating window once it has set off, in seconds (12h). */
-export const SHIFT_WINDOW_SECONDS = 12 * 60 * 60;
 
 @Injectable()
 export class DatabaseService implements OnApplicationBootstrap {

@@ -5,7 +5,8 @@ import { DatabaseService } from 'src/database/database.service';
 import { VroomService } from 'src/vroom/vroom.service';
 import { SchedulerRun } from 'src/entities/scheduler-run.entity';
 import { OptimisationRun } from 'src/entities/optimisation-run.entity';
-import { QueueService } from './queue.service';
+import { QueueService } from '../dispatch/queue.service';
+import { ReplanWorker } from '../dispatch/replan.worker';
 
 type MockRunner = {
     query: jest.Mock;
@@ -41,6 +42,7 @@ describe('TasksService', () => {
     };
     let vroomService: { solve: jest.Mock };
     let optimisationRunRepo: { update: jest.Mock };
+    let replanWorker: { handleMessage: jest.Mock };
     let queueService: {
         ensureQueue: jest.Mock;
         enqueue: jest.Mock;
@@ -93,6 +95,7 @@ describe('TasksService', () => {
         };
         vroomService = { solve: jest.fn() };
         optimisationRunRepo = { update: jest.fn().mockResolvedValue(undefined) };
+        replanWorker = { handleMessage: jest.fn().mockResolvedValue(undefined) };
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
@@ -106,6 +109,9 @@ describe('TasksService', () => {
                 { provide: DatabaseService, useValue: dbService },
                 { provide: VroomService, useValue: vroomService },
                 { provide: QueueService, useValue: queueService },
+                // Only reachable via the transitional hand-off branch in
+                // handleQueue; both go away with the crons.
+                { provide: ReplanWorker, useValue: replanWorker },
             ],
         }).compile();
 
