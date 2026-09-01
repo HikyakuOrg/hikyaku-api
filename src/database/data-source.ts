@@ -1,5 +1,6 @@
 import * as dotenv from 'dotenv';
 import { DataSource, DataSourceOptions } from 'typeorm';
+import { resolvePostgresSsl } from './postgres-ssl';
 
 // The TypeORM CLI (migration:run / generate / revert) executes this file
 // directly, WITHOUT booting Nest — so it never gets ConfigModule's env loading.
@@ -32,6 +33,10 @@ export const dataSourceOptions: DataSourceOptions = {
   type: 'postgres',
   // App connection — unchanged from before (the running app keeps using DB_URL).
   url: process.env.DB_URL,
+  // SSL turns on only when DB_SSL_CA_PATH names a CA cert that's actually on
+  // disk; otherwise this is undefined and the connection stays plain TCP.
+  // See postgres-ssl.ts for why a bare `ssl: true` isn't enough for Supabase.
+  ssl: resolvePostgresSsl(),
   migrations: [__dirname + '/migrations/*.{ts,js}'],
   // Schema-qualified (not the top-level `schema` option) so ONLY the ledger
   // table moves — the top-level option would silently default every entity

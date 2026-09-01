@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Client } from 'pg';
+import { resolvePostgresSsl } from '../database/postgres-ssl';
 
 /** Reconnect backoff bounds, in milliseconds. */
 const RECONNECT_MIN_MS = 1_000;
@@ -99,7 +100,13 @@ export class PgNotifyService implements OnApplicationBootstrap, OnModuleDestroy 
     private async connect(): Promise<void> {
         if (this.stopped) return;
 
-        const client = new Client({ connectionString: process.env.DB_URL });
+        // Same DB_SSL_CA_PATH-gated SSL as the TypeORM pool (see postgres-ssl.ts)
+        // — this is a second, independent connection to the same database, so it
+        // needs to fall back to plain TCP under the same conditions.
+        const client = new Client({
+            connectionString: process.env.DB_URL,
+            ssl: resolvePostgresSsl(),
+        });
 
         // Attached before connect(): a socket error during the handshake is
         // still an error event on this client, and an unhandled one takes the
