@@ -1,0 +1,22 @@
+[Unit]
+Description=Hikyaku encrypted backup (Postgres + Supabase Storage)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=hikyaku-backup
+Group=hikyaku-backup
+EnvironmentFile=/etc/hikyaku-backup/backup.env
+# Adjust this path to wherever this repo (or just infra/backup/) is checked
+# out on the backup host.
+ExecStart=/opt/hikyaku-api/infra/backup/backup.sh
+Nice=10
+
+# Hardening -- this service only ever needs to read secrets from /etc and
+# read/write its own backup directory.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/backups/hikyaku

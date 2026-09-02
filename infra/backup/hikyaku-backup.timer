@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Hikyaku backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+# Spread load if this host ever runs other scheduled jobs at the same time.
+RandomizedDelaySec=10m
+# If the host was off/asleep at 03:15, run as soon as possible after boot
+# instead of silently skipping a day.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

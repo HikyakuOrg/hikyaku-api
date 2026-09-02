@@ -1,0 +1,30 @@
+name: hikyaku-backup
+
+services:
+  backup:
+    build: .
+    image: hikyaku-backup:latest
+    container_name: hikyaku-backup
+    restart: unless-stopped
+    # Adds tini as PID 1: forwards signals so `docker stop` doesn't have to
+    # wait out the SIGKILL timeout, and reaps the pg_dump/rclone/restic
+    # child processes backup.sh spawns once a day so they can't accumulate
+    # as zombies over weeks of uptime.
+    init: true
+    env_file:
+      - ./backup.env
+    volumes:
+      # Bind mount (not a named volume) so the restic repository and
+      # last-run marker are plain files at a known host path -- easy to
+      # inspect, easy to fold into a future offsite copy, and readable even
+      # if this container is ever removed. Matches the paths backup.env
+      # already points at.
+      - /var/backups/hikyaku:/var/backups/hikyaku
+    # No hikyaku-net: this container only talks outbound to Supabase over
+    # the internet, never to the hikyaku API or spatial services, so it has
+    # no business being reachable from -- or reaching -- that internal network.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
