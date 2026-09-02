@@ -4153,6 +4153,55 @@
           "health"
         ]
       }
+    },
+    "/api/v1/vin/{vin}": {
+      "get": {
+        "description": "Looks up make, model, year, plant and engine data for a VIN. Runs entirely against a bundled offline database — no third-party call is made per request.",
+        "operationId": "VinController_decode",
+        "parameters": [
+          {
+            "name": "vin",
+            "required": true,
+            "in": "path",
+            "description": "17-character Vehicle Identification Number. Case-insensitive.",
+            "schema": {
+              "example": "KM8K2CAB4PU001140",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VinDecodeResultDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid `Authorization` header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Decode a VIN",
+        "tags": [
+          "vin"
+        ]
+      }
     }
   },
   "info": {
@@ -4213,6 +4262,10 @@
     {
       "name": "geocode",
       "description": "Address search, autocomplete and reverse geocoding."
+    },
+    {
+      "name": "vin",
+      "description": "Offline VIN decoding."
     },
     {
       "name": "health",
@@ -7021,6 +7074,310 @@
         },
         "required": [
           "status"
+        ]
+      },
+      "WmiResultDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "3-character World Manufacturer Identifier."
+          },
+          "manufacturer": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string",
+            "description": "Manufacturing country."
+          },
+          "vehicleType": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string",
+            "description": "Geographic region."
+          },
+          "make": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "manufacturer",
+          "country",
+          "vehicleType",
+          "region",
+          "make"
+        ]
+      },
+      "ModelYearResultDto": {
+        "type": "object",
+        "properties": {
+          "year": {
+            "type": "number",
+            "example": 2023
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "position",
+              "override",
+              "calculated"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Confidence in the year, from 0 to 1."
+          }
+        },
+        "required": [
+          "year",
+          "source",
+          "confidence"
+        ]
+      },
+      "CheckDigitResultDto": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "number",
+            "description": "Position in the VIN, typically 9."
+          },
+          "actual": {
+            "type": "string",
+            "description": "Actual check digit character from the VIN."
+          },
+          "expected": {
+            "type": "string",
+            "description": "Check digit calculated from the VIN."
+          },
+          "isValid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "position",
+          "actual",
+          "isValid"
+        ]
+      },
+      "VehicleInfoDto": {
+        "type": "object",
+        "properties": {
+          "make": {
+            "type": "string",
+            "example": "Hyundai"
+          },
+          "model": {
+            "type": "string",
+            "example": "Kona"
+          },
+          "year": {
+            "type": "number",
+            "example": 2023
+          },
+          "series": {
+            "type": "string"
+          },
+          "trim": {
+            "type": "string"
+          },
+          "bodyStyle": {
+            "type": "string",
+            "example": "SUV"
+          },
+          "driveType": {
+            "type": "string",
+            "example": "AWD"
+          },
+          "engineType": {
+            "type": "string"
+          },
+          "fuelType": {
+            "type": "string"
+          },
+          "transmission": {
+            "type": "string"
+          },
+          "doors": {
+            "type": "string"
+          },
+          "gvwr": {
+            "type": "string",
+            "description": "Gross Vehicle Weight Rating."
+          },
+          "manufacturer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "make",
+          "model",
+          "year"
+        ]
+      },
+      "PlantInfoDto": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "type": "string",
+            "description": "Manufacturing country."
+          },
+          "city": {
+            "type": "string",
+            "description": "Manufacturing city."
+          },
+          "manufacturer": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "Plant code, from VIN position 11."
+          }
+        },
+        "required": [
+          "country",
+          "code"
+        ]
+      },
+      "EngineInfoDto": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "description": "Engine model code."
+          },
+          "cylinders": {
+            "type": "string"
+          },
+          "displacement": {
+            "type": "string",
+            "description": "Displacement in liters."
+          },
+          "fuel": {
+            "type": "string"
+          },
+          "power": {
+            "type": "string",
+            "description": "Engine power in HP."
+          }
+        }
+      },
+      "VinComponentsDto": {
+        "type": "object",
+        "properties": {
+          "wmi": {
+            "$ref": "#/components/schemas/WmiResultDto"
+          },
+          "modelYear": {
+            "$ref": "#/components/schemas/ModelYearResultDto"
+          },
+          "checkDigit": {
+            "$ref": "#/components/schemas/CheckDigitResultDto"
+          },
+          "vehicle": {
+            "$ref": "#/components/schemas/VehicleInfoDto"
+          },
+          "plant": {
+            "$ref": "#/components/schemas/PlantInfoDto"
+          },
+          "engine": {
+            "$ref": "#/components/schemas/EngineInfoDto"
+          }
+        }
+      },
+      "DecodeErrorDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Numeric-string error code, e.g. `100` (invalid length), `200` (invalid check digit), `300` (WMI not found).",
+            "example": "300"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "validation",
+              "structure",
+              "lookup",
+              "pattern",
+              "database"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "warning",
+              "error",
+              "fatal"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "positions": {
+            "description": "VIN positions this error covers.",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "details": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string",
+            "description": "Validation errors only: the expected value."
+          },
+          "actual": {
+            "type": "string",
+            "description": "Validation errors only: the actual value."
+          },
+          "searchKey": {
+            "type": "string",
+            "description": "Lookup errors only: the key that was searched for."
+          },
+          "searchType": {
+            "type": "string",
+            "description": "Lookup errors only: what kind of lookup ran."
+          }
+        },
+        "required": [
+          "code",
+          "category",
+          "severity",
+          "message"
+        ]
+      },
+      "VinDecodeResultDto": {
+        "type": "object",
+        "properties": {
+          "vin": {
+            "type": "string",
+            "description": "The VIN that was decoded, as submitted."
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "False when the VIN failed structural validation (length, check digit) or its WMI is unknown — see `errors` for why. `components` may still carry partial data in that case."
+          },
+          "components": {
+            "$ref": "#/components/schemas/VinComponentsDto"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodeErrorDto"
+            }
+          }
+        },
+        "required": [
+          "vin",
+          "valid",
+          "components",
+          "errors"
         ]
       }
     }

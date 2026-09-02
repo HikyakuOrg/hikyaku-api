@@ -31,6 +31,7 @@
     "migration:revert:prod": "typeorm migration:revert -d dist/database/data-source.js"
   },
   "dependencies": {
+    "@cardog/corgi": "^2.0.4",
     "@fastify/static": "^10.1.2",
     "@nestjs/common": "^11.1.28",
     "@nestjs/config": "^4.0.4",

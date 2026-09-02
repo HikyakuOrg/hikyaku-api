@@ -27,6 +27,7 @@ import { PackagesModule } from './packages/packages.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { TzdataModule } from './tzdata/tzdata.module';
 import { HealthModule } from './health/health.module';
+import { VinModule } from './vin/vin.module';
 
 // Error tracking is opt-in: only wire up Sentry when a DSN is configured.
 const sentryEnabled = !!process.env.SENTRY_DSN;
@@ -66,6 +67,7 @@ const sentryEnabled = !!process.env.SENTRY_DSN;
     ShiftsModule,
     TzdataModule,
     HealthModule,
+    VinModule,
   ],
   controllers: [],
   providers: [

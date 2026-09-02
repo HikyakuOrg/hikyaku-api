@@ -2,6 +2,10 @@ allowBuilds:
   "@nestjs/core": true
   "@scarf/scarf": false
   '@sentry/node-cpu-profiler': true
+  # Native module behind @cardog/corgi (VIN decoding). Its install script only
+  # fetches a prebuilt binary via prebuild-install / falls back to node-gyp —
+  # both standard for this widely-used package.
+  better-sqlite3: true
   unrs-resolver: true
 
 minimumReleaseAge: 7200
