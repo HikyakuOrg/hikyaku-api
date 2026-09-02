@@ -1,4 +1,5 @@
 import * as dotenv from 'dotenv';
+import { types } from 'pg';
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { resolvePostgresSsl } from './postgres-ssl';
 
@@ -9,6 +10,18 @@ import { resolvePostgresSsl } from './postgres-ssl';
 // and when this module is imported by Nest, these calls are harmless no-ops.
 dotenv.config({ path: '.env.local' });
 dotenv.config({ path: '.env' });
+
+// node-postgres's default DATE (oid 1082) parser converts to a JS Date at UTC
+// midnight. Every raw `date` column read in this codebase (vrp_optimization
+// .shift_date, chiefly) flows straight into a response DTO typed as a plain
+// `YYYY-MM-DD` string — Nest's JSON serialiser then calls Date#toISOString()
+// on it, silently turning "2026-09-02" into "2026-09-02T00:00:00.000Z" on the
+// wire. That breaks clients that parse the field per its declared OpenAPI
+// `format: date` (e.g. kotlinx.datetime.LocalDate rejects the trailing
+// time-of-day as unparsed text). This registry is process-global in `pg`, so
+// setting it once here — before any DataSource is created — fixes every call
+// site for both the Nest app and the TypeORM CLI.
+types.setTypeParser(types.builtins.DATE, (value: string) => value);
 
 /**
  * Shared TypeORM options, consumed by BOTH:
