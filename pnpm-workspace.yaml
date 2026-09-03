@@ -2,9 +2,10 @@ allowBuilds:
   "@nestjs/core": true
   "@scarf/scarf": false
   '@sentry/node-cpu-profiler': true
-  # Native module behind @cardog/corgi (VIN decoding). Its install script only
-  # fetches a prebuilt binary via prebuild-install / falls back to node-gyp —
-  # both standard for this widely-used package.
+  # Native module behind @cardog/corgi (VIN decoding). At the version pinned
+  # by the override below it ships prebuilt binaries directly in the npm
+  # package with no install script; this stays permissive in case that
+  # override is ever dropped and it falls back to a node-gyp build.
   better-sqlite3: true
   unrs-resolver: true
 
@@ -20,6 +21,11 @@ minimumReleaseAgeExclude:
   - fast-uri@4.1.2 # host-confusion fix chain, no older patched version exists
 
 overrides:
+  # Pinned by @cardog/corgi at exactly 9.6.0, which has no prebuilt binary for
+  # Node 22 (glibc or musl) and forces a from-source node-gyp compile on every
+  # install. 13.x bundles prebuildify binaries (incl. linuxmusl-arm64/x64)
+  # directly in the npm package, so install needs no compiler at all.
+  better-sqlite3: ^13.0.0
   find-my-way: ^9.7.0
   "@nestjs/swagger>js-yaml": ^5.2.2
   "ajv>fast-uri": ^3.1.5
