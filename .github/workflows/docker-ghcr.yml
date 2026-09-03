@@ -3,6 +3,7 @@ name: Build and Push Docker image to GHCR
 on:
   push:
     branches: [main, staging]
+    tags: ['*.*.*']
   workflow_dispatch:
 
 jobs:
