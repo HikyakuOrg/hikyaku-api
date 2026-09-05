@@ -1,6 +1,134 @@
 {
   "openapi": "3.0.0",
   "paths": {
+    "/api/v1/dispatch/coverage": {
+      "get": {
+        "description": "The support answer to \"why did package X go to driver Y?\". Pass `packageId` for a package that exists, or `lon` and `lat` to ask about an address before one does. Exactly one of the two forms per request.\n\nThe containment test is the same call the assignment engine makes (`src/dispatch/coverage.ts`), not a second implementation of it, so this endpoint cannot disagree with what dispatch actually did.\n\nRead-only. Territories and their staffing are written by the web dashboard directly, under row level security.",
+        "operationId": "CoverageController_coverage",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "packageId",
+            "required": false,
+            "in": "query",
+            "description": "The package to explain. Its delivery point and warehouse are resolved from the package itself, so `lon`, `lat` and `warehouseId` must not be sent with it.",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "name": "lon",
+            "required": false,
+            "in": "query",
+            "description": "Longitude, WGS84, within +/-180. Must be sent with `lat`.",
+            "schema": {
+              "example": 103.851959,
+              "type": "number"
+            }
+          },
+          {
+            "name": "lat",
+            "required": false,
+            "in": "query",
+            "description": "Latitude, WGS84, within +/-90. Must be sent with `lon`.",
+            "schema": {
+              "example": 1.29027,
+              "type": "number"
+            }
+          },
+          {
+            "name": "warehouseId",
+            "required": false,
+            "in": "query",
+            "description": "Which warehouse’s drivers to consider, for the coordinate form. Optional when the organisation has exactly one warehouse; required when it has several.",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "name": "includeGeometry",
+            "required": false,
+            "in": "query",
+            "description": "Adds each matching territory’s GeoJSON polygon. Off by default: a few city-sized territories are megabytes of coordinates.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The point that was tested, the territories covering it, every driver covering it (flagged as an explicit territory match or as a floater with no territories at all), and, for the package form, who actually got it and whether coverage explains that.\n\nA package with no geocode is answered here, not with an error: `resolution` says `package_not_geocoded`, which is a different and more actionable answer than a geocoded address nobody covers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageDiagnosticDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Both request forms sent, or neither; `lon` without `lat`; a coordinate outside +/-180 by +/-90 (usually a lon/lat swap); `warehouseId` sent alongside `packageId`; or the coordinate form with no `warehouseId` in an organisation that has several warehouses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No package, or no warehouse, with that id in the organisation. Rows belonging to another organisation are reported as unknown, never as forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Explain which drivers cover a delivery point, and why.",
+        "tags": [
+          "dispatch"
+        ]
+      }
+    },
     "/geocode/search": {
       "get": {
         "operationId": "GeocodeController_search",
@@ -4324,6 +4452,213 @@
           "statusCode",
           "message",
           "error"
+        ]
+      },
+      "CoveragePointDto": {
+        "type": "object",
+        "properties": {
+          "lon": {
+            "type": "number",
+            "description": "Longitude, WGS84. Always in lon/lat order, as PostGIS is.",
+            "example": 103.851959
+          },
+          "lat": {
+            "type": "number",
+            "description": "Latitude, WGS84.",
+            "example": 1.29027
+          }
+        },
+        "required": [
+          "lon",
+          "lat"
+        ]
+      },
+      "CoverageAreaDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "service_areas.id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name a dispatcher gave the territory."
+          },
+          "driverCount": {
+            "type": "number",
+            "description": "How many drivers at this warehouse are staffed on this area. Zero means the territory was drawn and then left unstaffed, which reads identically to \"no territory here\" from the driver list alone.",
+            "example": 2
+          },
+          "geometry": {
+            "type": "object",
+            "additionalProperties": true,
+            "nullable": true,
+            "description": "GeoJSON MultiPolygon, present only when `includeGeometry=true` was passed. Omitted by default: a handful of city-sized territories is megabytes of coordinates that a coverage question does not need."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "driverCount"
+        ]
+      },
+      "CoverageDriverDto": {
+        "type": "object",
+        "properties": {
+          "driverId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "drivers.id."
+          },
+          "matchedBy": {
+            "type": "string",
+            "enum": [
+              "explicit",
+              "floater"
+            ],
+            "description": "`explicit`: a territory this driver is staffed on contains the point. `floater`: this driver has no territories at all and so covers everywhere, which is what keeps an unconfigured organisation behaving exactly as it did before territories existed."
+          }
+        },
+        "required": [
+          "driverId",
+          "matchedBy"
+        ]
+      },
+      "CoverageAssignmentDto": {
+        "type": "object",
+        "properties": {
+          "shiftId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "vrp_optimization.id, or null if not on a shift yet."
+          },
+          "driverId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "The driver on that shift, or null."
+          },
+          "shiftStatus": {
+            "type": "string",
+            "nullable": true,
+            "description": "Status of the shift the package sits on.",
+            "example": "planned"
+          },
+          "matchedBy": {
+            "type": "string",
+            "enum": [
+              "explicit",
+              "floater",
+              "not_covering",
+              "unassigned"
+            ],
+            "description": "How the driver that actually got this package relates to the coverage above. `explicit` and `floater` mirror the driver list. `not_covering` is the interesting one: the package went to a driver no territory selects and who is not a floater either, so coverage did not produce this assignment. `unassigned` means no shift or no driver on it yet."
+          },
+          "covered": {
+            "type": "boolean",
+            "description": "Shorthand for `matchedBy` being explicit or floater. False on an assignment coverage does not explain, which is the case worth escalating."
+          }
+        },
+        "required": [
+          "shiftId",
+          "driverId",
+          "shiftStatus",
+          "matchedBy",
+          "covered"
+        ]
+      },
+      "CoverageDiagnosticDto": {
+        "type": "object",
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "evaluated",
+              "package_not_geocoded",
+              "package_has_no_warehouse"
+            ],
+            "description": "Whether coverage could be evaluated at all. The two failure values are answers, not errors: a package with no geocode is exactly what AssignmentService skips as `no_geocode` and never assigns, and an empty driver list would otherwise be indistinguishable from a geocoded address that genuinely nobody covers."
+          },
+          "explanation": {
+            "type": "string",
+            "description": "One sentence a support engineer can paste into a ticket. Derived entirely from the fields below; it adds no information of its own.",
+            "example": "No territory covers this address; 3 driver(s) match only because they have no territories at all."
+          },
+          "point": {
+            "nullable": true,
+            "description": "The point coverage was evaluated at. Null when it could not be resolved. Echoed back because roughly half of these questions turn out to be a bad geocode rather than a bad territory, and seeing the coordinates is what makes that obvious immediately.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CoveragePointDto"
+              }
+            ]
+          },
+          "warehouseId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "The warehouse whose drivers were considered. Resolved from the package, or from `warehouseId`, or from the organisation when it has exactly one warehouse."
+          },
+          "packageId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Echo of `packageId`, or null for the coordinate form."
+          },
+          "trackingNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "The package’s tracking number, since a support question usually starts from one."
+          },
+          "anyAreaCovers": {
+            "type": "boolean",
+            "description": "True when at least one territory covers the point. Kept separate from the driver list so \"nobody covers this\", \"territories exist but none match here\" and \"everyone matches, as floaters\" are three distinguishable answers rather than one empty array."
+          },
+          "organisationAreaCount": {
+            "type": "number",
+            "description": "Live (not soft-deleted) territories in the whole organisation. Zero means nothing has been configured yet, which is the expected state during rollout and is very different from territories existing and not matching.",
+            "example": 4
+          },
+          "areas": {
+            "description": "Every live territory containing the point, staffed or not, ordered by name. Not filtered by warehouse: an unstaffed territory over the address is the most useful thing this endpoint can show.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoverageAreaDto"
+            }
+          },
+          "drivers": {
+            "description": "Every driver at the warehouse who covers the point, explicit matches first, each group ordered by id.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoverageDriverDto"
+            }
+          },
+          "assignment": {
+            "nullable": true,
+            "description": "Null for the coordinate form. For the package form, who actually got it and whether coverage explains that.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CoverageAssignmentDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "resolution",
+          "explanation",
+          "point",
+          "warehouseId",
+          "packageId",
+          "trackingNumber",
+          "anyAreaCovers",
+          "organisationAreaCount",
+          "areas",
+          "drivers",
+          "assignment"
         ]
       },
       "GeoJsonPointDto": {

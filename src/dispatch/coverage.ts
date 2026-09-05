@@ -11,7 +11,8 @@
  * and the single-point entry point is a thin wrapper over the batch one rather
  * than a second copy of the query.
  *
- * Nothing calls it yet. This module is deliberately shipped inert.
+ * CoverageDiagnosticsService is a caller today; the assignment path becomes the
+ * other one.
  *
  * The split between this file and its future callers mirrors the split between
  * `insertion.ts` and `assignment.service.ts`: everything that can be decided
@@ -74,12 +75,38 @@ export interface PointCoverage {
     driverIds: string[];
 }
 
+/** One territory, named rather than only identified. */
+export interface CoverageArea {
+    id: string;
+    name: string;
+}
+
+/**
+ * Which territories contain one point.
+ *
+ * Separate from `PointCoverage` because it answers a different question and only
+ * the diagnostic endpoint asks it. Dispatch needs to know which drivers are
+ * eligible; a dispatcher debugging an incident needs to know which polygons
+ * matched, including ones nobody is staffed on.
+ */
+export interface PointAreaCoverage {
+    /** Index into the `points` array that was passed in. */
+    pointIndex: number;
+    /** Live areas in the organisation whose geometry covers the point. */
+    areas: CoverageArea[];
+}
+
 /** One row as the SQL below returns it, after shape checking. */
 interface CoverageRow {
     /** Null on a floater row, which is not tied to any one point. */
     pointIndex: number | null;
     driverId: string;
     isFloater: boolean;
+}
+
+/** One row of the area query, after shape checking. */
+interface CoverageAreaRow extends CoverageArea {
+    pointIndex: number;
 }
 
 // ── The floater rule ─────────────────────────────────────────────────────────
@@ -178,6 +205,25 @@ export function isPlausibleLonLat(lon: number, lat: number): boolean {
         lat >= -90 &&
         lat <= 90
     );
+}
+
+/**
+ * Throws unless every point could name somewhere on Earth.
+ *
+ * Shared by both batch entry points so that a coordinate rejected by one is
+ * rejected by the other with the same message. Pure.
+ */
+function assertPlausiblePoints(points: readonly CoveragePoint[]): void {
+    points.forEach((point, index) => {
+        if (!isPlausibleLonLat(point.lon, point.lat)) {
+            throw new RangeError(
+                `Coverage point ${index} is not a usable coordinate ` +
+                    `(lon ${point.lon}, lat ${point.lat}). Longitude must be within ` +
+                    `+/-180 and latitude within +/-90; a pair outside that is ` +
+                    `usually a lon/lat swap or an ungeocoded address.`,
+            );
+        }
+    });
 }
 
 // ── The query ────────────────────────────────────────────────────────────────
@@ -285,20 +331,41 @@ export function isPlausibleLonLat(lon: number, lat: number): boolean {
  * driver_service_area, a driver from another organisation could not come back
  * from this query.
  */
-export const COVERING_DRIVERS_SQL = `
-WITH pts AS (
+/**
+ * The points being asked about, one row each, index aligned with the caller's
+ * array. Shared by both queries below.
+ */
+const POINTS_CTE = `pts AS (
     SELECT (p.ord - 1)::int AS point_index,
            extensions.st_setsrid(extensions.st_makepoint(p.lon, p.lat), 4326) AS geom
       FROM unnest($3::double precision[], $4::double precision[])
            WITH ORDINALITY AS p(lon, lat, ord)
-),
-eligible AS (
+)`;
+
+/** The drivers this organisation/warehouse pair is allowed to answer with. */
+const ELIGIBLE_DRIVERS_CTE = `eligible AS (
     SELECT d.id
       FROM drivers d
      WHERE d.organisation_id = $1::uuid
        AND d.warehouse_id    = $2::uuid
-),
-covering_areas AS (
+)`;
+
+/**
+ * THE CONTAINMENT PREDICATE. THE ONLY ONE IN THIS CODEBASE.
+ *
+ * Pulled out into a constant rather than written inline because two queries need
+ * it: the driver lookup dispatch decides with, and the area lookup the coverage
+ * diagnostic reports with. Those two must never be able to disagree, for exactly
+ * the reason in the module header, so they share this fragment instead of each
+ * carrying a copy of `ST_Covers`. Grep for `st_covers` in src/: this is the only
+ * hit, and it should stay that way.
+ *
+ * Everything about how it is written (the bare indexed column on the left of the
+ * bounding-box operator, the explicit SRIDs, the soft-delete filter, the
+ * schema-qualified operator, the organisation predicate) is explained in the
+ * block comment above.
+ */
+const COVERING_AREAS_CTE = `covering_areas AS (
     SELECT pts.point_index,
            sa.id AS service_area_id
       FROM pts
@@ -309,7 +376,12 @@ covering_areas AS (
         AND extensions.st_covers(
                 extensions.st_setsrid(sa.geometry, 4326),
                 pts.geom)
-)
+)`;
+
+export const COVERING_DRIVERS_SQL = `
+WITH ${POINTS_CTE},
+${ELIGIBLE_DRIVERS_CTE},
+${COVERING_AREAS_CTE}
 -- The floater rule, SQL half: a driver with no rows at all in
 -- driver_service_area covers everywhere. Returned ONCE, with a null
 -- point_index, rather than joined against every point: the answer does not
@@ -336,6 +408,37 @@ SELECT DISTINCT
   FROM covering_areas ca
   JOIN driver_service_area dsa ON dsa.service_area_id = ca.service_area_id
   JOIN eligible            e   ON e.id = dsa.driver_id
+`;
+
+/**
+ * Which territories contain each point. $1 organisation id, $3/$4 the parallel
+ * coordinate arrays; $2 is unused here and is accepted only so both queries take
+ * the same parameter list.
+ *
+ * The same `covering_areas` set the driver query decides from, projected with
+ * names instead of joined to drivers. That sharing is the whole point: a
+ * dispatcher asking "why did this package go to that driver" is shown the areas
+ * that matched under the identical predicate dispatch used, not under a second
+ * one written to look the same.
+ *
+ * Deliberately NOT joined to `eligible`, and deliberately not filtered by
+ * warehouse. An area that contains the address but is staffed by nobody at this
+ * warehouse is the single most useful thing this endpoint can show, because it
+ * is the difference between "you have not drawn a territory here" and "you drew
+ * one and left it unstaffed". Joining drivers in would hide exactly that case.
+ *
+ * Geometry is not selected. A driver with six city-sized polygons is megabytes
+ * of GeoJSON, and the caller that wants it asks for it separately by area id.
+ */
+export const COVERING_AREAS_SQL = `
+WITH ${POINTS_CTE},
+${COVERING_AREAS_CTE}
+SELECT ca.point_index,
+       sa.id   AS service_area_id,
+       sa.name AS service_area_name
+  FROM covering_areas ca
+  JOIN service_areas sa ON sa.id = ca.service_area_id
+ ORDER BY ca.point_index, sa.name, sa.id
 `;
 
 // ── Entry points ─────────────────────────────────────────────────────────────
@@ -368,16 +471,7 @@ export async function coveringDriversForPoints(
 ): Promise<PointCoverage[]> {
     if (points.length === 0) return [];
 
-    points.forEach((point, index) => {
-        if (!isPlausibleLonLat(point.lon, point.lat)) {
-            throw new RangeError(
-                `Coverage point ${index} is not a usable coordinate ` +
-                    `(lon ${point.lon}, lat ${point.lat}). Longitude must be within ` +
-                    `+/-180 and latitude within +/-90; a pair outside that is ` +
-                    `usually a lon/lat swap or an ungeocoded address.`,
-            );
-        }
-    });
+    assertPlausiblePoints(points);
 
     const rows = parseCoverageRows(
         await executor.query(COVERING_DRIVERS_SQL, [
@@ -432,6 +526,71 @@ export async function coveringDriversForPoint(
     if (!coverage) {
         throw new Error(
             'Coverage query returned no entry for its single point.',
+        );
+    }
+    return coverage;
+}
+
+/**
+ * Which territories contain each of these points, in ONE round trip.
+ *
+ * The reporting half of the same question `coveringDriversForPoints` answers,
+ * over the same `covering_areas` set. Dispatch does not call this; only the
+ * diagnostic endpoint does, because only it has to explain the answer rather
+ * than act on it.
+ *
+ * Same guarantees as the driver form: one entry per input point, index aligned,
+ * always in order, always the same length; an empty `points` array never touches
+ * the database; an implausible coordinate throws rather than quietly reading as
+ * "no territory here".
+ */
+export async function coveringAreasForPoints(
+    executor: CoverageQueryExecutor,
+    query: CoverageQuery,
+    points: readonly CoveragePoint[],
+): Promise<PointAreaCoverage[]> {
+    if (points.length === 0) return [];
+
+    assertPlausiblePoints(points);
+
+    const rows = parseCoverageAreaRows(
+        await executor.query(COVERING_AREAS_SQL, [
+            query.organisationId,
+            query.warehouseId,
+            points.map((p) => p.lon),
+            points.map((p) => p.lat),
+        ]),
+    );
+
+    const coverage: PointAreaCoverage[] = points.map((_, pointIndex) => ({
+        pointIndex,
+        areas: [],
+    }));
+    for (const row of rows) {
+        // A point index outside the batch means this file and its query have
+        // drifted apart. Dropping the row is the safe direction: the alternative
+        // is attributing a territory to a point that did not match it.
+        const forPoint = coverage[row.pointIndex];
+        if (forPoint) forPoint.areas.push({ id: row.id, name: row.name });
+    }
+    return coverage;
+}
+
+/**
+ * Which territories contain this one point?
+ *
+ * A wrapper over the batch form, NOT a second query, for the same reason
+ * `coveringDriversForPoint` is one.
+ */
+export async function coveringAreasForPoint(
+    executor: CoverageQueryExecutor,
+    query: CoverageQuery,
+    point: CoveragePoint,
+): Promise<PointAreaCoverage> {
+    const [coverage] = await coveringAreasForPoints(executor, query, [point]);
+    if (!coverage) {
+        throw new Error(
+            'Coverage area query returned no entry for its single point.',
         );
     }
     return coverage;
@@ -495,5 +654,55 @@ export function parseCoverageRows(raw: unknown): CoverageRow[] {
             );
         }
         return { pointIndex: asNumber, driverId, isFloater };
+    });
+}
+
+/**
+ * Narrows what the pg driver handed back into `CoverageAreaRow[]`.
+ *
+ * Same contract as `parseCoverageRows` and for the same reason: a result that
+ * does not look like this one means the query and this file have drifted apart,
+ * and a diagnostic that silently drops the territory it cannot parse would
+ * report "no area covers this address" for a configuration that has one.
+ *
+ * Pure, and unit tested with no database.
+ */
+export function parseCoverageAreaRows(raw: unknown): CoverageAreaRow[] {
+    if (!Array.isArray(raw)) {
+        throw new TypeError(
+            `Coverage area query returned ${typeof raw}, expected an array of rows.`,
+        );
+    }
+
+    return raw.map((entry: unknown, index: number): CoverageAreaRow => {
+        if (typeof entry !== 'object' || entry === null) {
+            throw new TypeError(`Coverage area row ${index} is not an object.`);
+        }
+        const row = entry as Record<string, unknown>;
+
+        const id = row.service_area_id;
+        if (typeof id !== 'string') {
+            throw new TypeError(
+                `Coverage area row ${index} has no service_area_id (got ${typeof id}).`,
+            );
+        }
+
+        const name = row.service_area_name;
+        if (typeof name !== 'string') {
+            throw new TypeError(
+                `Coverage area row ${index} has no service_area_name (got ${typeof name}).`,
+            );
+        }
+
+        // Unlike the driver query there is no floater branch here, so every row
+        // belongs to a point and a null point_index is drift, not a valid state.
+        const asNumber = Number(row.point_index);
+        if (!Number.isInteger(asNumber)) {
+            throw new TypeError(
+                `Coverage area row ${index} has a non-integer point_index ` +
+                    `(${JSON.stringify(row.point_index) ?? 'undefined'}).`,
+            );
+        }
+        return { pointIndex: asNumber, id, name };
     });
 }
