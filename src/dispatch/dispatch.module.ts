@@ -7,6 +7,7 @@ import { VroomModule } from 'src/vroom/vroom.module';
 import { AssignmentService } from './assignment.service';
 import { CoverageController } from './coverage.controller';
 import { CoverageDiagnosticsService } from './coverage-diagnostics.service';
+import { CoverageMetricsService } from './coverage-metrics.service';
 import { PgNotifyService } from './pg-notify.service';
 import { QueueService } from './queue.service';
 import { ReplanWorker } from './replan.worker';
@@ -46,6 +47,7 @@ import { ShiftPlanWriter } from './shift-plan.writer';
         ShiftPlanWriter,
         AssignmentService,
         CoverageDiagnosticsService,
+        CoverageMetricsService,
         ReplanWorker,
     ],
     exports: [

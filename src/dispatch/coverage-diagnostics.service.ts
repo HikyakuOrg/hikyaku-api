@@ -6,9 +6,14 @@ import {
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import {
+    COVERAGE_OUTCOMES,
+    COVERED_OUTCOMES,
     coveringAreasForPoint,
     coveringDriversForPoint,
+    FALLBACK_OUTCOMES,
     isPlausibleLonLat,
+    serviceAreaMatchingEnabled,
+    type CoverageOutcome,
     type CoveragePoint,
 } from './coverage';
 import type {
@@ -16,6 +21,9 @@ import type {
     CoverageAssignmentDto,
     CoverageDiagnosticDto,
     CoverageDriverDto,
+    CoverageFallbackPackageDto,
+    CoverageOutcomeCountsDto,
+    CoverageSummaryDto,
 } from './dto/coverage-diagnostic.dto';
 
 /** The query string as the controller hands it over, unparsed. */
@@ -46,6 +54,7 @@ interface PackageRow {
     lat: number | null;
     driver_id: string | null;
     shift_status: string | null;
+    recorded_outcome: string | null;
 }
 
 interface AreaDetailRow {
@@ -53,6 +62,53 @@ interface AreaDetailRow {
     driver_count: number | string;
     geometry: string | null;
 }
+
+/** One bucket of the summary's GROUP BY. */
+interface OutcomeCountRow {
+    outcome: string;
+    count: number | string;
+}
+
+/** One package that reached a driver who does not cover it. */
+interface FallbackRow {
+    package_id: string;
+    tracking_number: string | null;
+    coverage_outcome: string;
+    driver_id: string | null;
+    optimisation_id: string | null;
+    created_at: string;
+}
+
+/**
+ * How far back the rollout summary looks when the caller does not say.
+ *
+ * A week, for two reasons that agree. Shift plans are daily and delivery
+ * traffic has a strong weekday shape, so anything shorter than seven days
+ * compares a Tuesday against a Sunday and reads the difference as a change in
+ * coverage. And the rollout runbook asks for a week of watching after the flag
+ * is turned on for an organisation, so the default window is the same window
+ * that decision is actually made over.
+ */
+const DEFAULT_SUMMARY_DAYS = 7;
+
+/**
+ * The longest window the summary will answer for.
+ *
+ * Not a correctness limit, a cost one: the counts scan
+ * package_assignment_coverage_outcome_idx over the range, and this endpoint is
+ * a dispatcher's sanity check rather than an analytics warehouse. Thirty days
+ * comfortably covers "has this got better since we turned it on".
+ */
+const MAX_SUMMARY_DAYS = 30;
+
+/**
+ * How many individual fallback packages the summary names.
+ *
+ * Enough to see the pattern (the same suburb over and over, or the same
+ * driver), few enough that the response stays a summary. Anyone who needs all
+ * of them is asking an analytics question, not a dispatch one.
+ */
+const MAX_FALLBACK_SAMPLE = 50;
 
 /**
  * Why did this package go to that driver?
@@ -95,6 +151,82 @@ export class CoverageDiagnosticsService {
         return request.form === 'package'
             ? this.explainPackage(organisationId, request)
             : this.explainCoordinates(organisationId, request);
+    }
+
+    /**
+     * The org-level rollout number: over the last N days, how much of the
+     * automatically-assigned traffic reached a driver who covers it?
+     *
+     * ── WHY THIS IS AN ENDPOINT AND NOT A QUERY IN A RUNBOOK ────────────────
+     *
+     * It is the number somebody has to look at to decide whether to turn
+     * SERVICE_AREA_MATCHING on, and again every day for a week afterwards. A
+     * decision that is checked that often cannot depend on having a database
+     * console open, or it will stop being checked.
+     *
+     * ── WHAT MAKES THE NUMBER HONEST ────────────────────────────────────────
+     *
+     * Three things, all of which are on the response rather than assumed:
+     *
+     *   - Only rows automatic assignment wrote are counted. A dispatcher's
+     *     hand-pinned package took no coverage decision, so counting it either
+     *     way would be wrong; those rows carry a null outcome and drop out.
+     *   - `disabled` is excluded from the denominator. With the flag off,
+     *     counting those as successes would report a perfect score for a
+     *     feature that is not running.
+     *   - The live territory count travels with it. An organisation that has
+     *     drawn nothing scores 100%, entirely on floater matches, and that is
+     *     the correct answer to the question asked rather than evidence the
+     *     map is finished.
+     */
+    async summary(
+        organisationId: string,
+        days?: string,
+    ): Promise<CoverageSummaryDto> {
+        const windowDays = parseSummaryDays(days);
+
+        const [counts, fallbacks, liveServiceAreaCount] = await Promise.all([
+            this.countOutcomes(organisationId, windowDays),
+            this.recentFallbacks(organisationId, windowDays),
+            this.countLiveAreas(organisationId),
+        ]);
+
+        const byOutcome = toCountsDto(counts);
+        const totalAssigned = COVERAGE_OUTCOMES.reduce(
+            (total, outcome) => total + (counts.get(outcome) ?? 0),
+            0,
+        );
+        const decisions = totalAssigned - (counts.get('disabled') ?? 0);
+        const covered = COVERED_OUTCOMES.reduce(
+            (total, outcome) => total + (counts.get(outcome) ?? 0),
+            0,
+        );
+        // Null, not zero: a rate over no samples is unknown, and reporting an
+        // unmeasured organisation as 0% covered would look like a failure.
+        const coveredRate = decisions === 0 ? null : covered / decisions;
+
+        const since = new Date(
+            Date.now() - windowDays * 24 * 60 * 60 * 1000,
+        ).toISOString();
+
+        return {
+            windowDays,
+            since,
+            serviceAreaMatching: serviceAreaMatchingEnabled(),
+            liveServiceAreaCount,
+            totalAssigned,
+            decisions,
+            coveredRate,
+            byOutcome,
+            fallbacks,
+            explanation: explainSummary({
+                windowDays,
+                decisions,
+                coveredRate,
+                liveServiceAreaCount,
+                serviceAreaMatching: serviceAreaMatchingEnabled(),
+            }),
+        };
     }
 
     // ── The package form ─────────────────────────────────────────────────────
@@ -341,6 +473,12 @@ export class CoverageDiagnosticsService {
      * differently, this endpoint would explain a decision that was never made.
      * The only difference is that the PostGIS calls are schema-qualified here,
      * as coverage.ts qualifies its own, which selects the identical function.
+     *
+     * `coverage_outcome` is read alongside them because it is the only part of
+     * this answer that is not recomputed: everything else on this response
+     * describes the map as it is now, and this one column describes the map as
+     * it was when the decision was taken. Reading it here rather than in a
+     * second query keeps the two consistent with each other.
      */
     private async loadPackage(
         organisationId: string,
@@ -354,9 +492,11 @@ export class CoverageDiagnosticsService {
                     extensions.st_x(c.customer_location::extensions.geometry) AS lon,
                     extensions.st_y(c.customer_location::extensions.geometry) AS lat,
                     v.driver_id,
-                    v.status AS shift_status
+                    v.status AS shift_status,
+                    pa.coverage_outcome AS recorded_outcome
                FROM packages p
                LEFT JOIN customer c ON c.id = p.to_customer
+               LEFT JOIN package_assignment pa ON pa.package_id = p.id
                LEFT JOIN vrp_optimization v
                       ON v.id              = p.optimisation_id
                      AND v.organisation_id = p.organisation_id
@@ -364,6 +504,91 @@ export class CoverageDiagnosticsService {
             [packageId, organisationId],
         );
         return rows[0] ?? null;
+    }
+
+    /**
+     * The five buckets, counted over the window.
+     *
+     * `coverage_outcome IS NOT NULL` is doing real work here: it is what
+     * restricts the answer to packages automatic assignment placed. A replan or
+     * a dispatcher's pin writes this same table with no outcome, and including
+     * those would put packages that never took a coverage decision into the
+     * denominator of a coverage success rate.
+     *
+     * The organisation predicate comes through `packages`, because
+     * package_assignment has no organisation_id of its own. This process
+     * connects as service_role and bypasses RLS, so that join is the only thing
+     * scoping this read to one tenant.
+     */
+    private async countOutcomes(
+        organisationId: string,
+        windowDays: number,
+    ): Promise<Map<CoverageOutcome, number>> {
+        const rows: OutcomeCountRow[] = await this.dataSource.query(
+            `SELECT pa.coverage_outcome AS outcome,
+                    count(*)::int       AS count
+               FROM package_assignment pa
+               JOIN packages p ON p.id = pa.package_id
+              WHERE p.organisation_id     = $1::uuid
+                AND pa.coverage_outcome IS NOT NULL
+                AND pa.created_at        >= now() - make_interval(days => $2::int)
+              GROUP BY pa.coverage_outcome`,
+            [organisationId, windowDays],
+        );
+
+        const counts = new Map<CoverageOutcome, number>();
+        for (const row of rows) {
+            const outcome = asCoverageOutcome(row.outcome);
+            // A value this build does not know about is dropped rather than
+            // added to a bucket it does not belong in. It would mean the column
+            // and this code have drifted, most likely mid-deploy, and a wrong
+            // bucket is worse than a slightly low total.
+            if (outcome) counts.set(outcome, Number(row.count));
+        }
+        return counts;
+    }
+
+    /** The most recent fallbacks in the window, newest first, capped. */
+    private async recentFallbacks(
+        organisationId: string,
+        windowDays: number,
+    ): Promise<CoverageFallbackPackageDto[]> {
+        const rows: FallbackRow[] = await this.dataSource.query(
+            `SELECT pa.package_id,
+                    p.tracking_number,
+                    pa.coverage_outcome,
+                    pa.driver_id,
+                    p.optimisation_id,
+                    pa.created_at
+               FROM package_assignment pa
+               JOIN packages p ON p.id = pa.package_id
+              WHERE p.organisation_id    = $1::uuid
+                AND pa.coverage_outcome  = ANY($3::text[])
+                AND pa.created_at       >= now() - make_interval(days => $2::int)
+              ORDER BY pa.created_at DESC
+              LIMIT $4::int`,
+            [
+                organisationId,
+                windowDays,
+                [...FALLBACK_OUTCOMES],
+                MAX_FALLBACK_SAMPLE,
+            ],
+        );
+
+        return rows.flatMap((row): CoverageFallbackPackageDto[] => {
+            const outcome = asCoverageOutcome(row.coverage_outcome);
+            if (!outcome || !FALLBACK_OUTCOMES.includes(outcome)) return [];
+            return [
+                {
+                    packageId: row.package_id,
+                    trackingNumber: row.tracking_number,
+                    outcome,
+                    driverId: row.driver_id,
+                    shiftId: row.optimisation_id,
+                    assignedAt: new Date(row.created_at).toISOString(),
+                },
+            ];
+        });
     }
 
     /** Live territories in the organisation, staffed or not. */
@@ -533,7 +758,23 @@ function toAssignment(pkg: PackageRow): CoverageAssignmentDto | null {
         shiftStatus: pkg.shift_status,
         matchedBy: 'unassigned',
         covered: false,
+        recordedOutcome: asCoverageOutcome(pkg.recorded_outcome),
     };
+}
+
+/**
+ * Narrows the raw column to the union, or null.
+ *
+ * A value the CHECK constraint permits but this build does not know about
+ * (the two having drifted, most likely mid-deploy) is reported as null rather
+ * than passed through: null already means "no recorded decision", which is a
+ * safer thing for a client to render than a string its enum does not contain.
+ */
+function asCoverageOutcome(raw: string | null): CoverageOutcome | null {
+    return raw !== null &&
+        (COVERAGE_OUTCOMES as readonly string[]).includes(raw)
+        ? (raw as CoverageOutcome)
+        : null;
 }
 
 /**
@@ -635,6 +876,103 @@ export function explain(input: ExplanationInput): string {
 
     if (input.assignment) {
         parts.push(assignmentSentence(input.assignment));
+    }
+
+    return parts.join(' ');
+}
+
+/**
+ * How far back to count, from the raw query string.
+ *
+ * Rejected rather than clamped, on the same principle as `includeGeometry`
+ * above: a caller who asks for 90 days and silently gets 30 has a number that
+ * means something different from what they think it does, and a rollout
+ * decision is exactly the wrong place for that.
+ *
+ * Exported for tests: every 400 this endpoint can raise is decided here, with
+ * no database involved.
+ */
+export function parseSummaryDays(raw: string | undefined): number {
+    const text = trimmed(raw);
+    if (text === null) return DEFAULT_SUMMARY_DAYS;
+
+    const days = Number(text);
+    if (!Number.isInteger(days) || days < 1 || days > MAX_SUMMARY_DAYS) {
+        throw new BadRequestException(
+            `days must be a whole number between 1 and ${MAX_SUMMARY_DAYS}, ` +
+                `not "${text}".`,
+        );
+    }
+    return days;
+}
+
+/** The five buckets, zeros included, under the API's camelCase names. */
+function toCountsDto(
+    counts: ReadonlyMap<CoverageOutcome, number>,
+): CoverageOutcomeCountsDto {
+    return {
+        covered: counts.get('covered') ?? 0,
+        floater: counts.get('floater') ?? 0,
+        fallbackNoCoveringCapacity:
+            counts.get('fallback_no_covering_capacity') ?? 0,
+        fallbackNoCoveringDriver:
+            counts.get('fallback_no_covering_driver') ?? 0,
+        disabled: counts.get('disabled') ?? 0,
+    };
+}
+
+interface SummaryExplanationInput {
+    windowDays: number;
+    decisions: number;
+    coveredRate: number | null;
+    liveServiceAreaCount: number;
+    serviceAreaMatching: boolean;
+}
+
+/**
+ * One sentence for the rollout summary.
+ *
+ * Leads with whichever fact would make the rate misleading, because that is the
+ * whole risk with this number: a perfect score on an empty map, or on a feature
+ * that is switched off, reads as success to anyone skimming. Pure, and unit
+ * tested as a table.
+ */
+export function explainSummary(input: SummaryExplanationInput): string {
+    const parts: string[] = [];
+
+    if (input.coveredRate === null) {
+        parts.push(
+            `No packages were placed by automatic assignment in the last ` +
+                `${input.windowDays} day(s), so there is no coverage rate to ` +
+                `report yet.`,
+        );
+    } else {
+        parts.push(
+            `${Math.round(input.coveredRate * 100)}% of ${input.decisions} ` +
+                `coverage decision(s) over the last ${input.windowDays} day(s) ` +
+                `reached a driver who covers the delivery point.`,
+        );
+    }
+
+    if (input.liveServiceAreaCount === 0) {
+        parts.push(
+            'No territories are drawn in this organisation, so every driver ' +
+                'covers everywhere and every match is a floater match. That is ' +
+                'the correct answer, not a finished map.',
+        );
+    } else {
+        parts.push(
+            `${input.liveServiceAreaCount} live territory (or territories) are ` +
+                'drawn.',
+        );
+    }
+
+    if (!input.serviceAreaMatching) {
+        parts.push(
+            'Service area matching is currently switched off, so packages ' +
+                'placed from now on are recorded as `disabled` and are left out ' +
+                'of the rate above.',
+        );
     }
 
     return parts.join(' ');

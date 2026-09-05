@@ -3,7 +3,9 @@ import type { DataSource } from 'typeorm';
 import {
     CoverageDiagnosticsService,
     explain,
+    explainSummary,
     parseRequest,
+    parseSummaryDays,
     resolveAssignment,
 } from './coverage-diagnostics.service';
 import { COVERING_AREAS_SQL, COVERING_DRIVERS_SQL } from './coverage';
@@ -61,6 +63,10 @@ interface DbState {
     areaRows?: Record<string, unknown>[];
     areaDetails?: Record<string, unknown>[];
     organisationAreaCount?: number;
+    /** Rows the summary's GROUP BY over package_assignment answers with. */
+    outcomeCounts?: Record<string, unknown>[];
+    /** Rows the summary's fallback sample answers with. */
+    fallbackRows?: Record<string, unknown>[];
 }
 
 interface Call {
@@ -109,6 +115,15 @@ function fakeDataSource(state: DbState): {
                 { count: state.organisationAreaCount ?? 0 },
             ]);
         }
+        // The two summary reads. Matched on package_assignment rather than on
+        // `packages`, which they only join to for the organisation predicate.
+        if (sql.includes('FROM package_assignment pa')) {
+            return Promise.resolve(
+                sql.includes('GROUP BY')
+                    ? (state.outcomeCounts ?? [])
+                    : (state.fallbackRows ?? []),
+            );
+        }
         throw new Error(`Unexpected statement: ${sql}`);
     };
 
@@ -143,6 +158,7 @@ const GEOCODED_PACKAGE = {
     lat: 1.29,
     driver_id: null,
     shift_status: null,
+    recorded_outcome: null,
 };
 
 function service(state: DbState): {
@@ -372,7 +388,74 @@ describe('the package form', () => {
             shiftStatus: 'planned',
             matchedBy: 'explicit',
             covered: true,
+            recordedOutcome: null,
         });
+    });
+
+    it('reports what dispatch recorded, not only what it recomputes', async () => {
+        // The two are different questions. `matchedBy` is the map as it stands
+        // now; `recordedOutcome` is the decision that was actually taken. Every
+        // input to that decision is read fresh on every assignment, so once a
+        // territory is redrawn the recorded value is the only surviving record
+        // of it.
+        const { subject } = service({
+            package: {
+                ...GEOCODED_PACKAGE,
+                optimisation_id: SHIFT,
+                driver_id: DRIVER_A,
+                shift_status: 'planned',
+                recorded_outcome: 'covered',
+            },
+            // The territory that selected DRIVER_A has since been redrawn, so
+            // recomputing today says the package should never have gone there.
+            coverRows: [],
+        });
+
+        const result = await subject.explain(ORG, { packageId: PACKAGE });
+
+        expect(result.assignment).toMatchObject({
+            matchedBy: 'not_covering',
+            recordedOutcome: 'covered',
+        });
+    });
+
+    it('reports a value it does not recognise as no recorded decision', async () => {
+        // The column and this build having drifted, most likely mid-deploy.
+        // Null already means "nothing recorded", which is a safer thing for a
+        // client to render than a string its enum does not contain.
+        const { subject } = service({
+            package: {
+                ...GEOCODED_PACKAGE,
+                optimisation_id: SHIFT,
+                driver_id: DRIVER_A,
+                shift_status: 'planned',
+                recorded_outcome: 'something_from_the_future',
+            },
+            coverRows: [coverRow(0, DRIVER_A)],
+        });
+
+        const result = await subject.explain(ORG, { packageId: PACKAGE });
+
+        expect(result.assignment?.recordedOutcome).toBeNull();
+    });
+
+    it('carries the recorded outcome through even when coverage was never evaluated', async () => {
+        const { subject } = service({
+            package: {
+                ...GEOCODED_PACKAGE,
+                lon: null,
+                lat: null,
+                optimisation_id: SHIFT,
+                driver_id: DRIVER_A,
+                shift_status: 'planned',
+                recorded_outcome: 'disabled',
+            },
+        });
+
+        const result = await subject.explain(ORG, { packageId: PACKAGE });
+
+        expect(result.resolution).toBe('package_not_geocoded');
+        expect(result.assignment?.recordedOutcome).toBe('disabled');
     });
 
     it('distinguishes a floater assignment from a territory match', async () => {
@@ -742,5 +825,243 @@ describe('resolveAssignment', () => {
         expect(
             resolveAssignment(assignment, [DRIVER_A], [DRIVER_A]),
         ).toMatchObject({ matchedBy: 'explicit' });
+    });
+});
+
+// ── The rollout summary ──────────────────────────────────────────────────────
+
+describe('parseSummaryDays', () => {
+    it('defaults to a full weekly delivery cycle', () => {
+        expect(parseSummaryDays(undefined)).toBe(7);
+        expect(parseSummaryDays('  ')).toBe(7);
+    });
+
+    it('takes a whole number of days inside the range', () => {
+        expect(parseSummaryDays('1')).toBe(1);
+        expect(parseSummaryDays('30')).toBe(30);
+    });
+
+    it.each(['0', '31', '-1', '3.5', 'week', ''])(
+        'refuses %p rather than clamping it',
+        (value) => {
+            // Clamping would hand back a number that means something other than
+            // what the caller asked for, and a rollout decision is the wrong
+            // place to discover that.
+            if (value === '') {
+                expect(parseSummaryDays(value)).toBe(7);
+                return;
+            }
+            expect(() => parseSummaryDays(value)).toThrow(BadRequestException);
+        },
+    );
+});
+
+describe('explainSummary', () => {
+    const base = {
+        windowDays: 7,
+        decisions: 100,
+        coveredRate: 0.94,
+        liveServiceAreaCount: 6,
+        serviceAreaMatching: true,
+    };
+
+    it('leads with the rate', () => {
+        expect(explainSummary(base)).toContain('94% of 100');
+    });
+
+    it('says an empty map is the correct answer, not a finished one', () => {
+        // The single most misreadable state: 100% covered on an organisation
+        // that has drawn nothing, entirely on floater matches.
+        const text = explainSummary({
+            ...base,
+            coveredRate: 1,
+            liveServiceAreaCount: 0,
+        });
+        expect(text).toContain('No territories are drawn');
+        expect(text).toContain('correct answer, not a finished map');
+    });
+
+    it('says when the rate describes history rather than what is happening', () => {
+        expect(
+            explainSummary({ ...base, serviceAreaMatching: false }),
+        ).toContain('currently switched off');
+    });
+
+    it('does not report an unmeasured organisation as a failure', () => {
+        const text = explainSummary({
+            ...base,
+            decisions: 0,
+            coveredRate: null,
+        });
+        expect(text).toContain('no coverage rate to report yet');
+        expect(text).not.toContain('0%');
+    });
+});
+
+describe('the coverage summary', () => {
+    const original = process.env.SERVICE_AREA_MATCHING;
+    afterEach(() => {
+        if (original === undefined) delete process.env.SERVICE_AREA_MATCHING;
+        else process.env.SERVICE_AREA_MATCHING = original;
+    });
+
+    const COUNTS = [
+        { outcome: 'covered', count: 60 },
+        { outcome: 'floater', count: 30 },
+        { outcome: 'fallback_no_covering_capacity', count: 6 },
+        { outcome: 'fallback_no_covering_driver', count: 4 },
+    ];
+
+    it('rates coverage over the decisions actually taken', async () => {
+        const { subject } = service({
+            outcomeCounts: COUNTS,
+            organisationAreaCount: 6,
+        });
+
+        const summary = await subject.summary(ORG);
+
+        expect(summary.totalAssigned).toBe(100);
+        expect(summary.decisions).toBe(100);
+        expect(summary.coveredRate).toBe(0.9);
+        expect(summary.byOutcome).toEqual({
+            covered: 60,
+            floater: 30,
+            fallbackNoCoveringCapacity: 6,
+            fallbackNoCoveringDriver: 4,
+            disabled: 0,
+        });
+    });
+
+    it('leaves packages placed with the feature off out of the rate', async () => {
+        // Otherwise an organisation the flag was never switched on for reports
+        // a perfect score, which is exactly the number somebody would quote
+        // when deciding whether it is safe to switch it on.
+        const { subject } = service({
+            outcomeCounts: [
+                { outcome: 'disabled', count: 500 },
+                { outcome: 'covered', count: 8 },
+                { outcome: 'fallback_no_covering_driver', count: 2 },
+            ],
+        });
+
+        const summary = await subject.summary(ORG);
+
+        expect(summary.totalAssigned).toBe(510);
+        expect(summary.decisions).toBe(10);
+        expect(summary.coveredRate).toBe(0.8);
+        expect(summary.byOutcome.disabled).toBe(500);
+    });
+
+    it('reports an unmeasured organisation as unknown, not as zero', async () => {
+        const { subject } = service({ outcomeCounts: [] });
+        const summary = await subject.summary(ORG);
+        expect(summary.decisions).toBe(0);
+        expect(summary.coveredRate).toBeNull();
+    });
+
+    it('carries the territory count needed to read the rate at all', async () => {
+        const { subject } = service({
+            outcomeCounts: [{ outcome: 'floater', count: 40 }],
+            organisationAreaCount: 0,
+        });
+
+        const summary = await subject.summary(ORG);
+
+        expect(summary.coveredRate).toBe(1);
+        expect(summary.liveServiceAreaCount).toBe(0);
+        expect(summary.explanation).toContain('No territories are drawn');
+    });
+
+    it('reports whether the feature is switched on for this process', async () => {
+        process.env.SERVICE_AREA_MATCHING = 'on';
+        const { subject } = service({ outcomeCounts: [] });
+        expect((await subject.summary(ORG)).serviceAreaMatching).toBe(true);
+
+        delete process.env.SERVICE_AREA_MATCHING;
+        expect((await subject.summary(ORG)).serviceAreaMatching).toBe(false);
+    });
+
+    it('names the packages that fell back, which is the dispatcher’s question', async () => {
+        const { subject } = service({
+            outcomeCounts: COUNTS,
+            fallbackRows: [
+                {
+                    package_id: PACKAGE,
+                    tracking_number: 'HK-0001',
+                    coverage_outcome: 'fallback_no_covering_driver',
+                    driver_id: DRIVER_A,
+                    optimisation_id: SHIFT,
+                    created_at: '2026-09-01T09:00:00.000Z',
+                },
+            ],
+        });
+
+        const summary = await subject.summary(ORG);
+
+        expect(summary.fallbacks).toEqual([
+            {
+                packageId: PACKAGE,
+                trackingNumber: 'HK-0001',
+                outcome: 'fallback_no_covering_driver',
+                driverId: DRIVER_A,
+                shiftId: SHIFT,
+                assignedAt: '2026-09-01T09:00:00.000Z',
+            },
+        ]);
+    });
+
+    it('drops a sampled row whose outcome is not a fallback', async () => {
+        // Belt and braces against the query and this file drifting apart:
+        // a `covered` package in the fallback list would be reported to a
+        // dispatcher as a routing failure that never happened.
+        const { subject } = service({
+            outcomeCounts: COUNTS,
+            fallbackRows: [
+                {
+                    package_id: PACKAGE,
+                    tracking_number: null,
+                    coverage_outcome: 'covered',
+                    driver_id: DRIVER_A,
+                    optimisation_id: SHIFT,
+                    created_at: '2026-09-01T09:00:00.000Z',
+                },
+            ],
+        });
+
+        expect((await subject.summary(ORG)).fallbacks).toEqual([]);
+    });
+
+    it('scopes every read to the caller’s organisation', async () => {
+        // This process connects as service_role and bypasses RLS, so the
+        // organisation predicate in each statement is the only thing keeping
+        // one tenant's rollout numbers out of another's.
+        const { subject, calls } = service({ outcomeCounts: COUNTS });
+
+        await subject.summary(ORG, '14');
+
+        const reads = calls.filter((call) =>
+            call.sql.includes('FROM package_assignment pa'),
+        );
+        expect(reads).toHaveLength(2);
+        for (const read of reads) {
+            expect(read.sql).toMatch(/p\.organisation_id\s+= \$1::uuid/);
+            expect(read.params[0]).toBe(ORG);
+            expect(read.params[1]).toBe(14);
+        }
+    });
+
+    it('counts only what automatic assignment placed', async () => {
+        // A dispatcher's hand-pinned package took no coverage decision, and its
+        // row carries no outcome. Counting it either way would be wrong.
+        const { subject, calls } = service({ outcomeCounts: COUNTS });
+
+        await subject.summary(ORG);
+
+        const counts = calls.find(
+            (call) =>
+                call.sql.includes('FROM package_assignment pa') &&
+                call.sql.includes('GROUP BY'),
+        );
+        expect(counts?.sql).toContain('pa.coverage_outcome IS NOT NULL');
     });
 });

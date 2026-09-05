@@ -1,4 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+    COVERAGE_OUTCOMES,
+    FALLBACK_OUTCOMES,
+    type CoverageOutcome,
+} from '../coverage';
 
 /**
  * Response schemas for GET /api/v1/dispatch/coverage.
@@ -125,6 +130,29 @@ export class CoverageAssignmentDto {
             'escalating.',
     })
     covered: boolean;
+
+    @ApiPropertyOptional({
+        type: String,
+        nullable: true,
+        enum: [...COVERAGE_OUTCOMES],
+        description:
+            'What the assignment engine recorded WHEN IT PLACED THIS PACKAGE ' +
+            '(`package_assignment.coverage_outcome`), as opposed to `matchedBy` ' +
+            'above, which is recomputed against the territories as they stand ' +
+            'right now.\n\n' +
+            'The two disagreeing is not a bug, it is the most useful thing on ' +
+            'this response: it means the map changed after the package was ' +
+            'placed. A package recorded as `covered` that now reads ' +
+            '`not_covering` was routed correctly and then had its territory ' +
+            'redrawn underneath it.\n\n' +
+            '`floater` is kept distinct from `covered` because during rollout ' +
+            'most matches are floater matches, and merging them would report ' +
+            'the feature as working better than it is. `disabled` means ' +
+            'SERVICE_AREA_MATCHING was off and no coverage question was asked. ' +
+            'Null means no automatic assignment wrote this row: the package ' +
+            'was pinned by a dispatcher, or it predates this column.',
+    })
+    recordedOutcome: CoverageOutcome | null;
 }
 
 /** 200 body of GET /api/v1/dispatch/coverage. */
@@ -234,4 +262,173 @@ export class CoverageDiagnosticDto {
             'got it and whether coverage explains that.',
     })
     assignment: CoverageAssignmentDto | null;
+}
+
+/**
+ * The five outcome buckets as counts.
+ *
+ * Named in camelCase to match the rest of this API, even though the stored
+ * values are snake_case; the mapping is in CoverageDiagnosticsService and
+ * nowhere else.
+ */
+export class CoverageOutcomeCountsDto {
+    @ApiProperty({
+        description: 'A territory the driver is staffed on contains the point.',
+    })
+    covered: number;
+
+    @ApiProperty({
+        description:
+            'The driver matched only because they have no territories at all. ' +
+            'Expect this to be most of the traffic while the map is being ' +
+            'drawn, which is exactly why it is not folded into `covered`.',
+    })
+    floater: number;
+
+    @ApiProperty({
+        description:
+            'Somebody covers the point, but no covering driver had room and ' +
+            'none was idle. An understaffed territory, or a busy day.',
+    })
+    fallbackNoCoveringCapacity: number;
+
+    @ApiProperty({
+        description:
+            'Nobody covers the point at all. Usually a territory that was ' +
+            'never drawn, or one drawn and left unstaffed.',
+    })
+    fallbackNoCoveringDriver: number;
+
+    @ApiProperty({
+        description:
+            'SERVICE_AREA_MATCHING was off when the package was placed, so no ' +
+            'coverage question was asked. Excluded from `decisions` and from ' +
+            'the rate below.',
+    })
+    disabled: number;
+}
+
+/** One package that went to a driver who does not cover its address. */
+export class CoverageFallbackPackageDto {
+    @ApiProperty({ format: 'uuid' })
+    packageId: string;
+
+    @ApiProperty({ type: String, nullable: true })
+    trackingNumber: string | null;
+
+    @ApiProperty({
+        enum: [...FALLBACK_OUTCOMES],
+        description: 'Which of the two fallback outcomes this was.',
+    })
+    outcome: CoverageOutcome;
+
+    @ApiProperty({
+        type: String,
+        format: 'uuid',
+        nullable: true,
+        description: 'The driver who got it despite not covering the point.',
+    })
+    driverId: string | null;
+
+    @ApiProperty({ type: String, format: 'uuid', nullable: true })
+    shiftId: string | null;
+
+    @ApiProperty({
+        format: 'date-time',
+        description: 'When the package was placed on that shift.',
+    })
+    assignedAt: string;
+}
+
+/**
+ * 200 body of GET /api/v1/dispatch/coverage/summary.
+ *
+ * The number somebody looks at before turning SERVICE_AREA_MATCHING on, and
+ * the one they watch afterwards. Everything on it exists to stop the headline
+ * rate being read out of context: an organisation with no territories is 100%
+ * floater and that is correct, and an organisation with the flag off is 100%
+ * `disabled` and the rate means nothing at all.
+ */
+export class CoverageSummaryDto {
+    @ApiProperty({
+        description: 'How many days back the counts cover.',
+        example: 7,
+    })
+    windowDays: number;
+
+    @ApiProperty({
+        format: 'date-time',
+        description: 'The start of that window, so the counts can be quoted.',
+    })
+    since: string;
+
+    @ApiProperty({
+        description:
+            'Whether service area matching is switched on for the process ' +
+            'answering this request. False means new packages are being ' +
+            'recorded as `disabled` and the rate below describes history, not ' +
+            'what is happening now. Process-wide, not per organisation.',
+    })
+    serviceAreaMatching: boolean;
+
+    @ApiProperty({
+        description:
+            'Live (not soft-deleted) territories in this organisation. Zero ' +
+            'means nothing has been drawn, so every driver covers everywhere ' +
+            'and a 100% floater rate is the correct answer rather than a good ' +
+            'one.',
+    })
+    liveServiceAreaCount: number;
+
+    @ApiProperty({
+        description:
+            'Packages placed by automatic assignment in the window. Excludes ' +
+            'anything a dispatcher pinned by hand and anything placed before ' +
+            'outcomes were recorded, neither of which took a coverage decision.',
+    })
+    totalAssigned: number;
+
+    @ApiProperty({
+        description:
+            '`totalAssigned` minus the `disabled` ones: the packages a ' +
+            'coverage question was actually asked about. The denominator of ' +
+            '`coveredRate`.',
+    })
+    decisions: number;
+
+    @ApiProperty({
+        type: Number,
+        nullable: true,
+        description:
+            'THE NUMBER. The fraction of `decisions` that reached a driver who ' +
+            'covers the delivery point, counting both `covered` and `floater`. ' +
+            '1 means coverage placed everything; the shortfall is the fallback ' +
+            'rate. Null when `decisions` is zero, because a rate over no ' +
+            'samples is not zero, it is unknown.',
+        example: 0.94,
+    })
+    coveredRate: number | null;
+
+    @ApiProperty({ type: CoverageOutcomeCountsDto })
+    byOutcome: CoverageOutcomeCountsDto;
+
+    @ApiProperty({
+        type: [CoverageFallbackPackageDto],
+        description:
+            'The most recent packages in the window that went to a driver who ' +
+            'does not cover them, newest first, capped at 50. This is the ' +
+            '"which packages, and why" answer; pass any of these ids to ' +
+            'GET /api/v1/dispatch/coverage for the full explanation of one.',
+    })
+    fallbacks: CoverageFallbackPackageDto[];
+
+    @ApiProperty({
+        description:
+            'One sentence a dispatcher can act on, derived entirely from the ' +
+            'fields above.',
+        example:
+            '94% of 312 coverage decision(s) reached a covering driver over ' +
+            'the last 7 day(s), across 6 live territory (or territories).',
+    })
+    explanation: string;
 }

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { AssignmentService } from './assignment.service';
 import { ShiftPlanWriter } from './shift-plan.writer';
 
@@ -60,6 +61,38 @@ const floaterRow = (driverId: string): CoverageRow => ({
     is_floater: true,
 });
 
+/** A driver whose drawn territory contains the point. */
+const coverRow = (pointIndex: number, driverId: string): CoverageRow => ({
+    point_index: pointIndex,
+    driver_id: driverId,
+    is_floater: false,
+});
+
+/** Anything that reads a territory table. Neither may be touched when off. */
+const TERRITORY_TABLES = /driver_service_area|service_areas/;
+
+/**
+ * The coverage outcome the package_assignment upsert stamped on one package.
+ *
+ * Read out of the parameter list rather than asserted positionally, because
+ * `persist` writes every stop on the route in visiting order and the package
+ * being placed is rarely the first of them.
+ */
+function recordedOutcome(
+    log: { sql: string; params: unknown[] }[],
+    packageId = 'pkg-1',
+): unknown {
+    const upsert = log.find((q) =>
+        q.sql.includes('INSERT INTO package_assignment'),
+    );
+    if (!upsert) return undefined;
+    const PARAMS_PER_ROW = 4;
+    for (let i = 0; i < upsert.params.length; i += PARAMS_PER_ROW) {
+        if (upsert.params[i] === packageId) return upsert.params[i + 3];
+    }
+    return undefined;
+}
+
 const NOW = new Date('2026-09-01T09:00:00Z');
 
 const WAREHOUSE = {
@@ -93,6 +126,19 @@ const SHIFT = {
     ors_vehicle_type: 'driving-car',
     route_id: 'route-1',
     solution_id: 'sol-1',
+};
+
+/**
+ * The same shift as loadShiftForEdit selects it: the hand-edit path reads the
+ * status, the warehouse and the depot that the candidate loader does not.
+ */
+const EDITABLE_SHIFT = {
+    ...SHIFT,
+    status: 'planned',
+    warehouse_id: 'wh-1',
+    timezone: 'UTC',
+    depot_lon: 0,
+    depot_lat: 0,
 };
 
 /** A second van at the same depot, idle. Same revision: the mock serves one. */
@@ -180,6 +226,13 @@ function makeDb(state: DbState) {
         }
         if (sql.includes('FROM driver_service_area dsa')) {
             return coverageRows();
+        }
+        // The drivers-only lookup the kill switch uses instead. Matched AFTER
+        // the real coverage query, which contains the same `eligible` CTE and
+        // would otherwise be answered here. Every driver comes back a floater,
+        // which is what the synthesized answer is: see allDriversAsFloaters.
+        if (sql.includes('FROM drivers d')) {
+            return knownDrivers().map(floaterRow);
         }
         if (sql.includes('FROM warehouse w')) {
             return state.warehouse === undefined
@@ -286,6 +339,7 @@ function build(state: DbState = {}) {
 describe('AssignmentService', () => {
     const originalMode = process.env.ASSIGNMENT_MODE;
     const originalSpread = process.env.LOAD_SPREAD_ENABLED;
+    const originalMatching = process.env.SERVICE_AREA_MATCHING;
 
     beforeEach(() => {
         // Only the clock is faked. Faking the microtask queue as well makes every
@@ -298,6 +352,12 @@ describe('AssignmentService', () => {
         // Hermetic: the default is on, but a developer with the kill switch set
         // in their shell should not get a different suite.
         delete process.env.LOAD_SPREAD_ENABLED;
+        // The default for this one is OFF, and the suite runs at that default
+        // on purpose: the whole claim of the kill switch is that off behaves
+        // exactly as the engine did before service areas existed, so the tests
+        // written before they existed are the ones that check it. The cases
+        // that need matching on turn it on for themselves.
+        delete process.env.SERVICE_AREA_MATCHING;
     });
 
     afterEach(() => {
@@ -307,6 +367,9 @@ describe('AssignmentService', () => {
         if (originalSpread === undefined)
             delete process.env.LOAD_SPREAD_ENABLED;
         else process.env.LOAD_SPREAD_ENABLED = originalSpread;
+        if (originalMatching === undefined)
+            delete process.env.SERVICE_AREA_MATCHING;
+        else process.env.SERVICE_AREA_MATCHING = originalMatching;
     });
 
     describe('the feature flag', () => {
@@ -365,6 +428,245 @@ describe('AssignmentService', () => {
             expect(service.loadSpread).toBe(true);
             process.env.LOAD_SPREAD_ENABLED = 'false';
             expect(service.loadSpread).toBe(false);
+        });
+    });
+
+    describe('the service area kill switch', () => {
+        it('is off until somebody turns it on, unlike load spreading', () => {
+            const { service } = build();
+            expect(service.serviceAreaMatching).toBe(false);
+        });
+
+        it.each(['on', 'true', '1'])(
+            'is switched on by SERVICE_AREA_MATCHING=%s',
+            (value) => {
+                process.env.SERVICE_AREA_MATCHING = value;
+                const { service } = build();
+                expect(service.serviceAreaMatching).toBe(true);
+            },
+        );
+
+        it.each(['off', 'ON', 'yes', 'enabled', ''])(
+            'treats %p as off, because a typo must not switch it on',
+            (value) => {
+                process.env.SERVICE_AREA_MATCHING = value;
+                const { service } = build();
+                expect(service.serviceAreaMatching).toBe(false);
+            },
+        );
+
+        it('is read per call, so the switch works without a restart', () => {
+            const { service } = build();
+            expect(service.serviceAreaMatching).toBe(false);
+            process.env.SERVICE_AREA_MATCHING = 'on';
+            expect(service.serviceAreaMatching).toBe(true);
+        });
+
+        it('reads NEITHER territory table while it is off', async () => {
+            // The whole claim of the kill switch. Off is not "ask and ignore
+            // the answer": with it off there is no path from an assignment to
+            // service_areas or driver_service_area at all, so the feature's
+            // cost and its failure modes leave the request path with it.
+            const { service, log } = build({ shifts: [SHIFT] });
+
+            await service.assign('org-1', 'pkg-1');
+
+            expect(log.filter((q) => TERRITORY_TABLES.test(q.sql))).toEqual([]);
+        });
+
+        it('reads them once it is on, so the assertion above means something', async () => {
+            process.env.SERVICE_AREA_MATCHING = 'on';
+            const { service, log } = build({ shifts: [SHIFT] });
+
+            await service.assign('org-1', 'pkg-1');
+
+            expect(
+                log.filter((q) => TERRITORY_TABLES.test(q.sql)).length,
+            ).toBeGreaterThan(0);
+        });
+
+        it('reads neither of them on a batch either', async () => {
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assignMany('org-1', ['pkg-1']);
+            expect(log.filter((q) => TERRITORY_TABLES.test(q.sql))).toEqual([]);
+        });
+
+        it('reads neither of them when a dispatcher pins by hand', async () => {
+            // The pin path asks the same coverage question, to warn about a
+            // package landing outside the driver's patch. With the feature off
+            // there is no patch to be outside of, so it must not ask either.
+            const { service, log } = build({ shifts: [EDITABLE_SHIFT] });
+
+            const { verdicts } = await service.assignToShift(
+                'org-1',
+                'shift-1',
+                ['pkg-1'],
+            );
+
+            expect(verdicts).toEqual([
+                { packageId: 'pkg-1', added: true, warning: null },
+            ]);
+            expect(log.filter((q) => TERRITORY_TABLES.test(q.sql))).toEqual([]);
+        });
+
+        it('asks the plain drivers table instead', async () => {
+            // Synthesizing the answer still needs to know WHICH drivers, or
+            // step 2 has no allowlist to open a shift from.
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+
+            expect(log.some((q) => q.sql.includes('FROM drivers d'))).toBe(
+                true,
+            );
+        });
+
+        it('sends the package exactly where the pre-territory engine did', async () => {
+            const { service } = build({
+                shifts: [SHIFT, SHIFT_2],
+                stops: CLUSTERED_ON_SHIFT_1,
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned');
+            expect(outcome.shift?.id).toBe('shift-2');
+        });
+
+        it('lands on step 1, not on the fallback that looks the same from outside', async () => {
+            // The trap: an empty synthesized answer would ALSO put the package
+            // on the cheapest shift, via step 3, and every assertion above
+            // would still pass. The fallback log line is what tells them apart.
+            const debug = jest
+                .spyOn(Logger.prototype, 'debug')
+                .mockImplementation(() => undefined);
+            const { service } = build({ shifts: [SHIFT] });
+
+            await service.assign('org-1', 'pkg-1');
+
+            expect(
+                debug.mock.calls.filter(([message]) =>
+                    String(message).includes('Coverage fallback'),
+                ),
+            ).toEqual([]);
+            debug.mockRestore();
+        });
+
+        it('opens a new shift at step 2, not at the step-4 fallback', async () => {
+            // The other half of the same trap, for a package that needs a
+            // fresh van: an empty synthesized answer skips step 2 entirely
+            // (nobody to allow) and step 4 opens the identical shift. The
+            // allowlist on the idle-pair query is the difference.
+            const { service, log } = build({
+                shifts: [],
+                freePairs: [
+                    {
+                        driver_id: 'driver-2',
+                        vehicle_id: 'vehicle-2',
+                        vehicle_gross_limits: '1500',
+                        ors_vehicle_type: 'driving-car',
+                    },
+                ],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned_new_shift');
+            const idlePairQueries = log.filter((q) =>
+                q.sql.includes('FROM driver_vehicle_assignment dva'),
+            );
+            expect(idlePairQueries).toHaveLength(1);
+            expect(idlePairQueries[0].sql).toContain('ANY($4::uuid[])');
+        });
+    });
+
+    describe('the recorded coverage outcome', () => {
+        it('is `disabled` while the kill switch is off', async () => {
+            // Not `floater`. A synthesized answer and a real all-floater answer
+            // are deliberately indistinguishable to the engine, and just as
+            // deliberately distinguishable afterwards: without this, an
+            // organisation the feature was never switched on for would report a
+            // perfect coverage rate.
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+            expect(recordedOutcome(log)).toBe('disabled');
+        });
+
+        it('is `floater` when the driver simply has no territories', async () => {
+            process.env.SERVICE_AREA_MATCHING = 'on';
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+            expect(recordedOutcome(log)).toBe('floater');
+        });
+
+        it('is `covered` when a drawn territory selected the driver', async () => {
+            process.env.SERVICE_AREA_MATCHING = 'on';
+            const { service, log } = build({
+                shifts: [SHIFT],
+                coverage: [coverRow(0, 'driver-1')],
+            });
+
+            await service.assign('org-1', 'pkg-1');
+
+            expect(recordedOutcome(log)).toBe('covered');
+        });
+
+        it('separates "nobody covers it" from "nobody covering had room"', async () => {
+            process.env.SERVICE_AREA_MATCHING = 'on';
+            // A territory covers this address, but the only driver on it is not
+            // out today and has no idle van, so steps 1 and 2 both fail.
+            const covered = build({
+                shifts: [SHIFT],
+                freePairs: [],
+                coverage: [coverRow(0, 'driver-off-today')],
+            });
+            await covered.service.assign('org-1', 'pkg-1');
+            expect(recordedOutcome(covered.log)).toBe(
+                'fallback_no_covering_capacity',
+            );
+
+            // Nothing covers it at all: no explicit row, and no driver is a
+            // floater either, so this is a hole in the map.
+            const uncovered = build({
+                shifts: [SHIFT],
+                freePairs: [],
+                coverage: [],
+            });
+            await uncovered.service.assign('org-1', 'pkg-1');
+            expect(recordedOutcome(uncovered.log)).toBe(
+                'fallback_no_covering_driver',
+            );
+        });
+
+        it('leaves the other packages on the van alone', async () => {
+            // writePlan rewrites every stop on the route. If the outcome went
+            // onto all of them, one package joining a van would restamp the
+            // whole manifest with a decision that was never taken about them.
+            const { service, log } = build({
+                shifts: [SHIFT],
+                stops: CLUSTERED_ON_SHIFT_1,
+            });
+
+            await service.assign('org-1', 'pkg-1');
+
+            expect(recordedOutcome(log, 'pkg-1')).toBe('disabled');
+            expect(recordedOutcome(log, 'pkg-existing-0')).toBeNull();
+        });
+
+        it('costs Phase B no extra write', async () => {
+            // The outcome rides on the row that was being written anyway. A
+            // second statement here would be paid inside the per-warehouse
+            // advisory lock by every package at the depot.
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+
+            expect(
+                log.filter((q) =>
+                    q.sql.includes('INSERT INTO package_assignment'),
+                ),
+            ).toHaveLength(1);
+            expect(
+                log.filter((q) => /UPDATE\s+package_assignment/i.test(q.sql)),
+            ).toHaveLength(0);
         });
     });
 

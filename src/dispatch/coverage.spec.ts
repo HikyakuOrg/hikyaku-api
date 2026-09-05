@@ -1,10 +1,16 @@
 import {
+    allDriversAsFloaters,
+    allDriversAsFloatersForPoint,
     applyFloaterRule,
+    coverageOutcomeFor,
+    COVERAGE_OUTCOMES,
     coveringDriversForPoint,
     coveringDriversForPoints,
     COVERING_DRIVERS_SQL,
+    ELIGIBLE_DRIVERS_SQL,
     isPlausibleLonLat,
     parseCoverageRows,
+    serviceAreaMatchingEnabled,
     type CoveragePoint,
     type CoverageQueryExecutor,
 } from './coverage';
@@ -395,5 +401,175 @@ describe('the coverage query text', () => {
     it('scopes both drivers and service areas to the organisation', () => {
         expect(COVERING_DRIVERS_SQL).toContain('d.organisation_id = $1::uuid');
         expect(COVERING_DRIVERS_SQL).toContain('sa.organisation_id = $1::uuid');
+    });
+});
+
+describe('the disabled answer', () => {
+    it('names no territory table at all', () => {
+        // The kill switch's whole claim, checked against the SQL text rather
+        // than against a mock that could be answering anything.
+        expect(ELIGIBLE_DRIVERS_SQL).not.toContain('service_areas');
+        expect(ELIGIBLE_DRIVERS_SQL).not.toContain('driver_service_area');
+        expect(ELIGIBLE_DRIVERS_SQL).toContain('FROM drivers d');
+    });
+
+    it('narrows to the same drivers the real query would have considered', () => {
+        // Both are built from ELIGIBLE_DRIVERS_CTE, so a change to who counts
+        // as eligible cannot apply to one branch of the switch and not the
+        // other.
+        expect(ELIGIBLE_DRIVERS_SQL).toContain('d.organisation_id = $1::uuid');
+        expect(ELIGIBLE_DRIVERS_SQL).toContain('d.warehouse_id    = $2::uuid');
+    });
+
+    it('makes every eligible driver a floater for every point', async () => {
+        const executor = fakeExecutor([
+            floaterRow('driver-b'),
+            floaterRow('driver-a'),
+        ]);
+
+        const coverage = await allDriversAsFloaters(executor, QUERY, 2);
+
+        expect(coverage).toHaveLength(2);
+        for (const point of coverage) {
+            expect(point.explicitDriverIds).toEqual([]);
+            expect(point.floaterDriverIds).toEqual(['driver-a', 'driver-b']);
+            expect(point.driverIds).toEqual(['driver-a', 'driver-b']);
+        }
+    });
+
+    it('is byte-identical to the real answer for an empty link table', async () => {
+        // The equivalence the whole kill switch rests on. An empty
+        // driver_service_area makes the real query return exactly these
+        // floater rows, so off and "on with nothing drawn" must agree.
+        const rows = [floaterRow('driver-a'), floaterRow('driver-b')];
+
+        const disabled = await allDriversAsFloaters(
+            fakeExecutor(rows),
+            QUERY,
+            1,
+        );
+        const real = await coveringDriversForPoints(fakeExecutor(rows), QUERY, [
+            POINT,
+        ]);
+
+        expect(disabled).toEqual(real);
+    });
+
+    it('takes ONE round trip whatever the batch size', async () => {
+        const executor = fakeExecutor([floaterRow('driver-a')]);
+        await allDriversAsFloaters(executor, QUERY, 500);
+        expect(executor.calls).toHaveLength(1);
+    });
+
+    it('never touches the database for an empty batch', async () => {
+        const executor = fakeExecutor([]);
+        expect(await allDriversAsFloaters(executor, QUERY, 0)).toEqual([]);
+        expect(executor.calls).toHaveLength(0);
+    });
+
+    it('answers a single point through the batch form, not a second query', async () => {
+        const executor = fakeExecutor([floaterRow('driver-a')]);
+
+        const coverage = await allDriversAsFloatersForPoint(executor, QUERY);
+
+        expect(coverage.driverIds).toEqual(['driver-a']);
+        expect(executor.calls).toHaveLength(1);
+    });
+
+    it('does not ask about the point, because the answer does not depend on it', async () => {
+        const executor = fakeExecutor([floaterRow('driver-a')]);
+        await allDriversAsFloatersForPoint(executor, QUERY);
+        expect(executor.calls[0].parameters).toEqual([ORG, WAREHOUSE]);
+    });
+});
+
+describe('serviceAreaMatchingEnabled', () => {
+    const original = process.env.SERVICE_AREA_MATCHING;
+    afterEach(() => {
+        if (original === undefined) delete process.env.SERVICE_AREA_MATCHING;
+        else process.env.SERVICE_AREA_MATCHING = original;
+    });
+
+    it('is off when nothing is set', () => {
+        delete process.env.SERVICE_AREA_MATCHING;
+        expect(serviceAreaMatchingEnabled()).toBe(false);
+    });
+
+    it.each(['on', 'true', '1'])('is on for %p', (value) => {
+        process.env.SERVICE_AREA_MATCHING = value;
+        expect(serviceAreaMatchingEnabled()).toBe(true);
+    });
+
+    it.each(['off', 'ON', 'True', 'yes', ''])(
+        'is off for %p, so a typo cannot switch it on',
+        (value) => {
+            process.env.SERVICE_AREA_MATCHING = value;
+            expect(serviceAreaMatchingEnabled()).toBe(false);
+        },
+    );
+});
+
+describe('coverageOutcomeFor', () => {
+    const coverage = applyFloaterRule(
+        1,
+        ['floater-1'],
+        new Map([[0, ['explicit-1']]]),
+    )[0];
+
+    it('reports `disabled` before it looks at anything else', () => {
+        // Off means no question was asked. Reporting the synthesized
+        // all-floater answer as `floater` would let an organisation the feature
+        // was never switched on for report a perfect coverage rate.
+        expect(coverageOutcomeFor(false, coverage, 'explicit-1')).toBe(
+            'disabled',
+        );
+        expect(coverageOutcomeFor(false, coverage, 'nobody')).toBe('disabled');
+    });
+
+    it('separates a territory match from a driver who has no territories', () => {
+        expect(coverageOutcomeFor(true, coverage, 'explicit-1')).toBe(
+            'covered',
+        );
+        expect(coverageOutcomeFor(true, coverage, 'floater-1')).toBe('floater');
+    });
+
+    it('says which kind of fallback it was', () => {
+        // "Somebody covers it but had no room" and "nobody covers it" are
+        // different problems with different fixes, and one value for both would
+        // throw away the bit that says which.
+        expect(coverageOutcomeFor(true, coverage, 'someone-else')).toBe(
+            'fallback_no_covering_capacity',
+        );
+
+        const uncovered = applyFloaterRule(1, [], new Map())[0];
+        expect(coverageOutcomeFor(true, uncovered, 'someone-else')).toBe(
+            'fallback_no_covering_driver',
+        );
+    });
+
+    it('treats a shift with no driver as a fallback, never as covered', () => {
+        expect(coverageOutcomeFor(true, coverage, null)).toBe(
+            'fallback_no_covering_capacity',
+        );
+    });
+
+    it('only ever returns a value the column will accept', () => {
+        const produced = [
+            coverageOutcomeFor(false, coverage, 'explicit-1'),
+            coverageOutcomeFor(true, coverage, 'explicit-1'),
+            coverageOutcomeFor(true, coverage, 'floater-1'),
+            coverageOutcomeFor(true, coverage, 'someone-else'),
+            coverageOutcomeFor(
+                true,
+                applyFloaterRule(1, [], new Map())[0],
+                'x',
+            ),
+        ];
+        for (const outcome of produced) {
+            expect(COVERAGE_OUTCOMES).toContain(outcome);
+        }
+        // Every value is reachable, so none of them is dead weight in the
+        // CHECK constraint or an unexplained gap in the summary.
+        expect(new Set(produced).size).toBe(COVERAGE_OUTCOMES.length);
     });
 });

@@ -3,6 +3,7 @@ import {
     Injectable,
     Logger,
     NotFoundException,
+    Optional,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, QueryRunner } from 'typeorm';
@@ -28,11 +29,18 @@ import {
     type RouteStop,
 } from './insertion';
 import {
+    allDriversAsFloaters,
+    allDriversAsFloatersForPoint,
+    coverageOutcomeFor,
     coveringDriversForPoint,
     coveringDriversForPoints,
     isPlausibleLonLat,
+    serviceAreaMatchingEnabled,
+    type CoverageOutcome,
+    type CoveragePoint,
     type PointCoverage,
 } from './coverage';
+import { CoverageMetricsService } from './coverage-metrics.service';
 import {
     endOfLocalDayMs,
     localHourMs,
@@ -197,6 +205,22 @@ interface AssignmentPlan {
     pkg: IncomingPackage;
     ctx: InsertionContext;
     allowEviction: boolean;
+    /**
+     * Who covers this package's delivery point. Carried here rather than only
+     * inside the `AssignmentDecision` because Phase B has to classify the
+     * driver it actually lands on, at every one of the five steps, and
+     * `explicitDriverIds` versus `floaterDriverIds` is exactly the distinction
+     * `decide()` throws away once it has picked a candidate.
+     */
+    coverage: PointCoverage;
+    /**
+     * What SERVICE_AREA_MATCHING said when `coverage` was resolved.
+     *
+     * Read once per assignment and carried, rather than re-read at write time,
+     * so a flag flipped mid-assignment cannot label a package `disabled` when
+     * a real coverage query decided it, or the reverse.
+     */
+    serviceAreaMatching: boolean;
 }
 
 /**
@@ -284,6 +308,17 @@ const skipped = (reason: string): AssignmentOutcome => ({
  * silent. Tier 2 cannot repair it either: the replan worker re-solves one
  * vehicle's route and can never move a package between drivers.
  *
+ * Whichever step wins, the answer is recorded on the package's
+ * package_assignment row as a `coverage_outcome` (see `CoverageOutcome`). None
+ * of the inputs to this decision are versioned, so the reason a package went
+ * where it went survives a dispatcher redrawing a territory only because it was
+ * written down at the time.
+ *
+ * ALL OF THIS IS BEHIND SERVICE_AREA_MATCHING, WHICH IS OFF BY DEFAULT. See the
+ * `serviceAreaMatching` getter: off, the territory tables are not read at all
+ * and the order above collapses back into "step 1 for whichever shift is
+ * cheapest", the engine as it behaved before service areas existed.
+ *
  * Everything here can decline. A package that reaches no shift is `deferred`,
  * never an error — creation already committed in its own transaction, and a
  * package is never lost because no van had room for it.
@@ -297,6 +332,11 @@ export class AssignmentService {
         private readonly valhalla: ValhallaService,
         private readonly queue: QueueService,
         private readonly planWriter: ShiftPlanWriter,
+        // Optional because telemetry must never be the reason an assignment
+        // cannot run. DispatchModule always provides it; a caller constructing
+        // this service directly (a test, a script) gets an engine that decides
+        // identically and simply counts nothing.
+        @Optional() private readonly metrics?: CoverageMetricsService,
     ) {}
 
     /**
@@ -333,6 +373,40 @@ export class AssignmentService {
     get loadSpread(): boolean {
         const flag = process.env.LOAD_SPREAD_ENABLED;
         return flag !== 'false' && flag !== '0';
+    }
+
+    /**
+     * Whether a package prefers a driver whose territory covers its address.
+     *
+     * OFF BY DEFAULT, unlike `loadSpread`, and that asymmetry is the whole
+     * point. Load spreading changes which of several correct answers is picked;
+     * service area matching changes which drivers are eligible at all, on data
+     * (`service_areas`, `driver_service_area`) that no organisation has
+     * finished drawing yet. Shipping it on would apply a half-drawn map to real
+     * traffic the moment the deploy landed, in every tenant at once. So the
+     * code ships inert and somebody turns it on deliberately, which is the same
+     * two-step `ASSIGNMENT_MODE` was built for and is worth repeating rather
+     * than a pattern to be embarrassed about.
+     *
+     * Read per call, like the other two, so it flips without a deploy.
+     * SERVICE_AREA_MATCHING=on (or `true`, or `1`) turns it on; anything else,
+     * unset included, means off. The spellings are generous in the on direction
+     * only, because the failure mode of a typo is then "the feature stayed
+     * off", which is the safe one.
+     *
+     * OFF MEANS THE TERRITORY TABLES ARE NOT READ, not that their answer is
+     * ignored: see `coverageForPoints`, and `allDriversAsFloaters` in
+     * coverage.ts for why the synthesized answer is "everyone is a floater"
+     * rather than "nobody covers anything".
+     *
+     * PROCESS-WIDE, NOT PER ORGANISATION. Turning it on turns it on for every
+     * tenant this process serves. That is a real limitation of a pilot rollout
+     * and it is a deliberate, documented choice rather than an oversight; see
+     * docs/service-area-rollout.md, which sets out what a genuine per-org flag
+     * would take and why it is a separate change.
+     */
+    get serviceAreaMatching(): boolean {
+        return serviceAreaMatchingEnabled();
     }
 
     /**
@@ -459,9 +533,9 @@ export class AssignmentService {
             // does not would otherwise get one warehouse's drivers applied to
             // another's addresses.
             for (const [warehouseId, points] of byWarehouse) {
-                const coverage = await coveringDriversForPoints(
-                    this.dataSource,
-                    { organisationId, warehouseId },
+                const coverage = await this.coverageForPoints(
+                    organisationId,
+                    warehouseId,
                     points,
                 );
                 coverage.forEach((entry, index) => {
@@ -477,6 +551,53 @@ export class AssignmentService {
         }
 
         return byPackage;
+    }
+
+    // ── The kill switch ──────────────────────────────────────────────────────
+
+    /**
+     * Who covers these points, or the synthesized answer when matching is off.
+     *
+     * EVERY coverage lookup the assignment engine makes goes through this
+     * method or its single-point twin, and there are no direct calls to
+     * `coveringDriversForPoints` left in this file. That is what makes the kill
+     * switch a claim anyone can check by grepping rather than a promise: with
+     * SERVICE_AREA_MATCHING off there is no code path from an assignment to
+     * `service_areas` or `driver_service_area` at all.
+     *
+     * The off branch still reads the drivers table, because the synthesized
+     * answer has to name the same drivers the real one would have considered
+     * (step 2 opens a new shift from that list, so an empty one would send
+     * every package that needs a fresh van down the step 4 fallback and log it
+     * as a coverage failure). What it does not do is ask a containment
+     * question, run a GIST scan, or touch a polygon.
+     *
+     * The `/dispatch/coverage` diagnostic endpoint is deliberately NOT gated by
+     * this flag. It explains rather than decides, and being able to check
+     * whether the map is complete enough is exactly what has to happen while
+     * the flag is still off.
+     */
+    private coverageForPoints(
+        organisationId: string,
+        warehouseId: string,
+        points: readonly CoveragePoint[],
+    ): Promise<PointCoverage[]> {
+        const query = { organisationId, warehouseId };
+        return this.serviceAreaMatching
+            ? coveringDriversForPoints(this.dataSource, query, points)
+            : allDriversAsFloaters(this.dataSource, query, points.length);
+    }
+
+    /** The single-point form of `coverageForPoints`. Same rules. */
+    private coverageForPoint(
+        organisationId: string,
+        warehouseId: string,
+        point: CoveragePoint,
+    ): Promise<PointCoverage> {
+        const query = { organisationId, warehouseId };
+        return this.serviceAreaMatching
+            ? coveringDriversForPoint(this.dataSource, query, point)
+            : allDriversAsFloatersForPoint(this.dataSource, query);
     }
 
     /**
@@ -960,6 +1081,13 @@ export class AssignmentService {
      * Never throws. A dispatcher's pin is not refused because a coverage lookup
      * failed; without an answer there is simply no out-of-area warning to add,
      * and `isOutOfArea` reads a missing entry that way by construction.
+     *
+     * Goes through `coverageForPoints`, so with SERVICE_AREA_MATCHING off this
+     * reads no territory table either. Every driver comes back a floater, every
+     * pinned package is therefore inside the chosen driver's area, and no
+     * out-of-area warning is produced. That is the correct behaviour for a
+     * switched-off feature: warning a dispatcher about a territory rule that is
+     * not being enforced would be advice they cannot act on.
      */
     private async coverageForPinned(
         organisationId: string,
@@ -979,9 +1107,9 @@ export class AssignmentService {
         if (points.length === 0) return byPackage;
 
         try {
-            const coverage = await coveringDriversForPoints(
-                this.dataSource,
-                { organisationId, warehouseId },
+            const coverage = await this.coverageForPoints(
+                organisationId,
+                warehouseId,
                 points,
             );
             coverage.forEach((entry, index) => {
@@ -1046,13 +1174,20 @@ export class AssignmentService {
         // deferral, which is the safe direction: carrying on as though nobody
         // covered the point would send the package to an arbitrary driver and
         // look exactly like a correct decision afterwards.
+        //
+        // The flag is read alongside it, once, and both travel on the plan. A
+        // batch hands its own precomputed coverage in, and it was resolved
+        // under whatever the flag said then; reading the flag again per package
+        // is close enough that the only disagreement possible is a flip landing
+        // mid-batch, which mislabels a handful of outcome values and changes no
+        // decision.
+        const serviceAreaMatching = this.serviceAreaMatching;
         const coverage =
             opts.coverage ??
-            (await coveringDriversForPoint(
-                this.dataSource,
-                { organisationId, warehouseId: warehouse.id },
-                { lon: pkg.lon, lat: pkg.lat },
-            ));
+            (await this.coverageForPoint(organisationId, warehouse.id, {
+                lon: pkg.lon,
+                lat: pkg.lat,
+            }));
 
         const plan: AssignmentPlan = {
             organisationId,
@@ -1062,6 +1197,8 @@ export class AssignmentService {
             pkg,
             ctx,
             allowEviction,
+            coverage,
+            serviceAreaMatching,
         };
 
         for (let attempt = 0; attempt <= MAX_REVISION_RETRIES; attempt++) {
@@ -1255,12 +1392,13 @@ export class AssignmentService {
     /**
      * Records that a package went to a driver who does not work its area.
      *
-     * Steps 3 and 4 are the only two ways that happens, and both come through
-     * here. A later change persists this to a queryable column; for now the
-     * signal is a log line carrying everything an incident needs: which package,
-     * which warehouse, which driver got it, and, the part that separates a
-     * misconfiguration from an ordinary busy day, whether ANY driver covered
-     * that address at all.
+     * The queryable record of the same fact is
+     * `package_assignment.coverage_outcome`, written by `commitPlacement` for
+     * every step including this one. This log line stays alongside it because
+     * the two answer different questions: the column says how often it happens
+     * and to which packages, this says which driver got it and, the part that
+     * separates a misconfiguration from an ordinary busy day, whether ANY
+     * driver covered that address at all.
      */
     private logCoverageFallback(
         step: 3 | 4,
@@ -1359,13 +1497,18 @@ export class AssignmentService {
                     await runner.rollbackTransaction();
                     return deferred('deadline_infeasible');
                 }
-                return await this.commitPlacement(
+                const committed = await this.commitPlacement(
                     runner,
                     plan,
                     { candidate: coveringShift, insertion: attempt },
                     'assigned_new_shift',
                     [],
                 );
+                // Counted AFTER the commit, not when openShift returned: the
+                // insert can still be rolled back above, and a billing signal
+                // that counts shifts nobody was charged for is worse than none.
+                this.metrics?.recordShiftOpened(plan.organisationId, 2);
+                return committed;
             }
 
             // ── STEP 3: an existing shift whose driver does NOT cover it ─────
@@ -1407,13 +1550,15 @@ export class AssignmentService {
                     anyShift.shift.driverId,
                     decision.coveringDriverIds,
                 );
-                return await this.commitPlacement(
+                const committed = await this.commitPlacement(
                     runner,
                     plan,
                     { candidate: anyShift, insertion: attempt },
                     'assigned_new_shift',
                     [],
                 );
+                this.metrics?.recordShiftOpened(plan.organisationId, 4);
+                return committed;
             }
 
             // ── STEP 5: take somebody else's slot ────────────────────────────
@@ -1499,6 +1644,14 @@ export class AssignmentService {
      * once. What differs between them is only how the placement was arrived at,
      * which is the caller's business, and whether anybody was bumped to make
      * room, which is what the eviction snapshot reason keys off.
+     *
+     * The coverage outcome is derived HERE rather than passed in by each step,
+     * for the same reason: it is a fact about the driver the package landed on
+     * and the coverage of its address, both of which this method already holds.
+     * Deriving it once means a sixth step added later records the truth without
+     * its author having to remember to, and it means step 5 (eviction, which
+     * can perfectly well land on a non-covering driver) is classified correctly
+     * even though the fallback LOG line only covers steps 3 and 4.
      */
     private async commitPlacement(
         runner: QueryRunner,
@@ -1507,12 +1660,19 @@ export class AssignmentService {
         outcome: AssignmentOutcomeKind,
         evictedPackageIds: string[],
     ): Promise<AssignmentOutcome> {
+        const coverageOutcome = coverageOutcomeFor(
+            plan.serviceAreaMatching,
+            plan.coverage,
+            placement.candidate.shift.driverId,
+        );
+
         const written = await this.persist(
             runner,
             placement.candidate,
             plan.pkg,
             placement.insertion,
             evictedPackageIds.length > 0 ? 'evict' : 'assign',
+            coverageOutcome,
         );
 
         await this.queue.enqueueReplan(runner, {
@@ -1524,6 +1684,11 @@ export class AssignmentService {
 
         await runner.commitTransaction();
 
+        // After the commit: the counter says what happened, not what was
+        // attempted. Synchronous and self-swallowing by contract, so it cannot
+        // turn a committed assignment into a thrown request.
+        this.metrics?.recordAssignment(plan.organisationId, coverageOutcome);
+
         return {
             outcome,
             reason: null,
@@ -1532,13 +1697,22 @@ export class AssignmentService {
         };
     }
 
-    /** Writes the plan and returns the shift as the client should see it. */
+    /**
+     * Writes the plan and returns the shift as the client should see it.
+     *
+     * `coverageOutcome` rides on the ONE stop being placed and on no other, so
+     * the row this assignment creates records its own decision while every
+     * other package already on the route keeps the one it recorded when it was
+     * placed. ShiftPlanWriter coalesces on conflict, which is the other half of
+     * that; see `upsertAssignments` there.
+     */
     private async persist(
         runner: QueryRunner,
         candidate: Candidate,
         pkg: IncomingPackage,
         insertion: InsertionSuccess,
         reason: string,
+        coverageOutcome: CoverageOutcome,
     ): Promise<AssignedShiftResult> {
         const { routeId, solutionId } =
             candidate.routeId && candidate.solutionId
@@ -1566,6 +1740,7 @@ export class AssignmentService {
                 lat: existing?.lat ?? pkg.lat,
                 arrivalMs: insertion.arrivalsMs[i],
                 weightG: existing?.weightG ?? pkg.weightG,
+                ...(packageId === pkg.id ? { coverageOutcome } : {}),
             };
         });
 

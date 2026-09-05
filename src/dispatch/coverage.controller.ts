@@ -12,7 +12,10 @@ import { ApiOrganisationSlugHeader } from 'src/common/swagger/tenant-header.deco
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
 import { RequirePermission } from 'src/auth/decorators/required-permission.decorator';
 import { CoverageDiagnosticsService } from './coverage-diagnostics.service';
-import { CoverageDiagnosticDto } from './dto/coverage-diagnostic.dto';
+import {
+    CoverageDiagnosticDto,
+    CoverageSummaryDto,
+} from './dto/coverage-diagnostic.dto';
 
 /**
  * The dispatch diagnostic surface: one read, no writes.
@@ -38,6 +41,65 @@ import { CoverageDiagnosticDto } from './dto/coverage-diagnostic.dto';
 @UseGuards(PermissionGuard)
 export class CoverageController {
     constructor(private readonly diagnostics: CoverageDiagnosticsService) {}
+
+    /**
+     * Declared BEFORE the `coverage` route below.
+     *
+     * Fastify's router matches static segments ahead of anything else, so the
+     * order does not actually decide this one, but keeping the more specific
+     * path first is the convention that stays correct if either ever gains a
+     * parameter.
+     */
+    @Get('coverage/summary')
+    @RequirePermission('shifts.view')
+    @ApiOperation({
+        summary:
+            'How much of this organisation’s traffic reaches a covering driver.',
+        description:
+            'The rollout number: over the last N days, what fraction of the ' +
+            'packages automatic assignment placed reached a driver whose ' +
+            'territory covers the delivery point (or who has no territories at ' +
+            'all and therefore covers everywhere).\n\n' +
+            'This is what to check before switching service area matching on ' +
+            'for real traffic, and every day for a week afterwards. It also ' +
+            'names the most recent packages that went to a driver who does NOT ' +
+            'cover them, which is the "which ones, and why" question; pass any ' +
+            'of those ids to GET /api/v1/dispatch/coverage for the full ' +
+            'explanation of one.\n\n' +
+            'Counts only packages automatic assignment placed. A package a ' +
+            'dispatcher pinned by hand took no coverage decision and is not in ' +
+            'either the numerator or the denominator.',
+    })
+    @ApiQuery({
+        name: 'days',
+        required: false,
+        type: Number,
+        description:
+            'How many days back to count, 1 to 30. Defaults to 7, which is a ' +
+            'whole weekly delivery cycle: anything shorter compares a weekday ' +
+            'against a weekend and reads the difference as a change in ' +
+            'coverage.',
+        example: 7,
+    })
+    @ApiResponse({
+        status: 200,
+        description:
+            'The covered rate, the five outcome buckets behind it, the live ' +
+            'territory count needed to interpret it, and a sample of the ' +
+            'packages that fell back.',
+        type: CoverageSummaryDto,
+    })
+    @ApiResponse({
+        status: 400,
+        description: '`days` is not a whole number between 1 and 30.',
+        type: ApiErrorDto,
+    })
+    summary(
+        @Req() req: Request & { organisationId: string },
+        @Query('days') days?: string,
+    ): Promise<CoverageSummaryDto> {
+        return this.diagnostics.summary(req.organisationId, days);
+    }
 
     @Get('coverage')
     // Same permission as the other read-only views of a dispatch decision

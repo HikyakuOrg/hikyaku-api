@@ -82,6 +82,110 @@ export interface CoverageArea {
 }
 
 /**
+ * How the driver that actually got a package relates to who covers its address.
+ *
+ * Recorded per assignment on `package_assignment.coverage_outcome`, which is the
+ * only durable record of a coverage decision: the candidate set, the territories
+ * and the staffing are all read fresh on every assignment, so once a dispatcher
+ * redraws an area the reason a package went where it went is unrecoverable
+ * unless it was written down at the time.
+ *
+ *   - `covered`  a territory this driver is staffed on contains the point.
+ *   - `floater`  the driver matched ONLY because they have no territories at
+ *                all. Kept separate from `covered` on purpose: during rollout,
+ *                with a half-drawn map, most matches are floater matches, and
+ *                merging the two would report the feature as working far better
+ *                than it is.
+ *   - `fallback_no_covering_capacity`  somebody covers the point, but no
+ *                covering driver had room and no covering driver was idle, so
+ *                the package went to a driver who does not work that area.
+ *   - `fallback_no_covering_driver`  nobody covers the point at all. Usually a
+ *                territory that was never drawn, or one drawn and left
+ *                unstaffed, rather than a busy afternoon.
+ *   - `disabled`  SERVICE_AREA_MATCHING was off, so no coverage question was
+ *                asked. NOT the same as `floater`, which is a real answer from
+ *                a real query.
+ */
+export type CoverageOutcome =
+    | 'covered'
+    | 'floater'
+    | 'fallback_no_covering_capacity'
+    | 'fallback_no_covering_driver'
+    | 'disabled';
+
+/**
+ * The same five values as a runtime list, for iterating the buckets of a
+ * summary and for keeping the CHECK constraint in
+ * AddAssignmentCoverageOutcome1788829200000 honest. `satisfies` is what makes
+ * adding a member to the union without adding it here a compile error.
+ */
+export const COVERAGE_OUTCOMES = [
+    'covered',
+    'floater',
+    'fallback_no_covering_capacity',
+    'fallback_no_covering_driver',
+    'disabled',
+] as const satisfies readonly CoverageOutcome[];
+
+/** The two outcomes that mean coverage produced the assignment. */
+export const COVERED_OUTCOMES: readonly CoverageOutcome[] = [
+    'covered',
+    'floater',
+];
+
+/** The two outcomes that mean it did not. `disabled` is neither. */
+export const FALLBACK_OUTCOMES: readonly CoverageOutcome[] = [
+    'fallback_no_covering_capacity',
+    'fallback_no_covering_driver',
+];
+
+/**
+ * Is service area matching switched on for this process?
+ *
+ * The single reading of SERVICE_AREA_MATCHING. `AssignmentService
+ * .serviceAreaMatching` delegates here and carries the doc comment explaining
+ * the rollout reasoning; this exists so that the read surfaces reporting
+ * whether the feature is live cannot disagree with the engine about what "on"
+ * spells, and so that they need no dependency on the engine to ask.
+ *
+ * Read per call, never cached, so the switch works without a restart.
+ */
+export function serviceAreaMatchingEnabled(): boolean {
+    const flag = process.env.SERVICE_AREA_MATCHING;
+    return flag === 'on' || flag === 'true' || flag === '1';
+}
+
+/**
+ * Which of the five outcomes describes this placement.
+ *
+ * Pure, and the ONLY place the classification is written down, so the column,
+ * the summary and the log line cannot drift apart. Note the shape of the last
+ * branch: "N drivers cover it, none with room" and "nobody covers it at all"
+ * are different problems with different fixes (an understaffed territory versus
+ * an undrawn one), and collapsing them into one `fallback` value would throw
+ * away the only bit that says which.
+ *
+ * `disabled` is decided by the caller's flag rather than by the coverage,
+ * because a synthesized all-floater answer and a real all-floater answer are
+ * deliberately indistinguishable here: that is exactly what makes the kill
+ * switch collapse to the pre-service-area engine.
+ */
+export function coverageOutcomeFor(
+    serviceAreaMatching: boolean,
+    coverage: PointCoverage,
+    driverId: string | null,
+): CoverageOutcome {
+    if (!serviceAreaMatching) return 'disabled';
+    if (driverId !== null) {
+        if (coverage.explicitDriverIds.includes(driverId)) return 'covered';
+        if (coverage.floaterDriverIds.includes(driverId)) return 'floater';
+    }
+    return coverage.driverIds.length === 0
+        ? 'fallback_no_covering_driver'
+        : 'fallback_no_covering_capacity';
+}
+
+/**
  * Which territories contain one point.
  *
  * Separate from `PointCoverage` because it answers a different question and only
@@ -526,6 +630,92 @@ export async function coveringDriversForPoint(
     if (!coverage) {
         throw new Error(
             'Coverage query returned no entry for its single point.',
+        );
+    }
+    return coverage;
+}
+
+/**
+ * The eligible drivers, and nothing else. $1 organisation id, $2 warehouse id.
+ *
+ * Deliberately the SAME `eligible` CTE the real coverage query narrows its
+ * answer to, so "the drivers considered with matching off" and "the drivers
+ * considered with matching on" cannot drift apart. It is projected into the
+ * shape `parseCoverageRows` already checks, so the disabled answer goes through
+ * the same narrowing as the real one rather than skipping it.
+ *
+ * NOTHING HERE TOUCHES service_areas OR driver_service_area. That is the point:
+ * see `allDriversAsFloaters`.
+ */
+export const ELIGIBLE_DRIVERS_SQL = `
+WITH ${ELIGIBLE_DRIVERS_CTE}
+SELECT NULL::int AS point_index,
+       e.id      AS driver_id,
+       true      AS is_floater
+  FROM eligible e
+`;
+
+/**
+ * The answer when service area matching is switched off: every eligible driver
+ * as a floater, for every point.
+ *
+ * ── WHY THIS EXISTS RATHER THAN "ASK, THEN IGNORE THE ANSWER" ────────────────
+ *
+ * A kill switch that still ran the coverage query and then discarded it would
+ * leave the feature's cost and its failure modes in the request path while
+ * removing only its benefit. Turning it off has to mean the territory tables
+ * are not read at all: no GIST scan, no exact containment test on a polygon
+ * that may hold 10000 vertices, and no way for a bad row or a slow plan in
+ * `service_areas` to reach dispatch. So the disabled answer is synthesized from
+ * the driver list alone.
+ *
+ * It is synthesized rather than hardcoded to `[]` because an empty coverage
+ * answer is NOT the neutral one. Empty means "nobody covers this address",
+ * which sends every package down the step 3 and 4 fallbacks, opens shifts it
+ * should not, and logs a coverage failure for traffic that never asked a
+ * coverage question. The neutral answer is "everyone is a floater", which is
+ * exactly what the real query returns for an empty `driver_service_area`, and
+ * under it the whole preference order collapses into "step 1 for everything",
+ * the engine as it behaved before territories existed.
+ *
+ * `applyFloaterRule` with no explicit coverage is what guarantees that
+ * equivalence: the disabled answer is assembled by the same function, from the
+ * same rule, as the real one.
+ */
+export async function allDriversAsFloaters(
+    executor: CoverageQueryExecutor,
+    query: CoverageQuery,
+    pointCount: number,
+): Promise<PointCoverage[]> {
+    if (pointCount === 0) return [];
+
+    const rows = parseCoverageRows(
+        await executor.query(ELIGIBLE_DRIVERS_SQL, [
+            query.organisationId,
+            query.warehouseId,
+        ]),
+    );
+
+    return applyFloaterRule(
+        pointCount,
+        rows.map((row) => row.driverId),
+        new Map(),
+    );
+}
+
+/**
+ * The single-point form of `allDriversAsFloaters`, for symmetry with
+ * `coveringDriversForPoint` so the two branches of the kill switch read the
+ * same at the call site.
+ */
+export async function allDriversAsFloatersForPoint(
+    executor: CoverageQueryExecutor,
+    query: CoverageQuery,
+): Promise<PointCoverage> {
+    const [coverage] = await allDriversAsFloaters(executor, query, 1);
+    if (!coverage) {
+        throw new Error(
+            'Disabled coverage returned no entry for its single point.',
         );
     }
     return coverage;

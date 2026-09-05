@@ -1,6 +1,85 @@
 {
   "openapi": "3.0.0",
   "paths": {
+    "/api/v1/dispatch/coverage/summary": {
+      "get": {
+        "description": "The rollout number: over the last N days, what fraction of the packages automatic assignment placed reached a driver whose territory covers the delivery point (or who has no territories at all and therefore covers everywhere).\n\nThis is what to check before switching service area matching on for real traffic, and every day for a week afterwards. It also names the most recent packages that went to a driver who does NOT cover them, which is the \"which ones, and why\" question; pass any of those ids to GET /api/v1/dispatch/coverage for the full explanation of one.\n\nCounts only packages automatic assignment placed. A package a dispatcher pinned by hand took no coverage decision and is not in either the numerator or the denominator.",
+        "operationId": "CoverageController_summary",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "days",
+            "required": false,
+            "in": "query",
+            "description": "How many days back to count, 1 to 30. Defaults to 7, which is a whole weekly delivery cycle: anything shorter compares a weekday against a weekend and reads the difference as a change in coverage.",
+            "schema": {
+              "example": 7,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The covered rate, the five outcome buckets behind it, the live territory count needed to interpret it, and a sample of the packages that fell back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageSummaryDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`days` is not a whole number between 1 and 30.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "How much of this organisation’s traffic reaches a covering driver.",
+        "tags": [
+          "dispatch"
+        ]
+      }
+    },
     "/api/v1/dispatch/coverage": {
       "get": {
         "description": "The support answer to \"why did package X go to driver Y?\". Pass `packageId` for a package that exists, or `lon` and `lat` to ask about an address before one does. Exactly one of the two forms per request.\n\nThe containment test is the same call the assignment engine makes (`src/dispatch/coverage.ts`), not a second implementation of it, so this endpoint cannot disagree with what dispatch actually did.\n\nRead-only. Territories and their staffing are written by the web dashboard directly, under row level security.",
@@ -4454,6 +4533,147 @@
           "error"
         ]
       },
+      "CoverageOutcomeCountsDto": {
+        "type": "object",
+        "properties": {
+          "covered": {
+            "type": "number",
+            "description": "A territory the driver is staffed on contains the point."
+          },
+          "floater": {
+            "type": "number",
+            "description": "The driver matched only because they have no territories at all. Expect this to be most of the traffic while the map is being drawn, which is exactly why it is not folded into `covered`."
+          },
+          "fallbackNoCoveringCapacity": {
+            "type": "number",
+            "description": "Somebody covers the point, but no covering driver had room and none was idle. An understaffed territory, or a busy day."
+          },
+          "fallbackNoCoveringDriver": {
+            "type": "number",
+            "description": "Nobody covers the point at all. Usually a territory that was never drawn, or one drawn and left unstaffed."
+          },
+          "disabled": {
+            "type": "number",
+            "description": "SERVICE_AREA_MATCHING was off when the package was placed, so no coverage question was asked. Excluded from `decisions` and from the rate below."
+          }
+        },
+        "required": [
+          "covered",
+          "floater",
+          "fallbackNoCoveringCapacity",
+          "fallbackNoCoveringDriver",
+          "disabled"
+        ]
+      },
+      "CoverageFallbackPackageDto": {
+        "type": "object",
+        "properties": {
+          "packageId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "trackingNumber": {
+            "type": "string",
+            "nullable": true
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "fallback_no_covering_capacity",
+              "fallback_no_covering_driver"
+            ],
+            "description": "Which of the two fallback outcomes this was."
+          },
+          "driverId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "The driver who got it despite not covering the point."
+          },
+          "shiftId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "assignedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the package was placed on that shift."
+          }
+        },
+        "required": [
+          "packageId",
+          "trackingNumber",
+          "outcome",
+          "driverId",
+          "shiftId",
+          "assignedAt"
+        ]
+      },
+      "CoverageSummaryDto": {
+        "type": "object",
+        "properties": {
+          "windowDays": {
+            "type": "number",
+            "description": "How many days back the counts cover.",
+            "example": 7
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The start of that window, so the counts can be quoted."
+          },
+          "serviceAreaMatching": {
+            "type": "boolean",
+            "description": "Whether service area matching is switched on for the process answering this request. False means new packages are being recorded as `disabled` and the rate below describes history, not what is happening now. Process-wide, not per organisation."
+          },
+          "liveServiceAreaCount": {
+            "type": "number",
+            "description": "Live (not soft-deleted) territories in this organisation. Zero means nothing has been drawn, so every driver covers everywhere and a 100% floater rate is the correct answer rather than a good one."
+          },
+          "totalAssigned": {
+            "type": "number",
+            "description": "Packages placed by automatic assignment in the window. Excludes anything a dispatcher pinned by hand and anything placed before outcomes were recorded, neither of which took a coverage decision."
+          },
+          "decisions": {
+            "type": "number",
+            "description": "`totalAssigned` minus the `disabled` ones: the packages a coverage question was actually asked about. The denominator of `coveredRate`."
+          },
+          "coveredRate": {
+            "type": "number",
+            "nullable": true,
+            "description": "THE NUMBER. The fraction of `decisions` that reached a driver who covers the delivery point, counting both `covered` and `floater`. 1 means coverage placed everything; the shortfall is the fallback rate. Null when `decisions` is zero, because a rate over no samples is not zero, it is unknown.",
+            "example": 0.94
+          },
+          "byOutcome": {
+            "$ref": "#/components/schemas/CoverageOutcomeCountsDto"
+          },
+          "fallbacks": {
+            "description": "The most recent packages in the window that went to a driver who does not cover them, newest first, capped at 50. This is the \"which packages, and why\" answer; pass any of these ids to GET /api/v1/dispatch/coverage for the full explanation of one.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoverageFallbackPackageDto"
+            }
+          },
+          "explanation": {
+            "type": "string",
+            "description": "One sentence a dispatcher can act on, derived entirely from the fields above.",
+            "example": "94% of 312 coverage decision(s) reached a covering driver over the last 7 day(s), across 6 live territory (or territories)."
+          }
+        },
+        "required": [
+          "windowDays",
+          "since",
+          "serviceAreaMatching",
+          "liveServiceAreaCount",
+          "totalAssigned",
+          "decisions",
+          "coveredRate",
+          "byOutcome",
+          "fallbacks",
+          "explanation"
+        ]
+      },
       "CoveragePointDto": {
         "type": "object",
         "properties": {
@@ -4559,6 +4779,18 @@
           "covered": {
             "type": "boolean",
             "description": "Shorthand for `matchedBy` being explicit or floater. False on an assignment coverage does not explain, which is the case worth escalating."
+          },
+          "recordedOutcome": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "covered",
+              "floater",
+              "fallback_no_covering_capacity",
+              "fallback_no_covering_driver",
+              "disabled"
+            ],
+            "description": "What the assignment engine recorded WHEN IT PLACED THIS PACKAGE (`package_assignment.coverage_outcome`), as opposed to `matchedBy` above, which is recomputed against the territories as they stand right now.\n\nThe two disagreeing is not a bug, it is the most useful thing on this response: it means the map changed after the package was placed. A package recorded as `covered` that now reads `not_covering` was routed correctly and then had its territory redrawn underneath it.\n\n`floater` is kept distinct from `covered` because during rollout most matches are floater matches, and merging them would report the feature as working better than it is. `disabled` means SERVICE_AREA_MATCHING was off and no coverage question was asked. Null means no automatic assignment wrote this row: the package was pinned by a dispatcher, or it predates this column."
           }
         },
         "required": [

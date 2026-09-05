@@ -195,6 +195,102 @@ describe('ShiftPlanWriter', () => {
         });
     });
 
+    describe('the coverage outcome', () => {
+        /** The assignment upsert's parameters, four per stop. */
+        const upsertParams = (
+            log: { sql: string; params: unknown[] }[],
+        ): unknown[] =>
+            log.find((q) => q.sql.includes('INSERT INTO package_assignment'))
+                ?.params ?? [];
+
+        it('rides on the row that was being written anyway', async () => {
+            // One statement, four columns. A second write to record the
+            // outcome would be paid inside the per-warehouse advisory lock by
+            // every package at the depot, not just the one being placed.
+            const { runner, log } = makeRunner();
+            await writer.writePlan(
+                runner,
+                plan({
+                    stops: [
+                        {
+                            packageId: 'pkg-a',
+                            lon: 0.01,
+                            lat: 0,
+                            arrivalMs: DEPARTURE + 600_000,
+                            weightG: 2_000,
+                            coverageOutcome: 'covered',
+                        },
+                    ],
+                }),
+            );
+
+            expect(
+                log.filter((q) =>
+                    q.sql.includes('INSERT INTO package_assignment'),
+                ),
+            ).toHaveLength(1);
+            expect(upsertParams(log)).toEqual([
+                'pkg-a',
+                'driver-1',
+                'vehicle-1',
+                'covered',
+            ]);
+        });
+
+        it('stamps only the stop it was given, never the rest of the van', async () => {
+            // writePlan rewrites every stop on the route. If the outcome went
+            // onto all of them, one package joining a van would restamp the
+            // whole manifest with a decision nobody took about them.
+            const { runner, log } = makeRunner();
+            const [first, second] = plan().stops;
+            await writer.writePlan(
+                runner,
+                plan({
+                    stops: [{ ...first, coverageOutcome: 'floater' }, second],
+                }),
+            );
+
+            expect(upsertParams(log)).toEqual([
+                'pkg-a',
+                'driver-1',
+                'vehicle-1',
+                'floater',
+                'pkg-b',
+                'driver-1',
+                'vehicle-1',
+                null,
+            ]);
+        });
+
+        it('coalesces on conflict, so a replan cannot erase one', async () => {
+            // The replan worker and both hand-edit paths rewrite routes they
+            // did not choose the packages for and pass no outcome. An
+            // unqualified EXCLUDED assignment would blank the only record of a
+            // decision that cannot be recomputed afterwards.
+            const { runner, log } = makeRunner();
+            await writer.writePlan(runner, plan());
+
+            const upsert = log.find((q) =>
+                q.sql.includes('INSERT INTO package_assignment'),
+            );
+            expect(upsert?.sql).toContain(
+                'coverage_outcome = COALESCE(\n' +
+                    '                               EXCLUDED.coverage_outcome,\n' +
+                    '                               package_assignment.coverage_outcome)',
+            );
+            expect(upsertParams(log)).toEqual([
+                'pkg-a',
+                'driver-1',
+                'vehicle-1',
+                null,
+                'pkg-b',
+                'driver-1',
+                'vehicle-1',
+                null,
+            ]);
+        });
+    });
+
     describe('detach', () => {
         it('does nothing for an empty list', async () => {
             const { runner, query } = makeRunner();

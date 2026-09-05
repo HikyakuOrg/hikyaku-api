@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { QueryRunner } from 'typeorm';
+import type { CoverageOutcome } from './coverage';
 
 /** One job stop in the order it will be driven. */
 export interface PlanStop {
@@ -10,6 +11,18 @@ export interface PlanStop {
     arrivalMs: number;
     /** Grams. Stored on the step as `load` so the dashboard can show it. */
     weightG: number;
+    /**
+     * How this package's driver related to who covers its address, for the ONE
+     * stop this write is placing. Left undefined for every other stop on the
+     * route, and by every caller that is rewriting a plan rather than making a
+     * placement decision (the replan worker, both hand-edit paths).
+     *
+     * Undefined does not mean "no outcome": the upsert coalesces, so a stop
+     * that arrives without one keeps whatever it recorded when it was placed.
+     * Writing null over it on every replan would erase the only record of a
+     * decision that cannot be recomputed afterwards.
+     */
+    coverageOutcome?: CoverageOutcome;
 }
 
 export interface PlanWrite {
@@ -265,28 +278,60 @@ export class ShiftPlanWriter {
         );
     }
 
+    /**
+     * Stamps the driver, the vehicle and (for the one stop being placed) the
+     * coverage outcome onto package_assignment.
+     *
+     * ONE STATEMENT, and it stays one statement. This is the write the whole
+     * of Phase B's budget is spent on: every step of the assignment order ends
+     * here, inside the per-warehouse advisory lock, so a second round trip to
+     * record the outcome would be paid by every package at the depot rather
+     * than by the one being placed. The outcome therefore rides along as a
+     * fourth column on the row that was being written anyway.
+     *
+     * The COALESCE in the conflict branch is what makes that safe to share
+     * with callers who have no opinion. `writePlan` rewrites EVERY stop on the
+     * route, not just the new one, so an unqualified
+     * `coverage_outcome = EXCLUDED.coverage_outcome` would blank the recorded
+     * outcome of every other package on the van each time one more was added,
+     * and every replan would blank the lot. Coalescing keeps the value the
+     * placement wrote and lets a caller with nothing to say stay silent.
+     */
     private async upsertAssignments(
         runner: QueryRunner,
         plan: PlanWrite,
     ): Promise<void> {
+        const PARAMS_PER_ROW = 4;
         const values = plan.stops
-            .map(
-                (_, i) =>
-                    `($${i + 1}, $${plan.stops.length + 1}, $${plan.stops.length + 2})`,
-            )
+            .map((_, i) => {
+                const b = i * PARAMS_PER_ROW;
+                return `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}::text)`;
+            })
             .join(', ');
 
+        // The driver and vehicle repeat per row rather than being shared
+        // placeholders, because the outcome varies per row and mixing the two
+        // shapes in one VALUES list is how off-by-one placeholder bugs happen.
+        // At the 45-stop ceiling that is 180 parameters, against a protocol
+        // limit of 65535.
+        const params = plan.stops.flatMap((stop) => [
+            stop.packageId,
+            plan.driverId,
+            plan.vehicleId,
+            stop.coverageOutcome ?? null,
+        ]);
+
         await runner.query(
-            `INSERT INTO package_assignment (package_id, driver_id, vehicle_id)
+            `INSERT INTO package_assignment
+                 (package_id, driver_id, vehicle_id, coverage_outcome)
              VALUES ${values}
              ON CONFLICT (package_id)
              DO UPDATE SET driver_id  = EXCLUDED.driver_id,
-                           vehicle_id = EXCLUDED.vehicle_id`,
-            [
-                ...plan.stops.map((s) => s.packageId),
-                plan.driverId,
-                plan.vehicleId,
-            ],
+                           vehicle_id = EXCLUDED.vehicle_id,
+                           coverage_outcome = COALESCE(
+                               EXCLUDED.coverage_outcome,
+                               package_assignment.coverage_outcome)`,
+            params,
         );
     }
 
