@@ -21,6 +21,10 @@ minimumReleaseAgeExclude:
 
 overrides:
   find-my-way: ^9.7.0
+  # @cardog/corgi pins ^9.4.1, which cannot build on Node >= 24 (9.x forces
+  # C++17 but V8 headers require C++20). 12.x is API-compatible with corgi's
+  # usage (prepare/exec/pragma/get/all/close) and ships Node 24 prebuilds.
+  better-sqlite3: ^12.11.1
   "@nestjs/swagger>js-yaml": ^5.2.2
   "ajv>fast-uri": ^3.1.5
   "@fastify/ajv-compiler>fast-uri": ^3.1.5
