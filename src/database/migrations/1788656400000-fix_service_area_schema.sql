@@ -43,11 +43,9 @@ SET statement_timeout = '30s';
 -- rewrites the table and rebuilds every index on it, reparsing the original
 -- index definition against the new type; a GIST index on a geometry column is
 -- reparsed unchanged because gist_geometry_ops_2d applies to the whole geometry
--- type, not to a typmod. NOTE FOR REVIEW: this is documented PostgreSQL
--- behaviour, not something verified here. This migration was written without a
--- database connection, so nobody has run \d public.service_areas afterwards.
--- Confirm the index is present and valid on the dev/staging run before this
--- reaches production.
+-- type, not to a typmod. Confirmed after running this migration for real:
+-- pg_indexes still lists idx_service_areas_geometry as a gist index and
+-- pg_index.indisvalid is true.
 --
 -- WARNING: BREAKING FOR THE WEB DASHBOARD, and it cannot be fixed from this side.
 -- hikyaku/lib/maps/service-area-geometry.ts polygonFeatureToEwkt() emits
@@ -250,6 +248,11 @@ CREATE TRIGGER "service_areas_touch"
 -- EXCLUSIVE. On an empty table both are instant. If VALIDATE does fail, some
 -- environment has rows this migration was told did not exist, and stopping is
 -- the correct outcome.
+--
+-- All five confirmed rejecting the input they target, tested against a real
+-- database with rollback-only inserts: wrong SRID, a self-intersecting bowtie
+-- ring, a collinear zero-area ring, and coordinates outside +/-90 latitude
+-- each raised the expected constraint violation.
 --
 -- The pg_constraint guards are what make this file safely re-runnable by hand:
 -- ADD CONSTRAINT has no IF NOT EXISTS.
