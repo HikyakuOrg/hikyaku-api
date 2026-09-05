@@ -58,6 +58,41 @@ const SHIFT = {
     solution_id: 'sol-1',
 };
 
+/** A second van at the same depot, idle. Same revision: the mock serves one. */
+const SHIFT_2 = {
+    ...SHIFT,
+    id: 'shift-2',
+    driver_id: 'driver-2',
+    vehicle_id: 'vehicle-2',
+    route_id: 'route-2',
+    solution_id: 'sol-2',
+};
+
+/** A stop on route-1, a few metres from where PACKAGE is going. */
+function nearbyStop(index: number, lon: number) {
+    return {
+        route_id: 'route-1',
+        step_index: index,
+        package_id: `pkg-existing-${index}`,
+        lon,
+        lat: 0,
+        weight_kg: '1',
+        scheduled_arrival: null,
+        eviction_count: 0,
+        created_at: NOW.toISOString(),
+        status: 'ASSIGNED',
+    };
+}
+
+/**
+ * Five stops already on shift-1, all within about 100 m of PACKAGE. Inserting
+ * among them is nearly free, so shift-1 wins on raw detour by a mile and only
+ * the load-spreading penalty can send the package to the empty shift-2.
+ */
+const CLUSTERED_ON_SHIFT_1 = [0.019, 0.0195, 0.02, 0.0205, 0.021].map((lon, i) =>
+    nearbyStop(i, lon),
+);
+
 function makeDb(state: DbState) {
     const log: { sql: string; params: unknown[] }[] = [];
 
@@ -153,6 +188,7 @@ function build(state: DbState = {}) {
 
 describe('AssignmentService', () => {
     const originalMode = process.env.ASSIGNMENT_MODE;
+    const originalSpread = process.env.LOAD_SPREAD_ENABLED;
 
     beforeEach(() => {
         // Only the clock is faked. Faking the microtask queue as well makes every
@@ -164,12 +200,17 @@ describe('AssignmentService', () => {
             })
             .setSystemTime(NOW);
         process.env.ASSIGNMENT_MODE = 'instant';
+        // Hermetic: the default is on, but a developer with the kill switch set
+        // in their shell should not get a different suite.
+        delete process.env.LOAD_SPREAD_ENABLED;
     });
 
     afterEach(() => {
         jest.useRealTimers();
         if (originalMode === undefined) delete process.env.ASSIGNMENT_MODE;
         else process.env.ASSIGNMENT_MODE = originalMode;
+        if (originalSpread === undefined) delete process.env.LOAD_SPREAD_ENABLED;
+        else process.env.LOAD_SPREAD_ENABLED = originalSpread;
     });
 
     describe('the feature flag', () => {
@@ -199,6 +240,73 @@ describe('AssignmentService', () => {
             process.env.ASSIGNMENT_MODE = 'aggressive';
             const { service } = build();
             expect(service.mode).toBe('instant');
+        });
+    });
+
+    describe('the load-spreading flag', () => {
+        it('spreads by default, so an unconfigured deployment gets the fix', () => {
+            const { service } = build();
+            expect(service.loadSpread).toBe(true);
+        });
+
+        it.each(['false', '0'])('is switched off by LOAD_SPREAD_ENABLED=%s', (value) => {
+            process.env.LOAD_SPREAD_ENABLED = value;
+            const { service } = build();
+            expect(service.loadSpread).toBe(false);
+        });
+
+        it('treats an unrecognised value as on, like ASSIGNMENT_MODE does', () => {
+            process.env.LOAD_SPREAD_ENABLED = 'maybe';
+            const { service } = build();
+            expect(service.loadSpread).toBe(true);
+        });
+
+        it('is read per call, so the switch works without a restart', () => {
+            const { service } = build();
+            expect(service.loadSpread).toBe(true);
+            process.env.LOAD_SPREAD_ENABLED = 'false';
+            expect(service.loadSpread).toBe(false);
+        });
+    });
+
+    describe('spreading load across vans', () => {
+        // Two shifts at one depot. shift-1 already runs five stops right next to
+        // where this package is going, so on raw detour it wins outright. This is
+        // the shape of the reported bug: geography alone keeps feeding the van
+        // that is already loaded.
+        const twoVans = {
+            shifts: [SHIFT, SHIFT_2],
+            stops: CLUSTERED_ON_SHIFT_1,
+        };
+
+        it('sends the package to the empty van, not the one already loaded', async () => {
+            const { service } = build(twoVans);
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned');
+            expect(outcome.shift?.id).toBe('shift-2');
+        });
+
+        it('goes back to the loaded van when the kill switch is set', async () => {
+            // The rollback story, end to end: LOAD_SPREAD_ENABLED=false restores
+            // the old bin-packing choice with no deploy.
+            process.env.LOAD_SPREAD_ENABLED = 'false';
+            const { service } = build(twoVans);
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned');
+            expect(outcome.shift?.id).toBe('shift-1');
+        });
+
+        it('opens no new shift either way, since spreading only reorders what exists', async () => {
+            const { service, log } = build(twoVans);
+            await service.assign('org-1', 'pkg-1');
+
+            expect(
+                log.filter((q) => /INSERT INTO vrp_optimization\b/.test(q.sql)),
+            ).toHaveLength(0);
         });
     });
 
@@ -481,6 +589,49 @@ describe('AssignmentService', () => {
                 shift: null,
                 evictedPackageIds: [],
             });
+        });
+
+        it('still defers on 23514 when load spreading had shifts to weigh first', async () => {
+            // The allowance path with the new comparator actually in play: two
+            // loaded shifts get costed and penalised, neither can take the
+            // package (their vans hold 1 g), so openShift runs and the trigger
+            // rejects it. Nothing about the penalty should reach the savepoint
+            // handling, and this is the test that says so.
+            const allowance = Object.assign(new Error('over allowance'), {
+                code: '23514',
+            });
+            const { service, log, runner } = build({
+                shifts: [
+                    { ...SHIFT, vehicle_gross_limits: '0.001' },
+                    { ...SHIFT_2, vehicle_gross_limits: '0.001' },
+                ],
+                stops: CLUSTERED_ON_SHIFT_1,
+                freePairs: [
+                    {
+                        driver_id: 'driver-3',
+                        vehicle_id: 'vehicle-3',
+                        vehicle_gross_limits: '1500',
+                        ors_vehicle_type: 'driving-car',
+                    },
+                ],
+                failOn: { fragment: 'INSERT INTO vrp_optimization\n', error: allowance },
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome).toEqual({
+                outcome: 'deferred',
+                reason: 'shift_allowance_exhausted',
+                shift: null,
+                evictedPackageIds: [],
+            });
+            // The savepoint absorbed the 23514 rather than the transaction
+            // aborting under the advisory lock.
+            expect(
+                log.some((q) => q.sql.includes('ROLLBACK TO SAVEPOINT open_shift')),
+            ).toBe(true);
+            expect(runner.commitTransaction).not.toHaveBeenCalled();
+            expect(runner.release).toHaveBeenCalled();
         });
 
         it('defers with no_free_driver_vehicle when the depot has no idle pair', async () => {

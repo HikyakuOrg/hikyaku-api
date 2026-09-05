@@ -15,6 +15,7 @@ import {
     DISPATCH_LEAD_S,
     isGreyBand,
     legKey,
+    loadPenaltySeconds,
     pickVictims,
     scheduleArrivals,
     tryInsert,
@@ -182,6 +183,24 @@ export class AssignmentService {
      */
     get mode(): 'nightly' | 'instant' {
         return process.env.ASSIGNMENT_MODE === 'nightly' ? 'nightly' : 'instant';
+    }
+
+    /**
+     * Whether chooseBest charges a shift for the stops it already carries.
+     *
+     * Read per call, like `mode`, so it can be flipped without a deploy. On by
+     * default: spreading is the fix for one driver carrying the whole metro
+     * while a colleague's van sits empty. LOAD_SPREAD_ENABLED=false (or 0)
+     * restores the old bin-packer, and that is the lever to pull if an
+     * organisation's shift billing or its total driving distance moves the
+     * wrong way once this is live. Anything else, unset included, means on.
+     *
+     * The penalty itself, and what it costs in both directions, is
+     * LOAD_SPREAD_SECONDS_PER_STOP in insertion.ts.
+     */
+    get loadSpread(): boolean {
+        const flag = process.env.LOAD_SPREAD_ENABLED;
+        return flag !== 'false' && flag !== '0';
     }
 
     /**
@@ -725,6 +744,7 @@ export class AssignmentService {
             stopCounts[candidate.shift.id] = candidate.shift.stops.length;
             byId.set(candidate.shift.id, candidate);
         }
+        const spreadLoad = this.loadSpread;
 
         let results: InsertionResult[] = candidates.map((c) =>
             tryInsert(c.shift, pkg, ctx),
@@ -734,7 +754,7 @@ export class AssignmentService {
         // guess is not good enough to promise a customer on, so the winner — and
         // only the winner — is re-checked against the real road network. Still
         // Phase A, so still outside the lock.
-        let best = chooseBest(results, stopCounts);
+        let best = chooseBest(results, stopCounts, { spreadLoad });
         if (best && isGreyBand(best)) {
             const candidate = byId.get(best.shiftId);
             if (candidate) {
@@ -747,14 +767,29 @@ export class AssignmentService {
                     results = results.map((r) =>
                         r.shiftId === best?.shiftId ? rechecked : r,
                     );
-                    best = chooseBest(results, stopCounts);
+                    best = chooseBest(results, stopCounts, { spreadLoad });
                 }
             }
         }
 
         if (best) {
             const candidate = byId.get(best.shiftId);
-            if (candidate) return { kind: 'insert', candidate, insertion: best };
+            if (candidate) {
+                // "Why did this go to the van that was already full?" needs an
+                // answer that does not involve rerunning the algorithm by hand,
+                // so both halves of the winning score are logged, not just the
+                // shift that won.
+                const stops = stopCounts[best.shiftId] ?? 0;
+                const penalty = spreadLoad ? loadPenaltySeconds(stops) : 0;
+                this.logger.debug(
+                    `Package ${pkg.id} chose shift ${best.shiftId} (${stops} stop(s) already): ` +
+                    `detour ${Math.round(best.deltaSeconds)}s + load penalty ${Math.round(penalty)}s ` +
+                    `= ${Math.round(best.deltaSeconds + penalty)}s, ` +
+                    `load spreading ${spreadLoad ? 'on' : 'off'}, ` +
+                    `over ${results.length} candidate shift(s).`,
+                );
+                return { kind: 'insert', candidate, insertion: best };
+            }
         }
 
         if (!allowEviction) return { kind: 'none' };
@@ -978,6 +1013,19 @@ export class AssignmentService {
      * exception aborts the surrounding transaction, taking the advisory lock and
      * everything else with it. Rolling back to the savepoint turns a hard failure
      * into a `deferred` answer with the lock still held.
+     *
+     * STILL A LAST RESORT, ON PURPOSE. This is only reached when decide() came
+     * back 'none', which means nothing fit anywhere. Now that chooseBest
+     * spreads load (LOAD_SPREAD_SECONDS_PER_STOP), the obvious next question is
+     * whether a shift should also be opened PROACTIVELY, once every existing
+     * one is past some target, rather than only once a package cannot be
+     * squeezed in at all. That question is deliberately left open. Opening a
+     * shift is the one billed insert in this path, so the rule can only be
+     * sized against real numbers, how many shifts an organisation opens on a
+     * representative day today versus under the proposed rule, and there is no
+     * historical delivery data available to compute them from. It needs those
+     * numbers and a sign-off, not a default picked here. The trigger condition
+     * below is therefore left unchanged.
      */
     private async openShift(
         runner: QueryRunner,

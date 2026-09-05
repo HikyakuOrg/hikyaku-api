@@ -68,6 +68,45 @@ export const TIME_PER_STOP = 900;
 /** Width of the vehicle operating window once it has set off, in seconds (12h). */
 export const SHIFT_WINDOW_SECONDS = 12 * 60 * 60;
 
+/**
+ * Seconds of extra driving Tier 1 will accept to put a package on a van that
+ * carries one fewer stop. The load-spreading dial.
+ *
+ * Read this one before touching it. Every other constant in this file trades
+ * one estimate against another; this one trades money against service quality,
+ * in both directions, and it does it silently.
+ *
+ * At 0 the engine is a pure bin-packer, which is what it used to be: one van
+ * absorbs the whole metro while a colleague's van sits empty at the depot.
+ * That is cheap in fuel and in billed shifts, and it is bad for the driver
+ * holding 30 stops, for the customers at the back of that route, and for any
+ * day where something goes wrong (one breakdown strands every parcel on it).
+ *
+ * Turned up, the fleet spreads, and the cost lands in two places. The obvious
+ * one is total driving distance, since two half-full vans usually cover more
+ * ground than one full one. The expensive one is indirect: looser routes burn
+ * the 12h SHIFT_WINDOW_SECONDS faster, so packages stop fitting on the shifts
+ * already open, and openShift() bills the organisation for another one.
+ * enforce_shift_allowance() does not make that visible from here. An org with a
+ * card on file is never blocked past its free monthly allowance (30 shifts for
+ * a personal org, 600 for a company one), it is just billed Stripe overage,
+ * quietly. An org without a card gets a hard 23514 instead and its packages go
+ * `deferred`. Both directions are real regressions, so move this number with
+ * measurements, not taste.
+ *
+ * 240 (4 minutes, about a quarter of TIME_PER_STOP) is what the synthetic metro
+ * scenario in insertion.spec.ts settled on. Measured there, over a 10 km metro
+ * with a shared depot: 30 packages across 3 shifts went from 30/0/0 stops and
+ * 97 km to 11/11/8 stops and 114 km, so the balance costs about 18% more
+ * driving at low load. At high load the same dial pays for itself, because the
+ * bin-packer's one huge serpentine route wastes the window: at 120 packages on
+ * the same 3 shifts it left 26 packages unplaced and drove 302 km, against 15
+ * unplaced and 232 km with the penalty on. Below about 120 s/stop the penalty
+ * is too weak to beat urban geography and the first van still runs away with
+ * the day.
+ */
+export const LOAD_SPREAD_SECONDS_PER_STOP = 240;
+
 /** Mean Earth radius in metres. */
 const EARTH_RADIUS_M = 6_371_008.8;
 
@@ -429,27 +468,74 @@ export function isGreyBand(result: InsertionResult): boolean {
 }
 
 /**
+ * What a shift's existing load is worth in imaginary detour seconds, to be
+ * charged on top of a candidate's real detour before shifts are compared.
+ *
+ * Linear on purpose. The comparison only ever sees the DIFFERENCE between two
+ * shifts, and for a linear penalty that difference is
+ * LOAD_SPREAD_SECONDS_PER_STOP times the gap in their stop counts: the
+ * correction is proportional to how lopsided the two vans already are, and it
+ * vanishes when they are level. A curve that grows faster than linear was tried
+ * and is worse exactly where it matters, because it is nearly flat over the
+ * first handful of stops, which is the window in which the first van runs away
+ * with the whole day's work.
+ *
+ * This is a soft preference, not a rule. It reorders candidates, it never makes
+ * an insertion infeasible, and a fuller van that is genuinely much closer still
+ * wins. At MAX_STOPS it is 10800 s, which is large enough to outweigh any
+ * detour a 12h window can hold, so a saturated van is only chosen when it is
+ * the sole feasible option.
+ */
+export function loadPenaltySeconds(stops: number): number {
+    return Math.max(0, stops) * LOAD_SPREAD_SECONDS_PER_STOP;
+}
+
+/**
  * Picks the winner among feasible insertions.
  *
- * Cheapest detour first. Then the FULLER shift, not the emptier one: packing
- * tight is what keeps the number of shifts down, and every new shift bills. Then
- * the id, so a tie is resolved the same way twice and tests are deterministic.
+ * Cheapest first, where the cost of a candidate is its real detour plus
+ * loadPenaltySeconds for how full that shift already is. Then the EMPTIER
+ * shift. Then the id, so a tie is resolved the same way twice and tests are
+ * deterministic.
+ *
+ * Both of those used to run the other way round, deliberately: the fuller shift
+ * won, because packing tight keeps the number of shifts down and every new
+ * shift bills. It kept the count down by handing one driver 20+ stops across
+ * the whole metro while a colleague idled at the depot. See
+ * LOAD_SPREAD_SECONDS_PER_STOP for what that trade is worth in both directions.
+ *
+ * `spreadLoad` defaults to on; AssignmentService passes its LOAD_SPREAD_ENABLED
+ * reading through so the penalty can be switched off mid-incident without a
+ * deploy. The tie-break stays flipped either way. It only fires on an exact
+ * equality of detour seconds, which is rare with float haversine estimates, and
+ * it can only ever move a package between shifts that already exist, so unlike
+ * the penalty it cannot bill anybody anything.
  */
 export function chooseBest(
     results: readonly InsertionResult[],
     stopCounts: Readonly<Record<string, number>>,
+    opts: { spreadLoad?: boolean } = {},
 ): InsertionSuccess | null {
+    const spreadLoad = opts.spreadLoad ?? true;
+    // deltaSeconds on the result stays the honest detour; the penalty is only
+    // ever applied here, for the comparison.
+    const cost = (result: InsertionSuccess): number =>
+        result.deltaSeconds +
+        (spreadLoad ? loadPenaltySeconds(stopCounts[result.shiftId] ?? 0) : 0);
+
     const feasible = results.filter((r): r is InsertionSuccess => r.feasible);
     if (feasible.length === 0) return null;
 
     return feasible.reduce((best, candidate) => {
-        if (candidate.deltaSeconds !== best.deltaSeconds) {
-            return candidate.deltaSeconds < best.deltaSeconds ? candidate : best;
+        const candidateCost = cost(candidate);
+        const bestCost = cost(best);
+        if (candidateCost !== bestCost) {
+            return candidateCost < bestCost ? candidate : best;
         }
         const candidateStops = stopCounts[candidate.shiftId] ?? 0;
         const bestStops = stopCounts[best.shiftId] ?? 0;
         if (candidateStops !== bestStops) {
-            return candidateStops > bestStops ? candidate : best;
+            return candidateStops < bestStops ? candidate : best;
         }
         return candidate.shiftId < best.shiftId ? candidate : best;
     });
