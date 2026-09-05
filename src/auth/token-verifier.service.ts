@@ -52,7 +52,7 @@ export class TokenVerifier {
     constructor(
         @Inject(SUPABASE_CLIENT)
         private readonly supabase: SupabaseClient,
-    ) { }
+    ) {}
 
     /** Parses `Bearer <token>`, verifies it (memoised), and returns the caller. */
     async verify(authHeader: string | undefined): Promise<AuthedUser> {
@@ -81,7 +81,9 @@ export class TokenVerifier {
         }
         const parts = authHeader.split(' ');
         if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
-            throw new UnauthorizedException('Invalid Authorization header format');
+            throw new UnauthorizedException(
+                'Invalid Authorization header format',
+            );
         }
         return parts[1];
     }

@@ -1,6 +1,5 @@
 import { DocumentBuilder } from '@nestjs/swagger';
 
-
 export function buildOpenApiConfig() {
     return (
         new DocumentBuilder()
@@ -24,7 +23,10 @@ export function buildOpenApiConfig() {
                 'https://hikyaku.org',
                 'engineering@hikyaku.org',
             )
-            .setLicense('AGPL-3.0', 'https://www.gnu.org/licenses/agpl-3.0.html')
+            .setLicense(
+                'AGPL-3.0',
+                'https://www.gnu.org/licenses/agpl-3.0.html',
+            )
             // Without these a generated client has no base URL and every consumer
             // hardcodes one.
             .addServer('https://api.hikyaku.org', 'Production')
@@ -45,8 +47,14 @@ export function buildOpenApiConfig() {
             // emit. Names are lower-case throughout — a controller with no @ApiTags
             // falls back to its class name, which is where `Users`/`Invitations` used
             // to come from.
-            .addTag('services', 'Service catalog, quoting and booking checkout.')
-            .addTag('customers', 'Customer records for the active organisation.')
+            .addTag(
+                'services',
+                'Service catalog, quoting and booking checkout.',
+            )
+            .addTag(
+                'customers',
+                'Customer records for the active organisation.',
+            )
             .addTag('users', 'Team member provisioning and lifecycle.')
             .addTag(
                 'invitations',

@@ -37,7 +37,7 @@ export class OptimisationService {
         private readonly optimisationRunRepo: Repository<OptimisationRun>,
         private readonly shifts: ShiftsService,
         private readonly assignment: AssignmentService,
-    ) { }
+    ) {}
 
     /**
      * The mobile create-shift wizard: open a shift and put these packages on it.
@@ -61,7 +61,11 @@ export class OptimisationService {
     async runAdhoc(
         organisationId: string,
         dto: AdhocOptimisationDto,
-    ): Promise<{ id: string; routeId: string | null; unassignedPackageIds: string[] }> {
+    ): Promise<{
+        id: string;
+        routeId: string | null;
+        unassignedPackageIds: string[];
+    }> {
         // 1. Warehouse (org-scoped). Its timezone decides which service day the
         //    shift belongs to -- a start time of 22:00 UTC is tomorrow morning in
         //    Melbourne, and the shift has to be filed under the day the driver
@@ -80,7 +84,9 @@ export class OptimisationService {
         );
         const wh = whRows[0];
         if (!wh || wh.lon == null || wh.lat == null) {
-            throw new BadRequestException('Warehouse not found for this organisation.');
+            throw new BadRequestException(
+                'Warehouse not found for this organisation.',
+            );
         }
 
         // 2. Driver and vehicle (both org-scoped). The vehicle also resolves the
@@ -88,12 +94,15 @@ export class OptimisationService {
         //    input needed. package_assignment has an enforce_driver_vehicle_warehouse
         //    trigger requiring driver and vehicle to share a warehouse, so check
         //    that here too for a clean 400 instead of a raw DB error.
-        const driverRows: { warehouse_id: string | null }[] = await this.dataSource.query(
-            `SELECT warehouse_id FROM drivers WHERE id = $1 AND organisation_id = $2`,
-            [dto.driverId, organisationId],
-        );
+        const driverRows: { warehouse_id: string | null }[] =
+            await this.dataSource.query(
+                `SELECT warehouse_id FROM drivers WHERE id = $1 AND organisation_id = $2`,
+                [dto.driverId, organisationId],
+            );
         if (driverRows.length === 0) {
-            throw new BadRequestException('Driver not found for this organisation.');
+            throw new BadRequestException(
+                'Driver not found for this organisation.',
+            );
         }
 
         const vehicleRows: { warehouse_id: string | null }[] =
@@ -104,11 +113,15 @@ export class OptimisationService {
                 [dto.vehicleId, organisationId],
             );
         if (vehicleRows.length === 0) {
-            throw new BadRequestException('Vehicle not found for this organisation.');
+            throw new BadRequestException(
+                'Vehicle not found for this organisation.',
+            );
         }
 
         if (driverRows[0].warehouse_id !== vehicleRows[0].warehouse_id) {
-            throw new BadRequestException('Driver and vehicle must belong to the same warehouse.');
+            throw new BadRequestException(
+                'Driver and vehicle must belong to the same warehouse.',
+            );
         }
 
         // 3. Packages. Dedupe, preserve order, validate the whole batch up front
@@ -211,7 +224,7 @@ export class OptimisationService {
 
         this.logger.log(
             `Ad-hoc shift ${shift.id} opened for org ${organisationId} with ` +
-            `${verdicts.length - unassignedPackageIds.length} package(s).`,
+                `${verdicts.length - unassignedPackageIds.length} package(s).`,
         );
 
         return {
@@ -243,7 +256,9 @@ export class OptimisationService {
             [dto.warehouseId, organisationId],
         );
         if (wh.length === 0) {
-            throw new BadRequestException('Warehouse not found for this organisation.');
+            throw new BadRequestException(
+                'Warehouse not found for this organisation.',
+            );
         }
 
         const overrides = dto.setOffOverrides ?? [];
@@ -251,7 +266,9 @@ export class OptimisationService {
         return this.dataSource.transaction(async (em) => {
             // Serialise per-org so two simultaneous requests can't both pass the
             // rate-limit check (advisory lock auto-releases at txn end).
-            await em.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [organisationId]);
+            await em.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+                organisationId,
+            ]);
 
             const recent: { requested_at: string }[] = await em.query(
                 `SELECT requested_at
@@ -266,10 +283,14 @@ export class OptimisationService {
 
             if (recent.length > 0) {
                 const nextAllowedAt = new Date(
-                    new Date(recent[0].requested_at).getTime() + RATE_LIMIT_MINUTES * 60_000,
+                    new Date(recent[0].requested_at).getTime() +
+                        RATE_LIMIT_MINUTES * 60_000,
                 ).toISOString();
                 throw new HttpException(
-                    { message: 'Optimisation was run recently. Please wait.', nextAllowedAt },
+                    {
+                        message: 'Optimisation was run recently. Please wait.',
+                        nextAllowedAt,
+                    },
                     HttpStatus.TOO_MANY_REQUESTS,
                 );
             }
@@ -320,7 +341,10 @@ export class OptimisationService {
                     }),
                 ]);
             }
-            await em.query(`SELECT pg_notify($1, $2)`, [REPLAN_CHANNEL, shifts[0].id]);
+            await em.query(`SELECT pg_notify($1, $2)`, [
+                REPLAN_CHANNEL,
+                shifts[0].id,
+            ]);
 
             // The run itself is done: it enqueued what it was asked to. Each
             // shift's own `revision` is what says whether its solve has landed.
@@ -358,7 +382,9 @@ export class OptimisationService {
         // Only runs that "count" gate the next allowed time (failed/skipped don't).
         const counts = run.status !== 'failed' && run.status !== 'skipped';
         const nextAllowedAt = counts
-            ? new Date(run.requestedAt.getTime() + RATE_LIMIT_MINUTES * 60_000).toISOString()
+            ? new Date(
+                  run.requestedAt.getTime() + RATE_LIMIT_MINUTES * 60_000,
+              ).toISOString()
             : null;
 
         return {

@@ -134,9 +134,7 @@ export class ReceiverDto {
 
 /** Each receiver's deliveryDate must be on/after the sender's collectionDate. */
 @ValidatorConstraint({ name: 'DeliveryAfterCollection', async: false })
-export class DeliveryAfterCollectionConstraint
-    implements ValidatorConstraintInterface
-{
+export class DeliveryAfterCollectionConstraint implements ValidatorConstraintInterface {
     validate(value: unknown, args: ValidationArguments): boolean {
         const dto = args.object as { sender?: { collectionDate?: string } };
         const receivers = value as ReceiverDto[];

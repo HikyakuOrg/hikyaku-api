@@ -31,17 +31,23 @@ describe('QueueService', () => {
         });
 
         it('does not call pgmq.create when the queue already exists', async () => {
-            dsQuery.mockResolvedValueOnce([{ queue_name: 'warehouse-optimization' }]);
+            dsQuery.mockResolvedValueOnce([
+                { queue_name: 'warehouse-optimization' },
+            ]);
             await service.ensureQueue();
             const calledCreate = dsQuery.mock.calls.some(
-                ([sql]) => typeof sql === 'string' && sql.includes('pgmq.create'),
+                ([sql]) =>
+                    typeof sql === 'string' && sql.includes('pgmq.create'),
             );
             expect(calledCreate).toBe(false);
         });
     });
 
     it('enqueuePayload calls pgmq.send with the serialised message', async () => {
-        await service.enqueuePayload({ kind: 'replan', optimisationId: 'shift-1' });
+        await service.enqueuePayload({
+            kind: 'replan',
+            optimisationId: 'shift-1',
+        });
         const [sql, params] = dsQuery.mock.calls[0] as [string, unknown[]];
         expect(sql).toContain('pgmq.send');
         expect(params[0]).toBe('warehouse-optimization');

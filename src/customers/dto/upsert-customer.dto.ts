@@ -77,12 +77,16 @@ export class UpsertCustomerDto {
     @IsNumber()
     confidence?: number;
 
-    @ApiPropertyOptional({ description: 'Pelias global id for stable re-lookup' })
+    @ApiPropertyOptional({
+        description: 'Pelias global id for stable re-lookup',
+    })
     @IsOptional()
     @IsString()
     peliasGid?: string;
 
-    @ApiPropertyOptional({ description: 'Raw Pelias feature (stored as jsonb)' })
+    @ApiPropertyOptional({
+        description: 'Raw Pelias feature (stored as jsonb)',
+    })
     @IsOptional()
     @IsObject()
     peliasRaw?: Record<string, unknown>;

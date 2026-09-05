@@ -3,7 +3,13 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
-import { TZDATA_SCHEMA, TZDATA_TABLE, TzdataImportPhase, TzdataWorkerMessage, redactSecrets } from './tzdata.constants';
+import {
+    TZDATA_SCHEMA,
+    TZDATA_TABLE,
+    TzdataImportPhase,
+    TzdataWorkerMessage,
+    redactSecrets,
+} from './tzdata.constants';
 import { TzdataStatusDto } from './dto/tzdata-status.dto';
 
 @Injectable()
@@ -13,7 +19,7 @@ export class TzdataService implements OnApplicationBootstrap {
     private error?: string;
     private updatedAt = new Date();
 
-    constructor(@InjectDataSource() private readonly dataSource: DataSource) { }
+    constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
 
     /**
      * Only the population check below is awaited here — a couple of fast
@@ -25,12 +31,16 @@ export class TzdataService implements OnApplicationBootstrap {
         this.setPhase('checking');
 
         if (await this.isPopulated()) {
-            this.logger.log(`${TZDATA_SCHEMA}.${TZDATA_TABLE} already populated, skipping import.`);
+            this.logger.log(
+                `${TZDATA_SCHEMA}.${TZDATA_TABLE} already populated, skipping import.`,
+            );
             this.setPhase('skipped_already_populated');
             return;
         }
 
-        this.logger.log(`${TZDATA_SCHEMA}.${TZDATA_TABLE} is empty — starting background import.`);
+        this.logger.log(
+            `${TZDATA_SCHEMA}.${TZDATA_TABLE} is empty — starting background import.`,
+        );
         this.startImportWorker();
     }
 
@@ -54,8 +64,15 @@ export class TzdataService implements OnApplicationBootstrap {
     }
 
     /** Backs GET /api/v1/tzdata/status, combined there with a fresh isPopulated() check. */
-    getImportState(): Pick<TzdataStatusDto, 'importState' | 'error' | 'updatedAt'> {
-        return { importState: this.phase, error: this.error, updatedAt: this.updatedAt.toISOString() };
+    getImportState(): Pick<
+        TzdataStatusDto,
+        'importState' | 'error' | 'updatedAt'
+    > {
+        return {
+            importState: this.phase,
+            error: this.error,
+            updatedAt: this.updatedAt.toISOString(),
+        };
     }
 
     private setPhase(phase: TzdataImportPhase, error?: string): void {
@@ -80,9 +97,11 @@ export class TzdataService implements OnApplicationBootstrap {
             // password out of argv (see tzdata-import.worker.ts), so this
             // shouldn't ever be live, but an Error crossing the worker_threads
             // boundary bypasses the worker's own redacted log() entirely.
-            const message = redactSecrets(err instanceof Error ? err.message : String(err));
+            const message = redactSecrets(
+                err instanceof Error ? err.message : String(err),
+            );
             this.logger.error(
-                `Timezone import worker crashed: ${redactSecrets(err instanceof Error ? err.stack ?? message : message)}`,
+                `Timezone import worker crashed: ${redactSecrets(err instanceof Error ? (err.stack ?? message) : message)}`,
             );
             this.setPhase('failed', message);
         });
@@ -91,7 +110,9 @@ export class TzdataService implements OnApplicationBootstrap {
                 this.logger.log('Timezone import worker finished.');
                 return;
             }
-            this.logger.error(`Timezone import worker exited with code ${code}.`);
+            this.logger.error(
+                `Timezone import worker exited with code ${code}.`,
+            );
             // The 'error' handler above already set 'failed' for a caught
             // exception; this covers exits that skip it entirely (e.g. killed).
             if (this.phase !== 'failed') {

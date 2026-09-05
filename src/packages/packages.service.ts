@@ -7,7 +7,10 @@ import {
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, QueryRunner } from 'typeorm';
-import { AssignmentService, type AssignmentOutcome } from 'src/dispatch/assignment.service';
+import {
+    AssignmentService,
+    type AssignmentOutcome,
+} from 'src/dispatch/assignment.service';
 import type {
     BulkCreatePackagesDto,
     CreatePackageDto,
@@ -78,7 +81,7 @@ export class PackagesService {
     constructor(
         @InjectDataSource() private readonly dataSource: DataSource,
         private readonly assignment: AssignmentService,
-    ) { }
+    ) {}
 
     async create(
         organisationId: string,
@@ -130,7 +133,9 @@ export class PackagesService {
         const assignment =
             dto.autoAssign === false
                 ? skipped('auto_assign_disabled')
-                : this.toOutcomeDto(await this.assignment.assign(organisationId, packageId));
+                : this.toOutcomeDto(
+                      await this.assignment.assign(organisationId, packageId),
+                  );
 
         const stored = await this.findById(organisationId, packageId);
         if (!stored) {
@@ -138,7 +143,10 @@ export class PackagesService {
             throw new NotFoundException('Package disappeared after creation.');
         }
 
-        return { replayed: false, result: { package: this.toDto(stored), assignment } };
+        return {
+            replayed: false,
+            result: { package: this.toDto(stored), assignment },
+        };
     }
 
     /**
@@ -214,9 +222,15 @@ export class PackagesService {
     }
 
     /** Runs assignment for packages created elsewhere, swallowing failures. */
-    async assignCreated(organisationId: string, packageIds: string[]): Promise<void> {
+    async assignCreated(
+        organisationId: string,
+        packageIds: string[],
+    ): Promise<void> {
         for (const packageId of packageIds) {
-            const outcome = await this.assignment.assign(organisationId, packageId);
+            const outcome = await this.assignment.assign(
+                organisationId,
+                packageId,
+            );
             if (outcome.outcome === 'deferred') {
                 this.logger.log(
                     `Package ${packageId} deferred (${outcome.reason}); the replan worker will retry it.`,
@@ -279,9 +293,10 @@ export class PackagesService {
                 [id, spec.scheduledDeparture ?? null, spec.deadlineAt ?? null],
             );
 
-            await runner.query(`SELECT insert_package_timeline($1::uuid, 'PENDING')`, [
-                id,
-            ]);
+            await runner.query(
+                `SELECT insert_package_timeline($1::uuid, 'PENDING')`,
+                [id],
+            );
         }
 
         return ids;
@@ -300,7 +315,9 @@ export class PackagesService {
         if (warehouse.length === 0) {
             // "Unknown", never "belongs to another organisation" — the same
             // non-disclosure rule OptimisationService.runAdhoc follows.
-            throw new BadRequestException('Warehouse not found for this organisation.');
+            throw new BadRequestException(
+                'Warehouse not found for this organisation.',
+            );
         }
 
         const customers: { id: string }[] = await this.dataSource.query(

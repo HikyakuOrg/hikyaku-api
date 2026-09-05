@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class DropStalePackageStatusTrigger1784714514218 implements MigrationInterface {
     name = 'DropStalePackageStatusTrigger1784714514218';
 
@@ -11,7 +10,9 @@ export class DropStalePackageStatusTrigger1784714514218 implements MigrationInte
     }
 
     public async up(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(this.read('1784714514218-drop_stale_package_status_trigger.sql'));
+        await queryRunner.query(
+            this.read('1784714514218-drop_stale_package_status_trigger.sql'),
+        );
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {

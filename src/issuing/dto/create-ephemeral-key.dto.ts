@@ -2,7 +2,9 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsNotEmpty, IsString } from 'class-validator';
 
 export class CreateEphemeralKeyDto {
-    @ApiProperty({ description: 'Single-use nonce from stripe.createEphemeralKeyNonce()' })
+    @ApiProperty({
+        description: 'Single-use nonce from stripe.createEphemeralKeyNonce()',
+    })
     @IsString()
     @IsNotEmpty()
     nonce: string;

@@ -13,12 +13,16 @@ export class DriverMetadataDto {
     @IsOptional()
     driver_license?: string;
 
-    @ApiPropertyOptional({ description: 'ISO 8601 date string, e.g. 2028-06-30' })
+    @ApiPropertyOptional({
+        description: 'ISO 8601 date string, e.g. 2028-06-30',
+    })
     @IsDateString()
     @IsOptional()
     license_expiry?: string;
 
-    @ApiPropertyOptional({ description: 'UUID of the warehouse the driver belongs to' })
+    @ApiPropertyOptional({
+        description: 'UUID of the warehouse the driver belongs to',
+    })
     @IsUUID()
     @IsOptional()
     warehouse_id?: string;
@@ -33,7 +37,9 @@ export class DriverMetadataDto {
     @IsOptional()
     driver_under_probation?: boolean;
 
-    @ApiPropertyOptional({ description: 'UUID FK to vehicle_type.id (the driver license class)' })
+    @ApiPropertyOptional({
+        description: 'UUID FK to vehicle_type.id (the driver license class)',
+    })
     @IsUUID()
     @IsOptional()
     license_type?: string;

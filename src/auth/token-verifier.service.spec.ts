@@ -104,20 +104,22 @@ describe('TokenVerifier', () => {
 
         it('rejects when the issuer does not match this project', async () => {
             supabase.auth.getClaims.mockResolvedValueOnce(
-                claimsResult({ iss: 'https://someone-elses-project.supabase.co/auth/v1' }),
+                claimsResult({
+                    iss: 'https://someone-elses-project.supabase.co/auth/v1',
+                }),
             );
-            await expect(verifier.verify('Bearer staging-token')).rejects.toThrow(
-                UnauthorizedException,
-            );
+            await expect(
+                verifier.verify('Bearer staging-token'),
+            ).rejects.toThrow(UnauthorizedException);
         });
 
         it('rejects claims with no email', async () => {
             supabase.auth.getClaims.mockResolvedValueOnce(
                 claimsResult({ email: undefined }),
             );
-            await expect(verifier.verify('Bearer no-email-token')).rejects.toThrow(
-                UnauthorizedException,
-            );
+            await expect(
+                verifier.verify('Bearer no-email-token'),
+            ).rejects.toThrow(UnauthorizedException);
         });
     });
 
@@ -191,7 +193,9 @@ describe('TokenVerifier', () => {
             for (let i = 0; i < MEMO_MAX_ENTRIES; i++) {
                 await verifier.verify(`Bearer token-${i}`);
             }
-            expect(supabase.auth.getClaims).toHaveBeenCalledTimes(MEMO_MAX_ENTRIES);
+            expect(supabase.auth.getClaims).toHaveBeenCalledTimes(
+                MEMO_MAX_ENTRIES,
+            );
 
             // One more distinct token pushes the map over the cap, evicting
             // token-0 (the oldest / least-recently-touched entry).
@@ -230,9 +234,9 @@ describe('TokenVerifier', () => {
                 data: { user: null },
                 error: new Error('expired'),
             });
-            await expect(verifier.verifyFull('Bearer bad-token')).rejects.toThrow(
-                UnauthorizedException,
-            );
+            await expect(
+                verifier.verifyFull('Bearer bad-token'),
+            ).rejects.toThrow(UnauthorizedException);
         });
 
         it('still calls getUser() fresh even when claims are already memoised', async () => {

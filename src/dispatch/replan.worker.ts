@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+    Injectable,
+    Logger,
+    OnApplicationBootstrap,
+    OnModuleDestroy,
+} from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { OptimisationRun } from 'src/entities/optimisation-run.entity';
@@ -8,7 +13,11 @@ import { orsProfileToValhallaCosting } from 'src/vroom/profile-map';
 import type { VroomJob, VroomRequest } from 'src/vroom/vroom.types';
 import type { SetOffOverride } from 'src/database/database.types';
 import { PgNotifyService } from './pg-notify.service';
-import { QueueService, REPLAN_CHANNEL, type PgmqMessage } from './queue.service';
+import {
+    QueueService,
+    REPLAN_CHANNEL,
+    type PgmqMessage,
+} from './queue.service';
 import { ShiftPlanWriter, type PlanStop } from './shift-plan.writer';
 import { AssignmentService } from './assignment.service';
 import { SHIFT_WINDOW_SECONDS, TIME_PER_STOP } from './insertion';
@@ -94,11 +103,13 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
         private readonly assignment: AssignmentService,
         private readonly db: DatabaseService,
         private readonly vroom: VroomService,
-    ) { }
+    ) {}
 
     async onApplicationBootstrap(): Promise<void> {
         await this.queue.ensureQueue().catch((err: unknown) => {
-            this.logger.warn(`Could not ensure the queue exists: ${String(err)}`);
+            this.logger.warn(
+                `Could not ensure the queue exists: ${String(err)}`,
+            );
         });
 
         this.notify.subscribe({
@@ -159,7 +170,7 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
         const seenShifts = new Set<string>();
 
         for (const message of messages) {
-            const body = message.message as Record<string, unknown>;
+            const body = message.message;
 
             if (body.kind === 'replan') {
                 const optimisationId = String(body.optimisationId ?? '');
@@ -184,7 +195,7 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
      * dropping it.
      */
     private async handleMessage(message: PgmqMessage): Promise<void> {
-        const body = message.message as Record<string, unknown>;
+        const body = message.message;
 
         try {
             if (body.kind === 'replan') {
@@ -234,7 +245,9 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             [lockKey],
         );
         if (!lockRows[0]?.locked) {
-            this.logger.debug(`Shift ${optimisationId} is already being replanned.`);
+            this.logger.debug(
+                `Shift ${optimisationId} is already being replanned.`,
+            );
             return;
         }
 
@@ -251,7 +264,9 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             if (!shift.driver_id || !shift.vehicle_id) return;
 
             const packages = await this.loadShiftPackages(optimisationId);
-            const routable = packages.filter((p) => p.lon != null && p.lat != null);
+            const routable = packages.filter(
+                (p) => p.lon != null && p.lat != null,
+            );
             if (routable.length === 0) return;
 
             const departureMs = shift.scheduled_start
@@ -295,7 +310,9 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                         start: [shift.depot_lon, shift.depot_lat],
                         end: [shift.depot_lon, shift.depot_lat],
                         // Grams on both sides. See AssignmentService.capacityGrams.
-                        capacity: [this.capacityGrams(shift.vehicle_gross_limits)],
+                        capacity: [
+                            this.capacityGrams(shift.vehicle_gross_limits),
+                        ],
                         time_window: [
                             departureEpoch,
                             departureEpoch + SHIFT_WINDOW_SECONDS,
@@ -334,10 +351,8 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             await runner.connect();
             await runner.startTransaction();
             try {
-                const { routeId, solutionId } = await this.planWriter.ensureRoute(
-                    runner,
-                    optimisationId,
-                );
+                const { routeId, solutionId } =
+                    await this.planWriter.ensureRoute(runner, optimisationId);
                 await this.planWriter.snapshotRevision(
                     runner,
                     optimisationId,
@@ -373,15 +388,20 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
 
             this.logger.log(
                 `Replanned shift ${optimisationId}: ${stops.length} stop(s)` +
-                (unassigned.length > 0 ? `, ${unassigned.length} unassigned` : '') +
-                '.',
+                    (unassigned.length > 0
+                        ? `, ${unassigned.length} unassigned`
+                        : '') +
+                    '.',
             );
 
             // Anything VROOM dropped goes back through Tier 1, which will try
             // other shifts at the warehouse and open one if it has to.
             if (unassigned.length > 0 && shift.organisation_id) {
                 for (const packageId of unassigned) {
-                    await this.assignment.assign(shift.organisation_id, packageId);
+                    await this.assignment.assign(
+                        shift.organisation_id,
+                        packageId,
+                    );
                 }
             }
         } finally {
@@ -409,7 +429,10 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
         this.logger.log(
             `Processing on-demand optimisation ${runId} (warehouse ${warehouseId}).`,
         );
-        await this.optimisationRunRepo.update({ id: runId }, { status: 'running' });
+        await this.optimisationRunRepo.update(
+            { id: runId },
+            { status: 'running' },
+        );
 
         try {
             const result = await this.runWarehouseOptimisation({
@@ -422,11 +445,16 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             await this.optimisationRunRepo.update(
                 { id: runId },
                 result.optimisationId
-                    ? { status: 'completed', optimisationId: result.optimisationId }
+                    ? {
+                          status: 'completed',
+                          optimisationId: result.optimisationId,
+                      }
                     : { status: 'skipped', error: result.skipReason },
             );
         } catch (err: unknown) {
-            this.logger.error(`On-demand optimisation ${runId} failed: ${String(err)}`);
+            this.logger.error(
+                `On-demand optimisation ${runId} failed: ${String(err)}`,
+            );
             // On-demand runs are not auto-retried: the failure is surfaced to the
             // dispatcher, who can trigger again.
             await this.queue.deleteMsg(msgId);
@@ -447,7 +475,10 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
         try {
             const build = await this.db.buildOptimizationRequest(runner, opts);
 
-            if (build.request.jobs.length === 0 && build.pinnedRoutes.length === 0) {
+            if (
+                build.request.jobs.length === 0 &&
+                build.pinnedRoutes.length === 0
+            ) {
                 await runner.rollbackTransaction();
                 return { optimisationId: null, skipReason: build.skipReason };
             }
@@ -543,7 +574,8 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     private capacityGrams(grossLimits: string | number | null): number {
-        const kg = typeof grossLimits === 'string' ? Number(grossLimits) : grossLimits;
+        const kg =
+            typeof grossLimits === 'string' ? Number(grossLimits) : grossLimits;
         return (Number.isFinite(kg) && kg ? Number(kg) : 1000) * 1000;
     }
 

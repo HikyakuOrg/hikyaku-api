@@ -1,10 +1,12 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import {
+    Column,
+    CreateDateColumn,
+    Entity,
+    PrimaryGeneratedColumn,
+} from 'typeorm';
 
 export type OrganisationInvitationStatus =
-    | 'pending'
-    | 'accepted'
-    | 'declined'
-    | 'revoked';
+    'pending' | 'accepted' | 'declined' | 'revoked';
 
 // Server-side record of an outstanding org invite. The recipient is identified
 // by email (lowercased); the email link itself carries no token, so link

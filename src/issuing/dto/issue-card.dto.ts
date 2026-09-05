@@ -22,7 +22,8 @@ export class IssueCardDto {
     vehicleId?: string;
 
     @ApiPropertyOptional({
-        description: 'Major-unit spend cap, e.g. 150 for $150.00. Omit for no card-level limit.',
+        description:
+            'Major-unit spend cap, e.g. 150 for $150.00. Omit for no card-level limit.',
     })
     @IsNumber()
     @IsPositive()
@@ -35,7 +36,8 @@ export class IssueCardDto {
     interval?: SpendingInterval;
 
     @ApiProperty({
-        description: 'ISO currency matching the platform Stripe account (usd/eur/gbp)',
+        description:
+            'ISO currency matching the platform Stripe account (usd/eur/gbp)',
     })
     @IsString()
     @Length(3, 3)

@@ -225,13 +225,14 @@ describe('BillingService', () => {
             // Eager entitlement sync right after provisioning — the new
             // customer has no entitlements yet (default empty mock), so the
             // vanity host must not appear entitled before the webhook confirms it.
-            expect(stripe.entitlements.activeEntitlements.list).toHaveBeenCalledWith({
+            expect(
+                stripe.entitlements.activeEntitlements.list,
+            ).toHaveBeenCalledWith({
                 customer: 'cus_1',
             });
-            expect(organisations.updateVanityUrlEntitlement).toHaveBeenCalledWith(
-                'org-1',
-                false,
-            );
+            expect(
+                organisations.updateVanityUrlEntitlement,
+            ).toHaveBeenCalledWith('org-1', false);
             expect(status.state).toBe('active');
             expect(status.daysRemaining).toBe(7);
         });
@@ -302,7 +303,9 @@ describe('BillingService', () => {
 
     describe('getShiftUsageStatus', () => {
         it('reports usage against the personal free allowance', async () => {
-            organisations.getOrFail.mockResolvedValue(org({ orgType: 'personal' }));
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'personal' }),
+            );
             dsQuery.mockResolvedValue([{ count: 12 }]);
             organisations.getSubscription.mockResolvedValue(
                 subscriptionRow({ hasPaymentMethod: true }),
@@ -316,7 +319,9 @@ describe('BillingService', () => {
         });
 
         it('reports usage against the company free allowance, with hasPaymentMethod false when unprovisioned', async () => {
-            organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'company' }),
+            );
             dsQuery.mockResolvedValue([{ count: 601 }]);
             organisations.getSubscription.mockResolvedValue(null);
 
@@ -334,16 +339,22 @@ describe('BillingService', () => {
         // Stripe half: make sure the organisation can be billed, then post.
 
         it('provisions metered-only billing for an unprovisioned personal org and posts the meter event', async () => {
-            organisations.getOrFail.mockResolvedValue(org({ orgType: 'personal' }));
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'personal' }),
+            );
             organisations.getSubscription.mockResolvedValue(null);
-            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.prices.list.mockResolvedValue({
+                data: [{ id: 'price_overage' }],
+            });
             stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
             stripe.subscriptions.create.mockResolvedValue({ id: 'sub_new' });
 
             await service.reportShiftUsageBatch('org-1', 5, 'shift_usage_abc');
 
             expect(stripe.customers.create).toHaveBeenCalledWith(
-                expect.objectContaining({ metadata: { organisationId: 'org-1' } }),
+                expect.objectContaining({
+                    metadata: { organisationId: 'org-1' },
+                }),
             );
             expect(stripe.subscriptions.create).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -365,10 +376,15 @@ describe('BillingService', () => {
 
         it('provisions metered-only billing (no trial) for a grandfathered company org rather than calling the trial flow', async () => {
             organisations.getOrFail.mockResolvedValue(
-                org({ orgType: 'company', subscriptionStatus: 'grandfathered' }),
+                org({
+                    orgType: 'company',
+                    subscriptionStatus: 'grandfathered',
+                }),
             );
             organisations.getSubscription.mockResolvedValue(null);
-            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.prices.list.mockResolvedValue({
+                data: [{ id: 'price_overage' }],
+            });
             stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
             stripe.subscriptions.create.mockResolvedValue({ id: 'sub_new' });
 
@@ -377,7 +393,9 @@ describe('BillingService', () => {
             // Never touches the trial-subscription path — no trial_period_days,
             // no trial_settings — and never re-lists the company base price.
             expect(stripe.subscriptions.create).toHaveBeenCalledWith(
-                expect.not.objectContaining({ trial_period_days: expect.anything() }),
+                expect.not.objectContaining({
+                    trial_period_days: expect.anything(),
+                }),
             );
             expect(stripe.prices.list).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -387,9 +405,13 @@ describe('BillingService', () => {
         });
 
         it('attaches the overage price to an already-provisioned subscription that lacks it', async () => {
-            organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'company' }),
+            );
             organisations.getSubscription.mockResolvedValue(subscriptionRow());
-            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.prices.list.mockResolvedValue({
+                data: [{ id: 'price_overage' }],
+            });
             stripe.subscriptionItems.list.mockResolvedValue({ data: [] });
 
             await service.reportShiftUsageBatch('org-1', 1, 'shift_usage_ghi');
@@ -406,9 +428,13 @@ describe('BillingService', () => {
         });
 
         it('does not attach the overage price again when it is already on the subscription', async () => {
-            organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'company' }),
+            );
             organisations.getSubscription.mockResolvedValue(subscriptionRow());
-            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.prices.list.mockResolvedValue({
+                data: [{ id: 'price_overage' }],
+            });
             stripe.subscriptionItems.list.mockResolvedValue({
                 data: [{ price: { id: 'price_overage' } }],
             });
@@ -424,7 +450,11 @@ describe('BillingService', () => {
             );
 
             await expect(
-                service.reportShiftUsageBatch('org-broken', 3, 'shift_usage_mno'),
+                service.reportShiftUsageBatch(
+                    'org-broken',
+                    3,
+                    'shift_usage_mno',
+                ),
             ).rejects.toBeInstanceOf(NotFoundException);
             expect(stripe.billing.meterEvents.create).not.toHaveBeenCalled();
         });
@@ -432,9 +462,13 @@ describe('BillingService', () => {
 
     describe('createBillingPortalSession', () => {
         it('provisions billing for an org with no Stripe presence yet, then creates a portal session', async () => {
-            organisations.getOrFail.mockResolvedValue(org({ orgType: 'personal' }));
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'personal' }),
+            );
             organisations.getSubscription.mockResolvedValue(null);
-            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.prices.list.mockResolvedValue({
+                data: [{ id: 'price_overage' }],
+            });
             stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
             stripe.subscriptions.create.mockResolvedValue({ id: 'sub_new' });
             stripe.billingPortal.sessions.create.mockResolvedValue({
@@ -448,15 +482,22 @@ describe('BillingService', () => {
 
             expect(stripe.billingPortal.sessions.create).toHaveBeenCalledWith({
                 customer: 'cus_new',
-                return_url: 'https://acme.hikyaku.org/dashboard/settings/billing',
+                return_url:
+                    'https://acme.hikyaku.org/dashboard/settings/billing',
             });
-            expect(result).toEqual({ url: 'https://billing.stripe.com/session/abc' });
+            expect(result).toEqual({
+                url: 'https://billing.stripe.com/session/abc',
+            });
         });
 
         it('reuses an already-provisioned customer', async () => {
-            organisations.getOrFail.mockResolvedValue(org({ orgType: 'company' }));
+            organisations.getOrFail.mockResolvedValue(
+                org({ orgType: 'company' }),
+            );
             organisations.getSubscription.mockResolvedValue(subscriptionRow());
-            stripe.prices.list.mockResolvedValue({ data: [{ id: 'price_overage' }] });
+            stripe.prices.list.mockResolvedValue({
+                data: [{ id: 'price_overage' }],
+            });
             stripe.subscriptionItems.list.mockResolvedValue({
                 data: [{ price: { id: 'price_overage' } }],
             });
@@ -464,7 +505,10 @@ describe('BillingService', () => {
                 url: 'https://billing.stripe.com/session/xyz',
             });
 
-            await service.createBillingPortalSession('org-1', 'https://return.example');
+            await service.createBillingPortalSession(
+                'org-1',
+                'https://return.example',
+            );
 
             expect(stripe.customers.create).not.toHaveBeenCalled();
             expect(stripe.billingPortal.sessions.create).toHaveBeenCalledWith({
@@ -482,10 +526,9 @@ describe('BillingService', () => {
                 invoice_settings: { default_payment_method: 'pm_123' },
             });
 
-            expect(organisations.updatePaymentMethodStatus).toHaveBeenCalledWith(
-                'org-1',
-                true,
-            );
+            expect(
+                organisations.updatePaymentMethodStatus,
+            ).toHaveBeenCalledWith('org-1', true);
         });
 
         it('marks the org as having no payment method when the default is cleared', async () => {
@@ -495,10 +538,9 @@ describe('BillingService', () => {
                 invoice_settings: { default_payment_method: null },
             });
 
-            expect(organisations.updatePaymentMethodStatus).toHaveBeenCalledWith(
-                'org-1',
-                false,
-            );
+            expect(
+                organisations.updatePaymentMethodStatus,
+            ).toHaveBeenCalledWith('org-1', false);
         });
 
         it('ignores an event with no organisationId metadata', async () => {
@@ -507,7 +549,9 @@ describe('BillingService', () => {
                 metadata: null,
             });
 
-            expect(organisations.updatePaymentMethodStatus).not.toHaveBeenCalled();
+            expect(
+                organisations.updatePaymentMethodStatus,
+            ).not.toHaveBeenCalled();
         });
     });
 
@@ -522,10 +566,9 @@ describe('BillingService', () => {
                 entitlements: { data: [{ lookup_key: 'vanity_url' }] },
             });
 
-            expect(organisations.updateVanityUrlEntitlement).toHaveBeenCalledWith(
-                'org-1',
-                true,
-            );
+            expect(
+                organisations.updateVanityUrlEntitlement,
+            ).toHaveBeenCalledWith('org-1', true);
         });
 
         it('marks the org unentitled when vanity_url is absent from the active summary', async () => {
@@ -538,10 +581,9 @@ describe('BillingService', () => {
                 entitlements: { data: [{ lookup_key: 'plugins' }] },
             });
 
-            expect(organisations.updateVanityUrlEntitlement).toHaveBeenCalledWith(
-                'org-1',
-                false,
-            );
+            expect(
+                organisations.updateVanityUrlEntitlement,
+            ).toHaveBeenCalledWith('org-1', false);
         });
 
         it('ignores an event for a customer with no matching organisation', async () => {
@@ -552,7 +594,9 @@ describe('BillingService', () => {
                 entitlements: { data: [{ lookup_key: 'vanity_url' }] },
             });
 
-            expect(organisations.updateVanityUrlEntitlement).not.toHaveBeenCalled();
+            expect(
+                organisations.updateVanityUrlEntitlement,
+            ).not.toHaveBeenCalled();
         });
     });
 
@@ -572,7 +616,10 @@ describe('BillingService', () => {
 
         it('is entitled for a grandfathered company org even with no cached flag', async () => {
             organisations.getOrFail.mockResolvedValue(
-                org({ orgType: 'company', subscriptionStatus: 'grandfathered' }),
+                org({
+                    orgType: 'company',
+                    subscriptionStatus: 'grandfathered',
+                }),
             );
             organisations.getSubscription.mockResolvedValue(null);
 

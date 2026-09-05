@@ -84,8 +84,8 @@ export class StripeWebhookController {
             event.type === 'checkout.session.completed' ||
             event.type === 'checkout.session.async_payment_succeeded'
         ) {
-            const session =
-                event.data.object as unknown as FulfillableCheckoutSession;
+            const session = event.data
+                .object as unknown as FulfillableCheckoutSession;
             if (session.payment_status === 'paid') {
                 await this.paymentsService.fulfillCheckoutSession(session);
             }
@@ -104,8 +104,8 @@ export class StripeWebhookController {
             event.type === 'customer.subscription.updated' ||
             event.type === 'customer.subscription.deleted'
         ) {
-            const subscription =
-                event.data.object as unknown as SubscriptionEventPayload;
+            const subscription = event.data
+                .object as unknown as SubscriptionEventPayload;
             await this.billingService.syncSubscriptionFromStripe(subscription);
         }
 
@@ -116,7 +116,8 @@ export class StripeWebhookController {
         // method. Fires whenever a customer is created, updated, or attaches one
         // via the Billing Portal (BillingService.createBillingPortalSession).
         if (event.type === 'customer.updated') {
-            const customer = event.data.object as unknown as CustomerEventPayload;
+            const customer = event.data
+                .object as unknown as CustomerEventPayload;
             await this.billingService.syncPaymentMethodFromStripe(customer);
         }
 
@@ -128,9 +129,11 @@ export class StripeWebhookController {
         // subscription is canceled and the Organisation plan's features fall
         // away).
         if (event.type === 'entitlements.active_entitlement_summary.updated') {
-            const summary =
-                event.data.object as unknown as EntitlementSummaryEventPayload;
-            await this.billingService.syncVanityUrlEntitlementFromStripe(summary);
+            const summary = event.data
+                .object as unknown as EntitlementSummaryEventPayload;
+            await this.billingService.syncVanityUrlEntitlementFromStripe(
+                summary,
+            );
         }
 
         return { received: true };

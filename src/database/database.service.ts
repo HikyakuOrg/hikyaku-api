@@ -48,7 +48,9 @@ const SETOFF_BUFFER_SECONDS = 1800;
  */
 function numeric(value: unknown, fallback: number): number {
     const parsed = typeof value === 'string' ? Number(value) : value;
-    return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : fallback;
+    return typeof parsed === 'number' && Number.isFinite(parsed)
+        ? parsed
+        : fallback;
 }
 
 @Injectable()
@@ -59,28 +61,44 @@ export class DatabaseService implements OnApplicationBootstrap {
 
     constructor(
         @InjectDataSource() private readonly dataSource: DataSource,
-        @InjectRepository(PackageStatus) private readonly packageStatusRepo: Repository<PackageStatus>,
-        @InjectRepository(Package) private readonly packageRepo: Repository<Package>,
-        @InjectRepository(PackageAssignment) private readonly packageAssignmentRepo: Repository<PackageAssignment>,
-        @InjectRepository(VrpOptimization) private readonly vrpOptimizationRepo: Repository<VrpOptimization>,
-        @InjectRepository(VrpSolution) private readonly vrpSolutionRepo: Repository<VrpSolution>,
-        @InjectRepository(VrpRoute) private readonly vrpRouteRepo: Repository<VrpRoute>,
-    ) { }
+        @InjectRepository(PackageStatus)
+        private readonly packageStatusRepo: Repository<PackageStatus>,
+        @InjectRepository(Package)
+        private readonly packageRepo: Repository<Package>,
+        @InjectRepository(PackageAssignment)
+        private readonly packageAssignmentRepo: Repository<PackageAssignment>,
+        @InjectRepository(VrpOptimization)
+        private readonly vrpOptimizationRepo: Repository<VrpOptimization>,
+        @InjectRepository(VrpSolution)
+        private readonly vrpSolutionRepo: Repository<VrpSolution>,
+        @InjectRepository(VrpRoute)
+        private readonly vrpRouteRepo: Repository<VrpRoute>,
+    ) {}
 
     async onApplicationBootstrap(): Promise<void> {
-        const status = await this.packageStatusRepo.findOneBy({ enums: 'PENDING' });
+        const status = await this.packageStatusRepo.findOneBy({
+            enums: 'PENDING',
+        });
         if (!status) {
-            throw new Error('package_status row with enums = \'PENDING\' not found.');
+            throw new Error(
+                "package_status row with enums = 'PENDING' not found.",
+            );
         }
         this.pendingStatusId = status.id;
         this.logger.log(`Resolved PENDING status id: ${this.pendingStatusId}`);
 
-        const assignedStatus = await this.packageStatusRepo.findOneBy({ enums: 'ASSIGNED' });
+        const assignedStatus = await this.packageStatusRepo.findOneBy({
+            enums: 'ASSIGNED',
+        });
         if (!assignedStatus) {
-            throw new Error('package_status row with enums = \'ASSIGNED\' not found.');
+            throw new Error(
+                "package_status row with enums = 'ASSIGNED' not found.",
+            );
         }
         this.assignedStatusId = assignedStatus.id;
-        this.logger.log(`Resolved ASSIGNED status id: ${this.assignedStatusId}`);
+        this.logger.log(
+            `Resolved ASSIGNED status id: ${this.assignedStatusId}`,
+        );
     }
 
     /**
@@ -109,7 +127,10 @@ export class DatabaseService implements OnApplicationBootstrap {
      * `records`, and only QueryRunner.query takes the flag that asks for them —
      * DataSource.query's third argument is a QueryRunner, not that flag.
      */
-    async queryReturning<T = unknown>(sql: string, params?: unknown[]): Promise<T[]> {
+    async queryReturning<T = unknown>(
+        sql: string,
+        params?: unknown[],
+    ): Promise<T[]> {
         const runner = this.dataSource.createQueryRunner();
         try {
             const result = await runner.query(sql, params, true);
@@ -171,7 +192,9 @@ export class DatabaseService implements OnApplicationBootstrap {
             }
             // Security: a passed organisationId must own the warehouse.
             if (organisationId && organisationId !== wh.organisation_id) {
-                throw new Error('Warehouse does not belong to the requesting organisation.');
+                throw new Error(
+                    'Warehouse does not belong to the requesting organisation.',
+                );
             }
             organisationId = wh.organisation_id;
             if (wh.warehouse_lon != null && wh.warehouse_lat != null) {
@@ -221,7 +244,9 @@ export class DatabaseService implements OnApplicationBootstrap {
             [this.pendingStatusId, opts.warehouseId ?? null],
         );
 
-        this.logger.debug(`Found ${packages.length} unassigned pending packages.`);
+        this.logger.debug(
+            `Found ${packages.length} unassigned pending packages.`,
+        );
 
         // 2. Fetch active driver–vehicle assignments with vehicle/warehouse details.
         const assignments: AssignmentRow[] = await runner.query(
@@ -243,7 +268,9 @@ export class DatabaseService implements OnApplicationBootstrap {
             [opts.warehouseId ?? null],
         );
 
-        this.logger.debug(`Found ${assignments.length} driver–vehicle assignments.`);
+        this.logger.debug(
+            `Found ${assignments.length} driver–vehicle assignments.`,
+        );
 
         // 3. Resolve warehouse coordinates: prefer the scoped warehouse, then
         //    packages, then vehicles.
@@ -268,7 +295,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         if (!warehouseCoords) {
             throw new Error(
                 'Could not determine warehouse location for routing. ' +
-                'Ensure packages/vehicles are assigned to a warehouse with a location.',
+                    'Ensure packages/vehicles are assigned to a warehouse with a location.',
             );
         }
 
@@ -278,11 +305,11 @@ export class DatabaseService implements OnApplicationBootstrap {
         const nowEpoch = Math.floor(now.getTime() / 1000);
         const setOffByVehicle = opts.useTimeWindows
             ? await this.computeVehicleSetOffs(
-                runner,
-                assignments.map((a) => a.vehicle_id),
-                opts.setOffOverrides ?? [],
-                now,
-            )
+                  runner,
+                  assignments.map((a) => a.vehicle_id),
+                  opts.setOffOverrides ?? [],
+                  now,
+              )
             : {};
 
         // 4. Build vehicles array.
@@ -300,8 +327,8 @@ export class DatabaseService implements OnApplicationBootstrap {
             const vehicle: BuildResult['request']['vehicles'][number] = {
                 id: vehicleNumericId,
                 profile: orsProfileToValhallaCosting(a.ors_vehicle_type),
-                start: warehouseCoords!,
-                end: warehouseCoords!,
+                start: warehouseCoords,
+                end: warehouseCoords,
                 capacity: [capacityG],
             };
             // Always, not just on demand: job time windows below are absolute
@@ -333,7 +360,10 @@ export class DatabaseService implements OnApplicationBootstrap {
             }
 
             // GRAMS, matching the vehicle capacity above.
-            const weightG = Math.max(1, Math.round(numeric(pkg.weight_kg, 0.001) * 1000));
+            const weightG = Math.max(
+                1,
+                Math.round(numeric(pkg.weight_kg, 0.001) * 1000),
+            );
 
             let priority = 0; // null scheduled_arrival → lowest priority
             const job: BuildResult['request']['jobs'][number] = {
@@ -365,11 +395,17 @@ export class DatabaseService implements OnApplicationBootstrap {
             jobMap[job.id] = pkg.id;
         });
 
-        const skipReason = jobs.length === 0
-            ? await this.explainNoEligibleJobs(runner, opts.warehouseId ?? null, packages.length, {
-                excludedNoGeocode,
-            })
-            : null;
+        const skipReason =
+            jobs.length === 0
+                ? await this.explainNoEligibleJobs(
+                      runner,
+                      opts.warehouseId ?? null,
+                      packages.length,
+                      {
+                          excludedNoGeocode,
+                      },
+                  )
+                : null;
 
         // 6. Packages already paired to a driver/vehicle outside this optimiser
         //    (e.g. a manual dashboard assignment) but never routed. The main
@@ -379,7 +415,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         const pinnedRoutes = await this.buildPinnedRoutes(
             runner,
             opts.warehouseId ?? null,
-            warehouseCoords!,
+            warehouseCoords,
             setOffByVehicle,
             now,
             startOfDay,
@@ -477,10 +513,12 @@ export class DatabaseService implements OnApplicationBootstrap {
             const jobPackageMap: Record<number, string> = {};
 
             const setOffEpoch =
-                setOffByVehicle[group.vehicleId] ?? Math.floor(now.getTime() / 1000);
+                setOffByVehicle[group.vehicleId] ??
+                Math.floor(now.getTime() / 1000);
 
             group.packages.forEach((pkg, index) => {
-                if (pkg.customer_lon == null || pkg.customer_lat == null) return;
+                if (pkg.customer_lon == null || pkg.customer_lat == null)
+                    return;
 
                 let priority = 0;
                 const jobNumericId = index + 1;
@@ -488,13 +526,20 @@ export class DatabaseService implements OnApplicationBootstrap {
                     id: jobNumericId,
                     service: TIME_PER_STOP,
                     location: [pkg.customer_lon, pkg.customer_lat],
-                    amount: [Math.max(1, Math.round(numeric(pkg.weight_kg, 0.001) * 1000))],
+                    amount: [
+                        Math.max(
+                            1,
+                            Math.round(numeric(pkg.weight_kg, 0.001) * 1000),
+                        ),
+                    ],
                     priority,
                 };
 
                 if (pkg.scheduled_arrival) {
                     const arrivalDate = new Date(pkg.scheduled_arrival);
-                    const deadlineEpoch = Math.floor(arrivalDate.getTime() / 1000);
+                    const deadlineEpoch = Math.floor(
+                        arrivalDate.getTime() / 1000,
+                    );
                     if (arrivalDate < startOfDay) {
                         priority = 100;
                     } else if (arrivalDate <= endOfDay) {
@@ -527,7 +572,10 @@ export class DatabaseService implements OnApplicationBootstrap {
                             start: warehouseCoords,
                             end: warehouseCoords,
                             capacity: [group.capacityG],
-                            time_window: [setOff, setOff + SHIFT_WINDOW_SECONDS],
+                            time_window: [
+                                setOff,
+                                setOff + SHIFT_WINDOW_SECONDS,
+                            ],
                         },
                     ],
                 },
@@ -560,8 +608,9 @@ export class DatabaseService implements OnApplicationBootstrap {
         // No candidates even before the geocode/date filters — find out whether
         // that's because nothing is pending, or because it's pending but already
         // spoken for by a manual assignment.
-        const diagRows: { already_assigned: string; not_pending: string }[] = await runner.query(
-            `
+        const diagRows: { already_assigned: string; not_pending: string }[] =
+            await runner.query(
+                `
       SELECT
         COUNT(*) FILTER (WHERE pa.package_id IS NOT NULL) AS already_assigned,
         COUNT(*) FILTER (
@@ -580,8 +629,8 @@ export class DatabaseService implements OnApplicationBootstrap {
       WHERE  p.optimisation_id IS NULL
         AND  ($2::uuid IS NULL OR p.warehouse_id = $2)
       `,
-            [this.pendingStatusId, warehouseId],
-        );
+                [this.pendingStatusId, warehouseId],
+            );
         const diag = diagRows[0];
         const alreadyAssigned = Number(diag?.already_assigned ?? 0);
         const notPending = Number(diag?.not_pending ?? 0);
@@ -591,7 +640,10 @@ export class DatabaseService implements OnApplicationBootstrap {
         }
         const parts: string[] = [];
         if (notPending > 0) parts.push(`${notPending} not in PENDING status`);
-        if (alreadyAssigned > 0) parts.push(`${alreadyAssigned} already have a driver/vehicle assignment`);
+        if (alreadyAssigned > 0)
+            parts.push(
+                `${alreadyAssigned} already have a driver/vehicle assignment`,
+            );
         return `No eligible packages: ${parts.join(', ')}.`;
     }
 
@@ -680,7 +732,10 @@ export class DatabaseService implements OnApplicationBootstrap {
                 const setOff = returnEpoch + SETOFF_BUFFER_SECONDS;
                 // A vehicle may carry more than one active route — take the
                 // latest return so its next wave never overlaps either.
-                result[row.vehicle_id] = Math.max(result[row.vehicle_id] ?? nowEpoch, setOff);
+                result[row.vehicle_id] = Math.max(
+                    result[row.vehicle_id] ?? nowEpoch,
+                    setOff,
+                );
             }
         }
 
@@ -737,8 +792,8 @@ export class DatabaseService implements OnApplicationBootstrap {
         // 2. vrp_solution — summary stats from the VROOM response.
         const summary = optimisationResponse.summary ?? {};
         // computing_times is returned by VROOM but absent from the typed interface.
-        const computingTimes =
-            (summary as Record<string, unknown>)?.computing_times as
+        const computingTimes = (summary as Record<string, unknown>)
+            ?.computing_times as
             | { loading?: number; solving?: number; routing?: number }
             | undefined;
 
@@ -748,7 +803,9 @@ export class DatabaseService implements OnApplicationBootstrap {
             routesCount: summary.routes ?? null,
             unassignedCount: summary.unassigned ?? null,
             delivery: summary.delivery != null ? [summary.delivery] : null,
-            amount: (summary as Record<string, unknown>).amount as number[] ?? null,
+            amount:
+                ((summary as Record<string, unknown>).amount as number[]) ??
+                null,
             pickup: summary.pickup != null ? [summary.pickup] : null,
             setup: summary.setup ?? null,
             service: summary.service ?? null,
@@ -762,7 +819,8 @@ export class DatabaseService implements OnApplicationBootstrap {
         const solutionId: string = solResult.identifiers[0].id;
 
         // Collected across all routes; written after the step inserts.
-        const departureByPackage: { package_id: string; departure: string }[] = [];
+        const departureByPackage: { package_id: string; departure: string }[] =
+            [];
 
         // 3. Routes.
         for (const route of optimisationResponse.routes ?? []) {
@@ -792,9 +850,13 @@ export class DatabaseService implements OnApplicationBootstrap {
             // relative-from-departure seconds (and reuse it as scheduled_departure).
             const startStep = route.steps.find((s) => s.type === 'start');
             const departureEpoch =
-                opts.timeWindowed && startStep?.arrival != null ? startStep.arrival : null;
+                opts.timeWindowed && startStep?.arrival != null
+                    ? startStep.arrival
+                    : null;
             const departureIso =
-                departureEpoch != null ? new Date(departureEpoch * 1000).toISOString() : null;
+                departureEpoch != null
+                    ? new Date(departureEpoch * 1000).toISOString()
+                    : null;
 
             // Collect steps and package assignments for this route.
             const stepsPayload: StepInsertRow[] = [];
@@ -825,7 +887,10 @@ export class DatabaseService implements OnApplicationBootstrap {
                         driver_id: driverMap[route.vehicle],
                     });
                     if (departureIso) {
-                        departureByPackage.push({ package_id: pkgId, departure: departureIso });
+                        departureByPackage.push({
+                            package_id: pkgId,
+                            departure: departureIso,
+                        });
                     }
                 }
 
@@ -834,8 +899,8 @@ export class DatabaseService implements OnApplicationBootstrap {
                     step.arrival == null
                         ? null
                         : departureEpoch != null
-                            ? step.arrival - departureEpoch
-                            : step.arrival;
+                          ? step.arrival - departureEpoch
+                          : step.arrival;
 
                 stepsPayload.push({
                     route_id: routeId,
@@ -856,7 +921,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                         step.load != null
                             ? Array.isArray(step.load)
                                 ? (step.load as number[])
-                                : [step.load as unknown as number]
+                                : [step.load]
                             : null,
                 });
             }
@@ -889,7 +954,11 @@ export class DatabaseService implements OnApplicationBootstrap {
 
             // 5. Advance status to ASSIGNED now that these packages have a
             //    driver/vehicle/route — mirrors insertAdhocRoutes.
-            await this.insertPackageTimelineStatus(runner, ids, this.assignedStatusId);
+            await this.insertPackageTimelineStatus(
+                runner,
+                ids,
+                this.assignedStatusId,
+            );
         }
 
         return optimizationId;
@@ -927,7 +996,12 @@ export class DatabaseService implements OnApplicationBootstrap {
         requestForDb: object,
         response: OptimizationResponse,
         jobPackageMap: Record<number, string>,
-        opts: { organisationId: string; scheduledStart: Date; driverId: string; vehicleId: string },
+        opts: {
+            organisationId: string;
+            scheduledStart: Date;
+            driverId: string;
+            vehicleId: string;
+        },
     ): Promise<{
         optimizationId: string;
         routeId: string | null;
@@ -946,8 +1020,8 @@ export class DatabaseService implements OnApplicationBootstrap {
         // 2. vrp_solution — summary stats from the VROOM response.
         const summary = response.summary ?? {};
         // computing_times is returned by VROOM but absent from the typed interface.
-        const computingTimes =
-            (summary as Record<string, unknown>)?.computing_times as
+        const computingTimes = (summary as Record<string, unknown>)
+            ?.computing_times as
             | { loading?: number; solving?: number; routing?: number }
             | undefined;
 
@@ -957,7 +1031,9 @@ export class DatabaseService implements OnApplicationBootstrap {
             routesCount: summary.routes ?? null,
             unassignedCount: summary.unassigned ?? null,
             delivery: summary.delivery != null ? [summary.delivery] : null,
-            amount: (summary as Record<string, unknown>).amount as number[] ?? null,
+            amount:
+                ((summary as Record<string, unknown>).amount as number[]) ??
+                null,
             pickup: summary.pickup != null ? [summary.pickup] : null,
             setup: summary.setup ?? null,
             service: summary.service ?? null,
@@ -1014,7 +1090,10 @@ export class DatabaseService implements OnApplicationBootstrap {
 
                 let pkgId: string | null = null;
                 if (step.type === 'job') {
-                    pkgId = (step.id != null ? jobPackageMap[step.id] : undefined) ?? null;
+                    pkgId =
+                        (step.id != null
+                            ? jobPackageMap[step.id]
+                            : undefined) ?? null;
                     if (!pkgId) {
                         throw new Error(
                             `Missing package mapping for job id ${step.id ?? '(unknown)'}`,
@@ -1032,8 +1111,8 @@ export class DatabaseService implements OnApplicationBootstrap {
                     step.arrival == null
                         ? null
                         : departureEpoch != null
-                            ? step.arrival - departureEpoch
-                            : step.arrival;
+                          ? step.arrival - departureEpoch
+                          : step.arrival;
 
                 stepsPayload.push({
                     route_id: insertedRouteId,
@@ -1052,7 +1131,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                         step.load != null
                             ? Array.isArray(step.load)
                                 ? (step.load as number[])
-                                : [step.load as unknown as number]
+                                : [step.load]
                             : null,
                 });
             }
@@ -1110,7 +1189,9 @@ export class DatabaseService implements OnApplicationBootstrap {
             );
             const claimed = (claimResult.records ?? []) as { id: string }[];
             if (claimed.length < ids.length) {
-                const lost = ids.filter((id) => !claimed.some((c) => c.id === id));
+                const lost = ids.filter(
+                    (id) => !claimed.some((c) => c.id === id),
+                );
                 throw new ConflictException(
                     `Package(s) claimed by another optimisation while this one was solving: ${lost.join(', ')}`,
                 );
@@ -1119,7 +1200,11 @@ export class DatabaseService implements OnApplicationBootstrap {
             // 6. Advance status to ASSIGNED now that these packages have a
             //    driver/vehicle/route — mirrors how PENDING is stamped on
             //    creation (see PaymentsService.fulfilCheckoutSession).
-            await this.insertPackageTimelineStatus(runner, ids, this.assignedStatusId);
+            await this.insertPackageTimelineStatus(
+                runner,
+                ids,
+                this.assignedStatusId,
+            );
         }
 
         return { optimizationId, routeId, unassignedPackageIds };
@@ -1135,7 +1220,11 @@ export class DatabaseService implements OnApplicationBootstrap {
      */
     private async upsertPackageAssignments(
         runner: QueryRunner,
-        assignments: { package_id: string; vehicle_id: string; driver_id: string }[],
+        assignments: {
+            package_id: string;
+            vehicle_id: string;
+            driver_id: string;
+        }[],
     ): Promise<void> {
         await runner.manager.upsert(
             PackageAssignment,
@@ -1231,19 +1320,19 @@ export class DatabaseService implements OnApplicationBootstrap {
             .join(', ');
 
         const params = steps.flatMap((s) => [
-            s.route_id,      // 1
-            s.step_index,    // 2
-            s.type,          // 3
-            s.solution_id,   // 4
-            s.package_id,    // 5
-            s.lon,           // 6  → ST_Point arg
-            s.lat,           // 7  → ST_Point arg
-            s.arrival,       // 8
-            s.duration,      // 9
-            s.setup,         // 10
-            s.service,       // 11
-            s.waiting_time,  // 12
-            s.load,          // 13
+            s.route_id, // 1
+            s.step_index, // 2
+            s.type, // 3
+            s.solution_id, // 4
+            s.package_id, // 5
+            s.lon, // 6  → ST_Point arg
+            s.lat, // 7  → ST_Point arg
+            s.arrival, // 8
+            s.duration, // 9
+            s.setup, // 10
+            s.service, // 11
+            s.waiting_time, // 12
+            s.load, // 13
         ]);
 
         await runner.query(

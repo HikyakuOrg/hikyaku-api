@@ -23,7 +23,9 @@ const PACKAGES = [
     {
         id: 'pkg-a',
         weight_kg: '2',
-        scheduled_arrival: new Date(NOW.getTime() + 6 * 3_600_000).toISOString(),
+        scheduled_arrival: new Date(
+            NOW.getTime() + 6 * 3_600_000,
+        ).toISOString(),
         lon: 0.01,
         lat: 0,
     },
@@ -64,13 +66,23 @@ function build(state: WorkerState = {}) {
         if (sql.includes('pg_try_advisory_lock')) {
             return [{ locked: state.locked ?? true }];
         }
-        if (sql.includes('FROM vrp_optimization v') && sql.includes('depot_lon')) {
-            return state.shift === undefined ? [SHIFT] : state.shift ? [state.shift] : [];
+        if (
+            sql.includes('FROM vrp_optimization v') &&
+            sql.includes('depot_lon')
+        ) {
+            return state.shift === undefined
+                ? [SHIFT]
+                : state.shift
+                  ? [state.shift]
+                  : [];
         }
         if (sql.includes('WHERE p.optimisation_id')) {
             return state.packages ?? PACKAGES;
         }
-        if (sql.includes('FROM vrp_solution s') && sql.includes('JOIN vrp_route')) {
+        if (
+            sql.includes('FROM vrp_solution s') &&
+            sql.includes('JOIN vrp_route')
+        ) {
             return [{ route_id: 'route-1', solution_id: 'sol-1' }];
         }
         return [];
@@ -110,7 +122,9 @@ function build(state: WorkerState = {}) {
     const assignment = {
         assign: jest.fn().mockResolvedValue({ outcome: 'deferred' }),
     };
-    const optimisationRunRepo = { update: jest.fn().mockResolvedValue(undefined) };
+    const optimisationRunRepo = {
+        update: jest.fn().mockResolvedValue(undefined),
+    };
     const db = {
         beginTransaction: jest.fn().mockResolvedValue(runner),
         buildOptimizationRequest: jest.fn(),
@@ -125,8 +139,16 @@ function build(state: WorkerState = {}) {
                     vehicle: 1,
                     steps: [
                         { type: 'start', arrival: NOW.getTime() / 1000 },
-                        { type: 'job', id: 2, arrival: NOW.getTime() / 1000 + 300 },
-                        { type: 'job', id: 1, arrival: NOW.getTime() / 1000 + 1500 },
+                        {
+                            type: 'job',
+                            id: 2,
+                            arrival: NOW.getTime() / 1000 + 300,
+                        },
+                        {
+                            type: 'job',
+                            id: 1,
+                            arrival: NOW.getTime() / 1000 + 1500,
+                        },
                         { type: 'end', arrival: NOW.getTime() / 1000 + 2000 },
                     ],
                 },
@@ -143,17 +165,27 @@ function build(state: WorkerState = {}) {
         new ShiftPlanWriter(),
         assignment as never,
         db as never,
-        vroom as never,
+        vroom,
     );
 
-    return { worker, queue, notify, assignment, db, vroom, runner, log, dataSource };
+    return {
+        worker,
+        queue,
+        notify,
+        assignment,
+        db,
+        vroom,
+        runner,
+        log,
+        dataSource,
+    };
 }
 
 describe('ReplanWorker', () => {
     beforeEach(() => {
-        jest
-            .useFakeTimers({ doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'] })
-            .setSystemTime(NOW);
+        jest.useFakeTimers({
+            doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+        }).setSystemTime(NOW);
     });
 
     afterEach(() => {
@@ -168,7 +200,10 @@ describe('ReplanWorker', () => {
 
             expect(queue.ensureQueue).toHaveBeenCalled();
             expect(notify.subscribe).toHaveBeenCalledWith(
-                expect.objectContaining({ channel: REPLAN_CHANNEL, debounceMs: 3_000 }),
+                expect.objectContaining({
+                    channel: REPLAN_CHANNEL,
+                    debounceMs: 3_000,
+                }),
             );
         });
 
@@ -189,7 +224,9 @@ describe('ReplanWorker', () => {
         it('starts up even when the queue cannot be reached', async () => {
             const { worker, queue, notify } = build();
             queue.ensureQueue.mockRejectedValue(new Error('pgmq missing'));
-            await expect(worker.onApplicationBootstrap()).resolves.toBeUndefined();
+            await expect(
+                worker.onApplicationBootstrap(),
+            ).resolves.toBeUndefined();
             expect(notify.subscribe).toHaveBeenCalled();
             worker.onModuleDestroy();
         });
@@ -204,7 +241,9 @@ describe('ReplanWorker', () => {
             await worker.replanShift('shift-1');
 
             expect(
-                log.filter((q) => /INSERT INTO vrp_optimization\b/i.test(q.sql)),
+                log.filter((q) =>
+                    /INSERT INTO vrp_optimization\b/i.test(q.sql),
+                ),
             ).toHaveLength(0);
         });
 
@@ -216,7 +255,9 @@ describe('ReplanWorker', () => {
             const withDeadline = request.jobs.find(
                 (j: { id: number }) => j.id === 1,
             );
-            const without = request.jobs.find((j: { id: number }) => j.id === 2);
+            const without = request.jobs.find(
+                (j: { id: number }) => j.id === 2,
+            );
 
             expect(withDeadline.time_windows).toEqual([
                 [NOW.getTime() / 1000, NOW.getTime() / 1000 + 6 * 3600],
@@ -232,10 +273,9 @@ describe('ReplanWorker', () => {
             const request = vroom.solve.mock.calls[0][0];
             // 1000 kg gross → 1,000,000 g, against amounts of 2000 g and 3000 g.
             expect(request.vehicles[0].capacity).toEqual([1_000_000]);
-            expect(request.jobs.map((j: { amount: number[] }) => j.amount)).toEqual([
-                [2_000],
-                [3_000],
-            ]);
+            expect(
+                request.jobs.map((j: { amount: number[] }) => j.amount),
+            ).toEqual([[2_000], [3_000]]);
         });
 
         it('writes the order VROOM returned, not the order it was given', async () => {
@@ -257,7 +297,11 @@ describe('ReplanWorker', () => {
             const snapshot = log.find((q) =>
                 q.sql.includes('INSERT INTO vrp_optimization_revision'),
             );
-            expect(snapshot?.params).toEqual(['shift-1', SHIFT.revision, 'replan']);
+            expect(snapshot?.params).toEqual([
+                'shift-1',
+                SHIFT.revision,
+                'replan',
+            ]);
         });
 
         it('does not touch a shift that has already rolled', async () => {
@@ -278,8 +322,12 @@ describe('ReplanWorker', () => {
             const { worker, vroom, log } = build();
             vroom.solve.mockRejectedValue(new Error('vroom exploded'));
 
-            await expect(worker.replanShift('shift-1')).rejects.toThrow('vroom exploded');
-            expect(log.some((q) => q.sql.includes('pg_advisory_unlock'))).toBe(true);
+            await expect(worker.replanShift('shift-1')).rejects.toThrow(
+                'vroom exploded',
+            );
+            expect(log.some((q) => q.sql.includes('pg_advisory_unlock'))).toBe(
+                true,
+            );
         });
 
         it('does nothing for an empty shift id', async () => {
@@ -303,8 +351,15 @@ describe('ReplanWorker', () => {
                         vehicle: 1,
                         steps: [
                             { type: 'start', arrival: NOW.getTime() / 1000 },
-                            { type: 'job', id: 1, arrival: NOW.getTime() / 1000 + 300 },
-                            { type: 'end', arrival: NOW.getTime() / 1000 + 900 },
+                            {
+                                type: 'job',
+                                id: 1,
+                                arrival: NOW.getTime() / 1000 + 300,
+                            },
+                            {
+                                type: 'end',
+                                arrival: NOW.getTime() / 1000 + 900,
+                            },
                         ],
                     },
                 ],
@@ -318,23 +373,31 @@ describe('ReplanWorker', () => {
             );
             expect(detach?.params[0]).toEqual(['pkg-b']);
             // Detaching must not count as an eviction — nobody bumped it.
-            const counter = log.find((q) => q.sql.includes('eviction_count  = eviction_count'));
+            const counter = log.find((q) =>
+                q.sql.includes('eviction_count  = eviction_count'),
+            );
             expect(counter?.params[1]).toBe(0);
             expect(assignment.assign).toHaveBeenCalledWith('org-1', 'pkg-b');
         });
 
         it('rolls back the plan write if any part of it fails', async () => {
             const { worker, runner, log } = build();
-            runner.query.mockImplementation((sql: string, params: unknown[] = []) => {
-                log.push({ sql, params });
-                if (sql.includes('INSERT INTO vrp_route_step')) {
-                    return Promise.reject(new Error('constraint violation'));
-                }
-                if (sql.includes('FROM vrp_solution s')) {
-                    return Promise.resolve([{ route_id: 'route-1', solution_id: 'sol-1' }]);
-                }
-                return Promise.resolve([]);
-            });
+            runner.query.mockImplementation(
+                (sql: string, params: unknown[] = []) => {
+                    log.push({ sql, params });
+                    if (sql.includes('INSERT INTO vrp_route_step')) {
+                        return Promise.reject(
+                            new Error('constraint violation'),
+                        );
+                    }
+                    if (sql.includes('FROM vrp_solution s')) {
+                        return Promise.resolve([
+                            { route_id: 'route-1', solution_id: 'sol-1' },
+                        ]);
+                    }
+                    return Promise.resolve([]);
+                },
+            );
 
             await expect(worker.replanShift('shift-1')).rejects.toThrow();
             expect(runner.rollbackTransaction).toHaveBeenCalled();
@@ -346,16 +409,34 @@ describe('ReplanWorker', () => {
         it('solves a shift once however many replans name it', async () => {
             const { worker, queue } = build({
                 messages: [
-                    message({ kind: 'replan', optimisationId: 'shift-1' }, { msg_id: BigInt(1) }),
-                    message({ kind: 'replan', optimisationId: 'shift-1' }, { msg_id: BigInt(2) }),
-                    message({ kind: 'replan', optimisationId: 'shift-1' }, { msg_id: BigInt(3) }),
+                    message(
+                        { kind: 'replan', optimisationId: 'shift-1' },
+                        { msg_id: BigInt(1) },
+                    ),
+                    message(
+                        { kind: 'replan', optimisationId: 'shift-1' },
+                        { msg_id: BigInt(2) },
+                    ),
+                    message(
+                        { kind: 'replan', optimisationId: 'shift-1' },
+                        { msg_id: BigInt(3) },
+                    ),
                 ],
             });
             queue.readBatch
                 .mockResolvedValueOnce([
-                    message({ kind: 'replan', optimisationId: 'shift-1' }, { msg_id: BigInt(1) }),
-                    message({ kind: 'replan', optimisationId: 'shift-1' }, { msg_id: BigInt(2) }),
-                    message({ kind: 'replan', optimisationId: 'shift-1' }, { msg_id: BigInt(3) }),
+                    message(
+                        { kind: 'replan', optimisationId: 'shift-1' },
+                        { msg_id: BigInt(1) },
+                    ),
+                    message(
+                        { kind: 'replan', optimisationId: 'shift-1' },
+                        { msg_id: BigInt(2) },
+                    ),
+                    message(
+                        { kind: 'replan', optimisationId: 'shift-1' },
+                        { msg_id: BigInt(3) },
+                    ),
                 ])
                 .mockResolvedValue([]);
 
@@ -381,7 +462,9 @@ describe('ReplanWorker', () => {
         it('archives an unrecognised payload rather than cycling it forever', async () => {
             const { worker, queue } = build();
             queue.readBatch
-                .mockResolvedValueOnce([message({ warehouseId: 'wh-1', runDate: '2026-09-01' })])
+                .mockResolvedValueOnce([
+                    message({ warehouseId: 'wh-1', runDate: '2026-09-01' }),
+                ])
                 .mockResolvedValue([]);
 
             await worker.drain();
@@ -393,7 +476,10 @@ describe('ReplanWorker', () => {
             vroom.solve.mockRejectedValue(new Error('vroom down'));
             queue.readBatch
                 .mockResolvedValueOnce([
-                    message({ kind: 'replan', optimisationId: 'shift-1' }, { read_ct: 1 }),
+                    message(
+                        { kind: 'replan', optimisationId: 'shift-1' },
+                        { read_ct: 1 },
+                    ),
                 ])
                 .mockResolvedValue([]);
 
@@ -408,7 +494,10 @@ describe('ReplanWorker', () => {
             vroom.solve.mockRejectedValue(new Error('vroom down'));
             queue.readBatch
                 .mockResolvedValueOnce([
-                    message({ kind: 'replan', optimisationId: 'shift-1' }, { read_ct: 3 }),
+                    message(
+                        { kind: 'replan', optimisationId: 'shift-1' },
+                        { read_ct: 3 },
+                    ),
                 ])
                 .mockResolvedValue([]);
 
@@ -420,7 +509,10 @@ describe('ReplanWorker', () => {
             const { worker, queue } = build();
             let release!: (value: PgmqMessage[]) => void;
             queue.readBatch.mockImplementationOnce(
-                () => new Promise<PgmqMessage[]>((resolve) => { release = resolve; }),
+                () =>
+                    new Promise<PgmqMessage[]>((resolve) => {
+                        release = resolve;
+                    }),
             );
             queue.readBatch.mockResolvedValue([]);
 
@@ -493,7 +585,9 @@ describe('ReplanWorker', () => {
 
         it('deletes the message on failure — the dispatcher retries, not the queue', async () => {
             const { worker, queue, db } = build();
-            db.buildOptimizationRequest.mockRejectedValue(new Error('vroom unreachable'));
+            db.buildOptimizationRequest.mockRejectedValue(
+                new Error('vroom unreachable'),
+            );
             queue.readBatch
                 .mockResolvedValueOnce([
                     message({

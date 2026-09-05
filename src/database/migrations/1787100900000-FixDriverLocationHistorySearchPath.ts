@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-export class FixDriverLocationHistorySearchPath1787100900000
-    implements MigrationInterface
-{
+export class FixDriverLocationHistorySearchPath1787100900000 implements MigrationInterface {
     name = 'FixDriverLocationHistorySearchPath1787100900000';
 
     private read(file: string): string {

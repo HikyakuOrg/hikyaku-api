@@ -27,7 +27,11 @@ import {
     type InsertionSuccess,
     type RouteStop,
 } from './insertion';
-import { endOfLocalDayMs, localHourMs, localShiftDate } from './warehouse-clock';
+import {
+    endOfLocalDayMs,
+    localHourMs,
+    localShiftDate,
+} from './warehouse-clock';
 
 /** Local hour a shift is assumed to set off when scheduled_start is unset. */
 const DEFAULT_DEPARTURE_HOUR = 8;
@@ -36,10 +40,7 @@ const DEFAULT_DEPARTURE_HOUR = 8;
 const MAX_REVISION_RETRIES = 2;
 
 export type AssignmentOutcomeKind =
-    | 'assigned'
-    | 'assigned_new_shift'
-    | 'deferred'
-    | 'skipped';
+    'assigned' | 'assigned_new_shift' | 'deferred' | 'skipped';
 
 export interface AssignedShiftResult {
     id: string;
@@ -167,7 +168,7 @@ export class AssignmentService {
         private readonly valhalla: ValhallaService,
         private readonly queue: QueueService,
         private readonly planWriter: ShiftPlanWriter,
-    ) { }
+    ) {}
 
     /**
      * `instant` is now the default, and effectively the only mode.
@@ -182,7 +183,9 @@ export class AssignmentService {
      * PENDING until a dispatcher assigns them by hand.
      */
     get mode(): 'nightly' | 'instant' {
-        return process.env.ASSIGNMENT_MODE === 'nightly' ? 'nightly' : 'instant';
+        return process.env.ASSIGNMENT_MODE === 'nightly'
+            ? 'nightly'
+            : 'instant';
     }
 
     /**
@@ -244,7 +247,10 @@ export class AssignmentService {
     ): Promise<Map<string, AssignmentOutcome>> {
         const results = new Map<string, AssignmentOutcome>();
         for (const packageId of packageIds) {
-            results.set(packageId, await this.assign(organisationId, packageId));
+            results.set(
+                packageId,
+                await this.assign(organisationId, packageId),
+            );
         }
         return results;
     }
@@ -266,7 +272,10 @@ export class AssignmentService {
         packageIds: string[],
     ): Promise<{ verdicts: ShiftPackageVerdict[]; revision: number }> {
         const shift = await this.loadShiftForEdit(organisationId, shiftId);
-        const rows = await this.loadPackagesForShift(organisationId, packageIds);
+        const rows = await this.loadPackagesForShift(
+            organisationId,
+            packageIds,
+        );
         const found = new Map(rows.map((r) => [r.id, r]));
 
         const runner = this.dataSource.createQueryRunner();
@@ -289,7 +298,11 @@ export class AssignmentService {
             for (const packageId of packageIds) {
                 const row = found.get(packageId);
                 if (!row) {
-                    verdicts.push({ packageId, added: false, warning: 'unknown package' });
+                    verdicts.push({
+                        packageId,
+                        added: false,
+                        warning: 'unknown package',
+                    });
                     continue;
                 }
                 if (row.optimisation_id && row.optimisation_id !== shiftId) {
@@ -329,7 +342,10 @@ export class AssignmentService {
                     verdicts.push({ packageId, added: true, warning: null });
                 } else {
                     // Appended rather than dropped: the dispatcher asked for it.
-                    working = { ...working, stops: [...working.stops, newStop] };
+                    working = {
+                        ...working,
+                        stops: [...working.stops, newStop],
+                    };
                     verdicts.push({
                         packageId,
                         added: true,
@@ -437,9 +453,11 @@ export class AssignmentService {
      * again -- the path for a deadline that changed after creation.
      */
     async unassign(organisationId: string, packageId: string): Promise<void> {
-        const rows: { optimisation_id: string | null; status: string | null }[] =
-            await this.dataSource.query(
-                `SELECT p.optimisation_id, latest.enums AS status
+        const rows: {
+            optimisation_id: string | null;
+            status: string | null;
+        }[] = await this.dataSource.query(
+            `SELECT p.optimisation_id, latest.enums AS status
                    FROM packages p
                    LEFT JOIN LATERAL (
                         SELECT ps.enums
@@ -450,8 +468,8 @@ export class AssignmentService {
                          LIMIT 1
                    ) latest ON true
                   WHERE p.id = $1 AND p.organisation_id = $2`,
-                [packageId, organisationId],
-            );
+            [packageId, organisationId],
+        );
         const row = rows[0];
         if (!row) throw new NotFoundException('Package not found.');
 
@@ -463,7 +481,11 @@ export class AssignmentService {
         }
         if (!row.optimisation_id) return;
 
-        await this.removeFromShift(organisationId, row.optimisation_id, packageId);
+        await this.removeFromShift(
+            organisationId,
+            row.optimisation_id,
+            packageId,
+        );
     }
 
     /**
@@ -476,9 +498,13 @@ export class AssignmentService {
         candidate: Candidate,
         reason: string,
     ): Promise<number> {
-        const { routeId, solutionId } = candidate.routeId && candidate.solutionId
-            ? { routeId: candidate.routeId, solutionId: candidate.solutionId }
-            : await this.planWriter.ensureRoute(runner, candidate.shift.id);
+        const { routeId, solutionId } =
+            candidate.routeId && candidate.solutionId
+                ? {
+                      routeId: candidate.routeId,
+                      solutionId: candidate.solutionId,
+                  }
+                : await this.planWriter.ensureRoute(runner, candidate.shift.id);
 
         await this.planWriter.snapshotRevision(
             runner,
@@ -569,7 +595,11 @@ export class AssignmentService {
                 `Shift is ${row.status} and is closed to changes.`,
             );
         }
-        if (!row.warehouse_id || row.depot_lon == null || row.depot_lat == null) {
+        if (
+            !row.warehouse_id ||
+            row.depot_lon == null ||
+            row.depot_lat == null
+        ) {
             throw new ConflictException(
                 'Shift has no warehouse location to plan a route from.',
             );
@@ -594,9 +624,13 @@ export class AssignmentService {
                     departureMs: row.scheduled_start
                         ? new Date(row.scheduled_start).getTime()
                         : Math.max(
-                            now.getTime(),
-                            localHourMs(now, row.timezone, DEFAULT_DEPARTURE_HOUR),
-                        ),
+                              now.getTime(),
+                              localHourMs(
+                                  now,
+                                  row.timezone,
+                                  DEFAULT_DEPARTURE_HOUR,
+                              ),
+                          ),
                     depot,
                     stops: row.route_id ? (stops.get(row.route_id) ?? []) : [],
                 },
@@ -669,7 +703,10 @@ export class AssignmentService {
             return deferred('no_capacity');
         }
 
-        const warehouse = await this.loadWarehouse(organisationId, pkgRow.warehouse_id);
+        const warehouse = await this.loadWarehouse(
+            organisationId,
+            pkgRow.warehouse_id,
+        );
         if (!warehouse || warehouse.lon == null || warehouse.lat == null) {
             return deferred('no_capacity');
         }
@@ -694,7 +731,12 @@ export class AssignmentService {
                 warehouse.timezone,
             );
 
-            const decision = await this.decide(candidates, pkg, ctx, allowEviction);
+            const decision = await this.decide(
+                candidates,
+                pkg,
+                ctx,
+                allowEviction,
+            );
 
             // ── PHASE B: locked, no network I/O ──────────────────────────────
             const outcome = await this.commitDecision(
@@ -710,7 +752,10 @@ export class AssignmentService {
 
             if (outcome !== 'retry') {
                 if (outcome.evictedPackageIds.length > 0) {
-                    await this.reassignVictims(organisationId, outcome.evictedPackageIds);
+                    await this.reassignVictims(
+                        organisationId,
+                        outcome.evictedPackageIds,
+                    );
                 }
                 return outcome;
             }
@@ -735,7 +780,12 @@ export class AssignmentService {
         allowEviction: boolean,
     ): Promise<
         | { kind: 'insert'; candidate: Candidate; insertion: InsertionSuccess }
-        | { kind: 'evict'; candidate: Candidate; insertion: InsertionSuccess; victimIds: string[] }
+        | {
+              kind: 'evict';
+              candidate: Candidate;
+              insertion: InsertionSuccess;
+              victimIds: string[];
+          }
         | { kind: 'none' }
     > {
         const stopCounts: Record<string, number> = {};
@@ -758,7 +808,11 @@ export class AssignmentService {
         if (best && isGreyBand(best)) {
             const candidate = byId.get(best.shiftId);
             if (candidate) {
-                const measured = await this.measureLegs(candidate, best.order, pkg);
+                const measured = await this.measureLegs(
+                    candidate,
+                    best.order,
+                    pkg,
+                );
                 if (measured) {
                     const rechecked = tryInsert(candidate.shift, pkg, {
                         ...ctx,
@@ -783,10 +837,10 @@ export class AssignmentService {
                 const penalty = spreadLoad ? loadPenaltySeconds(stops) : 0;
                 this.logger.debug(
                     `Package ${pkg.id} chose shift ${best.shiftId} (${stops} stop(s) already): ` +
-                    `detour ${Math.round(best.deltaSeconds)}s + load penalty ${Math.round(penalty)}s ` +
-                    `= ${Math.round(best.deltaSeconds + penalty)}s, ` +
-                    `load spreading ${spreadLoad ? 'on' : 'off'}, ` +
-                    `over ${results.length} candidate shift(s).`,
+                        `detour ${Math.round(best.deltaSeconds)}s + load penalty ${Math.round(penalty)}s ` +
+                        `= ${Math.round(best.deltaSeconds + penalty)}s, ` +
+                        `load spreading ${spreadLoad ? 'on' : 'off'}, ` +
+                        `over ${results.length} candidate shift(s).`,
                 );
                 return { kind: 'insert', candidate, insertion: best };
             }
@@ -847,8 +901,14 @@ export class AssignmentService {
             let outcomeKind: AssignmentOutcomeKind = 'assigned';
 
             if (decision.kind === 'insert' || decision.kind === 'evict') {
-                const fresh = await this.readRevision(runner, decision.candidate.shift.id);
-                if (!fresh || fresh.revision !== decision.candidate.shift.revision) {
+                const fresh = await this.readRevision(
+                    runner,
+                    decision.candidate.shift.id,
+                );
+                if (
+                    !fresh ||
+                    fresh.revision !== decision.candidate.shift.revision
+                ) {
                     await runner.rollbackTransaction();
                     return 'retry';
                 }
@@ -892,7 +952,9 @@ export class AssignmentService {
                 if (opened === null) {
                     await runner.rollbackTransaction();
                     return deferred(
-                        candidates.length === 0 ? 'no_free_driver_vehicle' : 'no_capacity',
+                        candidates.length === 0
+                            ? 'no_free_driver_vehicle'
+                            : 'no_capacity',
                     );
                 }
 
@@ -952,9 +1014,13 @@ export class AssignmentService {
         insertion: InsertionSuccess,
         reason: string,
     ): Promise<AssignedShiftResult> {
-        const { routeId, solutionId } = candidate.routeId && candidate.solutionId
-            ? { routeId: candidate.routeId, solutionId: candidate.solutionId }
-            : await this.planWriter.ensureRoute(runner, candidate.shift.id);
+        const { routeId, solutionId } =
+            candidate.routeId && candidate.solutionId
+                ? {
+                      routeId: candidate.routeId,
+                      solutionId: candidate.solutionId,
+                  }
+                : await this.planWriter.ensureRoute(runner, candidate.shift.id);
 
         await this.planWriter.snapshotRevision(
             runner,
@@ -963,7 +1029,9 @@ export class AssignmentService {
             reason,
         );
 
-        const byId = new Map(candidate.shift.stops.map((s) => [s.packageId, s]));
+        const byId = new Map(
+            candidate.shift.stops.map((s) => [s.packageId, s]),
+        );
         const stops: PlanStop[] = insertion.order.map((packageId, i) => {
             const existing = byId.get(packageId);
             return {
@@ -989,7 +1057,9 @@ export class AssignmentService {
             reason,
         });
 
-        await this.planWriter.claimPackages(runner, candidate.shift.id, [pkg.id]);
+        await this.planWriter.claimPackages(runner, candidate.shift.id, [
+            pkg.id,
+        ]);
 
         return {
             id: candidate.shift.id,
@@ -998,7 +1068,9 @@ export class AssignmentService {
             shiftDate: candidate.shiftDate,
             scheduledStart: candidate.scheduledStart,
             stopIndex: insertion.index,
-            estimatedArrival: new Date(insertion.arrivalsMs[insertion.index]).toISOString(),
+            estimatedArrival: new Date(
+                insertion.arrivalsMs[insertion.index],
+            ).toISOString(),
             // The touch trigger bumped it as part of writePlan's UPDATE.
             revision: candidate.shift.revision + 1,
         };
@@ -1085,7 +1157,9 @@ export class AssignmentService {
                          'planned', $3, $4, $5, $6::date)
                  RETURNING id, revision`,
                 [
-                    JSON.stringify({ _meta: { opened_by: 'instant-assignment' } }),
+                    JSON.stringify({
+                        _meta: { opened_by: 'instant-assignment' },
+                    }),
                     organisationId,
                     pair.driver_id,
                     pair.vehicle_id,
@@ -1105,7 +1179,10 @@ export class AssignmentService {
             throw err;
         }
 
-        const { routeId, solutionId } = await this.planWriter.ensureRoute(runner, shiftId);
+        const { routeId, solutionId } = await this.planWriter.ensureRoute(
+            runner,
+            shiftId,
+        );
 
         return {
             shift: {
@@ -1246,7 +1323,9 @@ export class AssignmentService {
                     ? new Date(row.scheduled_start).getTime()
                     : defaultDepartureMs,
                 depot,
-                stops: row.route_id ? (stopsByRoute.get(row.route_id) ?? []) : [],
+                stops: row.route_id
+                    ? (stopsByRoute.get(row.route_id) ?? [])
+                    : [],
             },
             profile: row.ors_vehicle_type ?? 'driving-car',
             routeId: row.route_id,
@@ -1265,7 +1344,9 @@ export class AssignmentService {
      * in AllowStatusRevisits, so without the id tiebreak this returns an
      * arbitrary one of a package's statuses the moment it revisits one.
      */
-    private async loadStops(routeIds: string[]): Promise<Map<string, RouteStop[]>> {
+    private async loadStops(
+        routeIds: string[],
+    ): Promise<Map<string, RouteStop[]>> {
         const byRoute = new Map<string, RouteStop[]>();
         if (routeIds.length === 0) return byRoute;
 
@@ -1331,7 +1412,9 @@ export class AssignmentService {
         order: string[],
         pkg: IncomingPackage,
     ): Promise<Record<string, number> | null> {
-        const byId = new Map(candidate.shift.stops.map((s) => [s.packageId, s]));
+        const byId = new Map(
+            candidate.shift.stops.map((s) => [s.packageId, s]),
+        );
         const points: GeoPoint[] = [
             candidate.shift.depot,
             ...order.map((id) => {
@@ -1378,7 +1461,10 @@ export class AssignmentService {
             const outcome = await this.assign(organisationId, victimId, {
                 allowEviction: false,
             });
-            if (outcome.outcome === 'deferred' || outcome.outcome === 'skipped') {
+            if (
+                outcome.outcome === 'deferred' ||
+                outcome.outcome === 'skipped'
+            ) {
                 this.logger.log(
                     `Evicted package ${victimId} did not fit elsewhere; left PENDING.`,
                 );
@@ -1423,7 +1509,8 @@ export class AssignmentService {
      * every sub-kilo parcel.
      */
     private capacityGrams(grossLimits: string | number | null): number {
-        const kg = typeof grossLimits === 'string' ? Number(grossLimits) : grossLimits;
+        const kg =
+            typeof grossLimits === 'string' ? Number(grossLimits) : grossLimits;
         return (Number.isFinite(kg) && kg ? Number(kg) : 1000) * 1000;
     }
 

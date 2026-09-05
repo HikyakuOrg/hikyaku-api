@@ -27,9 +27,12 @@ describe('TzdataService', () => {
     });
 
     /** Grabs the event handler TzdataService registered on the mocked worker. */
-    function getHandler(event: string): ((...args: unknown[]) => void) | undefined {
+    function getHandler(
+        event: string,
+    ): ((...args: unknown[]) => void) | undefined {
         const instance = (Worker as unknown as jest.Mock).mock.results[0].value;
-        const onCalls: [string, (...args: unknown[]) => void][] = instance.on.mock.calls;
+        const onCalls: [string, (...args: unknown[]) => void][] =
+            instance.on.mock.calls;
         return onCalls.find(([e]) => e === event)?.[1];
     }
 
@@ -42,7 +45,9 @@ describe('TzdataService', () => {
 
         expect(dsQuery).toHaveBeenCalledTimes(2);
         expect(Worker).not.toHaveBeenCalled();
-        expect(service.getImportState().importState).toBe('skipped_already_populated');
+        expect(service.getImportState().importState).toBe(
+            'skipped_already_populated',
+        );
     });
 
     it('starts the import worker when the table does not exist yet', async () => {
@@ -71,13 +76,22 @@ describe('TzdataService', () => {
         await service.onApplicationBootstrap();
 
         const onMessage = getHandler('message');
-        onMessage?.({ type: 'status', phase: 'downloading' } satisfies TzdataWorkerMessage);
+        onMessage?.({
+            type: 'status',
+            phase: 'downloading',
+        } satisfies TzdataWorkerMessage);
         expect(service.getImportState().importState).toBe('downloading');
 
-        onMessage?.({ type: 'log', message: 'hello' } satisfies TzdataWorkerMessage);
+        onMessage?.({
+            type: 'log',
+            message: 'hello',
+        } satisfies TzdataWorkerMessage);
         expect(service.getImportState().importState).toBe('downloading'); // log doesn't change phase
 
-        onMessage?.({ type: 'status', phase: 'completed' } satisfies TzdataWorkerMessage);
+        onMessage?.({
+            type: 'status',
+            phase: 'completed',
+        } satisfies TzdataWorkerMessage);
         expect(service.getImportState().importState).toBe('completed');
     });
 
@@ -86,11 +100,17 @@ describe('TzdataService', () => {
         await service.onApplicationBootstrap();
 
         expect(() => getHandler('error')?.(new Error('boom'))).not.toThrow();
-        expect(service.getImportState()).toMatchObject({ importState: 'failed', error: 'boom' });
+        expect(service.getImportState()).toMatchObject({
+            importState: 'failed',
+            error: 'boom',
+        });
 
         // A subsequent non-zero exit must not clobber the real error message.
         expect(() => getHandler('exit')?.(1)).not.toThrow();
-        expect(service.getImportState()).toMatchObject({ importState: 'failed', error: 'boom' });
+        expect(service.getImportState()).toMatchObject({
+            importState: 'failed',
+            error: 'boom',
+        });
     });
 
     it('marks failed on a non-zero exit with no prior error event (e.g. killed)', async () => {
@@ -109,7 +129,10 @@ describe('TzdataService', () => {
         await service.onApplicationBootstrap();
 
         expect(() => getHandler('error')?.('non-error value')).not.toThrow();
-        expect(service.getImportState()).toMatchObject({ importState: 'failed', error: 'non-error value' });
+        expect(service.getImportState()).toMatchObject({
+            importState: 'failed',
+            error: 'non-error value',
+        });
     });
 
     it('does not error on a clean exit', async () => {

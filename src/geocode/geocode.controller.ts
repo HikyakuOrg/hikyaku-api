@@ -78,7 +78,7 @@ function toPhotonReverseQuery(
 @UseGuards(AuthGuard)
 @Controller('geocode')
 export class GeocodeController {
-    constructor(private readonly geocodeService: GeocodeService) { }
+    constructor(private readonly geocodeService: GeocodeService) {}
 
     /**
      * Forward Geocode – text search returning a list of location objects.
@@ -111,14 +111,16 @@ export class GeocodeController {
         name: 'lat',
         required: true,
         type: Number,
-        description: 'Latitude to resolve. `point.lat` is accepted as an alias.',
+        description:
+            'Latitude to resolve. `point.lat` is accepted as an alias.',
         example: 1.2834,
     })
     @ApiQuery({
         name: 'lon',
         required: true,
         type: Number,
-        description: 'Longitude to resolve. `point.lon` is accepted as an alias.',
+        description:
+            'Longitude to resolve. `point.lon` is accepted as an alias.',
         example: 103.8607,
     })
     @ApiQuery({

@@ -45,7 +45,12 @@ describe('CustomersService', () => {
             stripe.customers.create.mockResolvedValue({ id: 'stripe-cust-1' });
 
             const result = await service.upsertFromBooking(
-                { name: 'Jane Doe', phone: '+61400000000', email: 'jane@example.com', address },
+                {
+                    name: 'Jane Doe',
+                    phone: '+61400000000',
+                    email: 'jane@example.com',
+                    address,
+                },
                 'acct_1',
                 'org-1',
                 'idem-key-1',
@@ -54,13 +59,24 @@ describe('CustomersService', () => {
             expect(result).toBe('cust-1');
 
             const [insertSql, insertParams] = dataSource.query.mock.calls[0];
-            expect(insertSql).toContain('ON CONFLICT (organisation_id, lower(customer_phone)) WHERE customer_phone IS NOT NULL');
+            expect(insertSql).toContain(
+                'ON CONFLICT (organisation_id, lower(customer_phone)) WHERE customer_phone IS NOT NULL',
+            );
             expect(insertParams).toEqual(
-                expect.arrayContaining(['org-1', 'Jane Doe', '+61400000000', 'jane@example.com']),
+                expect.arrayContaining([
+                    'org-1',
+                    'Jane Doe',
+                    '+61400000000',
+                    'jane@example.com',
+                ]),
             );
 
             expect(stripe.customers.create).toHaveBeenCalledWith(
-                expect.objectContaining({ name: 'Jane Doe', phone: '+61400000000', metadata: { db_customer_id: 'cust-1' } }),
+                expect.objectContaining({
+                    name: 'Jane Doe',
+                    phone: '+61400000000',
+                    metadata: { db_customer_id: 'cust-1' },
+                }),
                 { stripeAccount: 'acct_1', idempotencyKey: 'idem-key-1' },
             );
 
@@ -87,7 +103,12 @@ describe('CustomersService', () => {
         it('never issues a shopify_customer_id update', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-3' }]);
 
-            await service.upsertFromBooking({ name: 'Amy Lee', phone: '+61400000002', address }, null, 'org-1', 'idem-key-3');
+            await service.upsertFromBooking(
+                { name: 'Amy Lee', phone: '+61400000002', address },
+                null,
+                'org-1',
+                'idem-key-3',
+            );
 
             for (const [sql] of dataSource.query.mock.calls) {
                 expect(sql).not.toContain('shopify_customer_id');
@@ -101,7 +122,12 @@ describe('CustomersService', () => {
 
             const result = await service.upsertFromShopifyOrder(
                 'org-1',
-                { name: 'Jane Doe', phone: '+61400000000', email: 'jane@example.com', address },
+                {
+                    name: 'Jane Doe',
+                    phone: '+61400000000',
+                    email: 'jane@example.com',
+                    address,
+                },
                 null,
             );
 
@@ -118,7 +144,12 @@ describe('CustomersService', () => {
 
             await service.upsertFromShopifyOrder(
                 'org-1',
-                { name: 'Jane Doe', phone: null, email: 'jane@example.com', address },
+                {
+                    name: 'Jane Doe',
+                    phone: null,
+                    email: 'jane@example.com',
+                    address,
+                },
                 null,
             );
 
@@ -126,13 +157,24 @@ describe('CustomersService', () => {
             expect(sql).toContain(
                 'ON CONFLICT (organisation_id, lower(customer_email)) WHERE customer_email IS NOT NULL AND customer_phone IS NULL',
             );
-            expect(params).toEqual(expect.arrayContaining(['org-1', 'Jane Doe', null, 'jane@example.com']));
+            expect(params).toEqual(
+                expect.arrayContaining([
+                    'org-1',
+                    'Jane Doe',
+                    null,
+                    'jane@example.com',
+                ]),
+            );
         });
 
         it('falls back to the name tier, scoped to phone-less and email-less rows, when both are absent', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-6' }]);
 
-            await service.upsertFromShopifyOrder('org-1', { name: 'Jane Doe', phone: null, email: null, address }, null);
+            await service.upsertFromShopifyOrder(
+                'org-1',
+                { name: 'Jane Doe', phone: null, email: null, address },
+                null,
+            );
 
             const [sql] = dataSource.query.mock.calls[0];
             expect(sql).toContain(
@@ -160,7 +202,11 @@ describe('CustomersService', () => {
         it('skips the follow-up update when no shopify customer id is given', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-8' }]);
 
-            await service.upsertFromShopifyOrder('org-1', { name: 'Jane Doe', phone: '+61400000000', address }, null);
+            await service.upsertFromShopifyOrder(
+                'org-1',
+                { name: 'Jane Doe', phone: '+61400000000', address },
+                null,
+            );
 
             expect(dataSource.query).toHaveBeenCalledTimes(1);
         });
@@ -182,10 +228,22 @@ describe('CustomersService', () => {
             );
 
             const [sql, params] = dataSource.query.mock.calls[0];
-            expect(sql).toContain('geocode_confidence = COALESCE(EXCLUDED.geocode_confidence, public.customer.geocode_confidence)');
-            expect(sql).toContain('pelias_gid = COALESCE(EXCLUDED.pelias_gid, public.customer.pelias_gid)');
-            expect(sql).toContain('pelias_raw = COALESCE(EXCLUDED.pelias_raw, public.customer.pelias_raw)');
-            expect(params).toEqual(expect.arrayContaining([0.92, 'gid-1', JSON.stringify({ source: 'pelias' })]));
+            expect(sql).toContain(
+                'geocode_confidence = COALESCE(EXCLUDED.geocode_confidence, public.customer.geocode_confidence)',
+            );
+            expect(sql).toContain(
+                'pelias_gid = COALESCE(EXCLUDED.pelias_gid, public.customer.pelias_gid)',
+            );
+            expect(sql).toContain(
+                'pelias_raw = COALESCE(EXCLUDED.pelias_raw, public.customer.pelias_raw)',
+            );
+            expect(params).toEqual(
+                expect.arrayContaining([
+                    0.92,
+                    'gid-1',
+                    JSON.stringify({ source: 'pelias' }),
+                ]),
+            );
         });
     });
 });

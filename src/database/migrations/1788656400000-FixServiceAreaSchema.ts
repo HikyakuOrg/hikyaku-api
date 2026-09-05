@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class FixServiceAreaSchema1788656400000 implements MigrationInterface {
     name = 'FixServiceAreaSchema1788656400000';
 

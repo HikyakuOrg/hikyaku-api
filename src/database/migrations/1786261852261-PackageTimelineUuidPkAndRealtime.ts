@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class PackageTimelineUuidPkAndRealtime1786261852261 implements MigrationInterface {
     name = 'PackageTimelineUuidPkAndRealtime1786261852261';
 
@@ -11,7 +10,11 @@ export class PackageTimelineUuidPkAndRealtime1786261852261 implements MigrationI
     }
 
     public async up(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(this.read('1786261852261-package_timeline_uuid_pk_and_realtime.sql'));
+        await queryRunner.query(
+            this.read(
+                '1786261852261-package_timeline_uuid_pk_and_realtime.sql',
+            ),
+        );
     }
 
     // Best-effort structural revert. The original bigint values are gone for

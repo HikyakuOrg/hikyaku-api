@@ -160,11 +160,7 @@ export interface IncomingPackage {
     evictionCount: number;
 }
 
-export type InsertionFailure =
-    | 'weight'
-    | 'max_stops'
-    | 'deadline'
-    | 'window';
+export type InsertionFailure = 'weight' | 'max_stops' | 'deadline' | 'window';
 
 export interface InsertionSuccess {
     feasible: true;
@@ -381,17 +377,26 @@ export function cheapestPosition(
             if (i === index) {
                 points.push(incoming);
                 ids.push(pkg.id);
-                deadlines.push(effectiveDeadline(pkg.deadlineMs, ctx.shiftDayEndMs));
+                deadlines.push(
+                    effectiveDeadline(pkg.deadlineMs, ctx.shiftDayEndMs),
+                );
             }
             const stop = shift.stops[i];
             if (stop) {
                 points.push({ lon: stop.lon, lat: stop.lat });
                 ids.push(stop.packageId);
-                deadlines.push(effectiveDeadline(stop.deadlineMs, ctx.shiftDayEndMs));
+                deadlines.push(
+                    effectiveDeadline(stop.deadlineMs, ctx.shiftDayEndMs),
+                );
             }
         }
 
-        const timing = timeRoute(shift.depot, shift.departureMs, points, measured);
+        const timing = timeRoute(
+            shift.depot,
+            shift.departureMs,
+            points,
+            measured,
+        );
 
         if (timing.returnMs > windowEndMs) {
             worstReason = 'window';
@@ -567,12 +572,10 @@ export interface EvictionPlan {
  * immovable after two bumps or one day, whichever comes first, so no package can
  * be deferred indefinitely by a warehouse with steady deadline traffic.
  */
-export function isEvictable(
-    stop: RouteStop,
-    ctx: InsertionContext,
-): boolean {
+export function isEvictable(stop: RouteStop, ctx: InsertionContext): boolean {
     if (stop.status !== 'ASSIGNED') return false;
-    if (effectiveDeadline(stop.deadlineMs, ctx.shiftDayEndMs) !== null) return false;
+    if (effectiveDeadline(stop.deadlineMs, ctx.shiftDayEndMs) !== null)
+        return false;
     if (stop.evictionCount >= MAX_EVICTIONS) return false;
     if (stop.createdAtMs <= ctx.nowMs - AGING_HOURS * 3_600_000) return false;
     return true;
@@ -598,7 +601,8 @@ export function pickVictims(
     // The thrash guard: a package with nothing promised has no claim on someone
     // else's slot. Without this, a steady stream of deadline-less parcels would
     // bump each other in circles.
-    if (effectiveDeadline(pkg.deadlineMs, ctx.shiftDayEndMs) === null) return null;
+    if (effectiveDeadline(pkg.deadlineMs, ctx.shiftDayEndMs) === null)
+        return null;
 
     const candidates = shift.stops
         .filter((stop) => isEvictable(stop, ctx))
@@ -606,7 +610,8 @@ export function pickVictims(
             if (a.evictionCount !== b.evictionCount) {
                 return a.evictionCount - b.evictionCount;
             }
-            if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs;
+            if (a.createdAtMs !== b.createdAtMs)
+                return b.createdAtMs - a.createdAtMs;
             return a.packageId < b.packageId ? -1 : 1;
         });
 

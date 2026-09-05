@@ -44,7 +44,8 @@ function build(state: State = {}) {
         if (sql.includes('FROM vehicles')) {
             return state.vehicle ?? [{ warehouse_id: 'wh-1' }];
         }
-        if (sql.includes('SELECT id, driver_id, vehicle_id')) return state.clash ?? [];
+        if (sql.includes('SELECT id, driver_id, vehicle_id'))
+            return state.clash ?? [];
         if (sql.includes('INSERT INTO vrp_optimization')) {
             if (state.insertError) throw state.insertError;
             return [{ id: 'shift-new' }];
@@ -52,7 +53,8 @@ function build(state: State = {}) {
         if (sql.includes('SELECT status FROM vrp_optimization')) {
             return [{ status: state.lockedStatus ?? 'planned' }];
         }
-        if (sql.includes('FROM vrp_optimization v')) return state.shift ?? [SHIFT_ROW];
+        if (sql.includes('FROM vrp_optimization v'))
+            return state.shift ?? [SHIFT_ROW];
         if (sql.includes('FROM vrp_solution s')) {
             return [{ route_id: 'route-1', solution_id: 'sol-1' }];
         }
@@ -111,11 +113,18 @@ describe('ShiftsService', () => {
                 shiftDate: '2026-09-01',
             });
 
-            const insert = log.find((q) => q.sql.includes('INSERT INTO vrp_optimization'));
+            const insert = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_optimization'),
+            );
             expect(insert?.sql).toContain('driver_id');
             expect(insert?.sql).toContain('shift_date');
             expect(insert?.params).toEqual(
-                expect.arrayContaining(['driver-1', 'vehicle-1', 'wh-1', '2026-09-01']),
+                expect.arrayContaining([
+                    'driver-1',
+                    'vehicle-1',
+                    'wh-1',
+                    '2026-09-01',
+                ]),
             );
             expect(shift.status).toBe('planned');
         });
@@ -139,7 +148,9 @@ describe('ShiftsService', () => {
                 vehicleId: 'vehicle-1',
                 shiftDate: '2026-09-01',
             });
-            const lock = log.find((q) => q.sql.includes('pg_advisory_xact_lock'));
+            const lock = log.find((q) =>
+                q.sql.includes('pg_advisory_xact_lock'),
+            );
             expect(lock?.params).toEqual(['assign:wh-1']);
         });
 
@@ -147,17 +158,20 @@ describe('ShiftsService', () => {
             ['warehouse', { warehouse: [] }],
             ['driver', { driver: [] }],
             ['vehicle', { vehicle: [] }],
-        ])('reports an unknown %s as a 400, never as cross-org detail', async (_what, state) => {
-            const { service } = build(state as State);
-            await expect(
-                service.create('org-1', {
-                    warehouseId: 'wh-1',
-                    driverId: 'driver-1',
-                    vehicleId: 'vehicle-1',
-                    shiftDate: '2026-09-01',
-                }),
-            ).rejects.toBeInstanceOf(BadRequestException);
-        });
+        ])(
+            'reports an unknown %s as a 400, never as cross-org detail',
+            async (_what, state) => {
+                const { service } = build(state);
+                await expect(
+                    service.create('org-1', {
+                        warehouseId: 'wh-1',
+                        driverId: 'driver-1',
+                        vehicleId: 'vehicle-1',
+                        shiftDate: '2026-09-01',
+                    }),
+                ).rejects.toBeInstanceOf(BadRequestException);
+            },
+        );
 
         it('refuses a driver and vehicle from different depots', async () => {
             // package_assignment carries enforce_driver_vehicle_warehouse; better
@@ -175,7 +189,13 @@ describe('ShiftsService', () => {
 
         it('409s when that driver already has an open shift that day', async () => {
             const { service } = build({
-                clash: [{ id: 'shift-x', driver_id: 'driver-1', vehicle_id: 'other' }],
+                clash: [
+                    {
+                        id: 'shift-x',
+                        driver_id: 'driver-1',
+                        vehicle_id: 'other',
+                    },
+                ],
             });
             await expect(
                 service.create('org-1', {
@@ -189,7 +209,13 @@ describe('ShiftsService', () => {
 
         it('409s when the vehicle is the one already busy', async () => {
             const { service } = build({
-                clash: [{ id: 'shift-x', driver_id: 'other', vehicle_id: 'vehicle-1' }],
+                clash: [
+                    {
+                        id: 'shift-x',
+                        driver_id: 'other',
+                        vehicle_id: 'vehicle-1',
+                    },
+                ],
             });
             await expect(
                 service.create('org-1', {
@@ -221,9 +247,12 @@ describe('ShiftsService', () => {
             // enforce_shift_allowance raises 23514. 402, not 403: the caller has
             // done nothing wrong, the organisation needs to pay.
             const { service } = build({
-                insertError: Object.assign(new Error('You have used your 30 free shifts'), {
-                    code: '23514',
-                }),
+                insertError: Object.assign(
+                    new Error('You have used your 30 free shifts'),
+                    {
+                        code: '23514',
+                    },
+                ),
             });
             await expect(
                 service.create('org-1', {
@@ -266,9 +295,9 @@ describe('ShiftsService', () => {
 
         it('404s for a shift in another organisation', async () => {
             const { service } = build({ shift: [] });
-            await expect(service.version('org-1', 'shift-1')).rejects.toBeInstanceOf(
-                NotFoundException,
-            );
+            await expect(
+                service.version('org-1', 'shift-1'),
+            ).rejects.toBeInstanceOf(NotFoundException);
         });
     });
 
@@ -278,7 +307,9 @@ describe('ShiftsService', () => {
             await service.dispatch('org-1', 'shift-1');
 
             const update = log.find(
-                (q) => q.sql.includes('UPDATE vrp_optimization') && q.sql.includes('dispatched'),
+                (q) =>
+                    q.sql.includes('UPDATE vrp_optimization') &&
+                    q.sql.includes('dispatched'),
             );
             expect(update).toBeDefined();
         });
@@ -288,16 +319,18 @@ describe('ShiftsService', () => {
             await service.dispatch('org-1', 'shift-1');
 
             const select = log.findIndex((q) => q.sql.includes('FOR UPDATE'));
-            const update = log.findIndex((q) => q.sql.includes('UPDATE vrp_optimization'));
+            const update = log.findIndex((q) =>
+                q.sql.includes('UPDATE vrp_optimization'),
+            );
             expect(select).toBeGreaterThan(-1);
             expect(update).toBeGreaterThan(select);
         });
 
         it('409s for a shift that is not planned', async () => {
             const { service } = build({ lockedStatus: 'completed' });
-            await expect(service.dispatch('org-1', 'shift-1')).rejects.toBeInstanceOf(
-                ConflictException,
-            );
+            await expect(
+                service.dispatch('org-1', 'shift-1'),
+            ).rejects.toBeInstanceOf(ConflictException);
         });
     });
 
@@ -308,9 +341,11 @@ describe('ShiftsService', () => {
                 packageIds: ['pkg-1'],
             });
 
-            expect(assignment.assignToShift).toHaveBeenCalledWith('org-1', 'shift-1', [
-                'pkg-1',
-            ]);
+            expect(assignment.assignToShift).toHaveBeenCalledWith(
+                'org-1',
+                'shift-1',
+                ['pkg-1'],
+            );
             expect(plan.packages).toEqual([
                 { packageId: 'pkg-1', added: true, warning: null },
             ]);
@@ -319,7 +354,11 @@ describe('ShiftsService', () => {
 
         it('reports a removal as a plan, not as a bare 204', async () => {
             const { service, assignment } = build();
-            const plan = await service.removePackage('org-1', 'shift-1', 'pkg-1');
+            const plan = await service.removePackage(
+                'org-1',
+                'shift-1',
+                'pkg-1',
+            );
 
             expect(assignment.removeFromShift).toHaveBeenCalledWith(
                 'org-1',
@@ -355,7 +394,10 @@ describe('ShiftsService', () => {
             // pg hands back a Date for a timestamptz column, not a string.
             const { service } = build({
                 shift: [
-                    { ...SHIFT_ROW, scheduled_start: new Date('2026-09-01T22:00:00Z') },
+                    {
+                        ...SHIFT_ROW,
+                        scheduled_start: new Date('2026-09-01T22:00:00Z'),
+                    },
                 ],
             });
             const shift = await service.get('org-1', 'shift-1');

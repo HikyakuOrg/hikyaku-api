@@ -10,7 +10,8 @@ import type { ShiftUsageStatus } from '../billing.service';
 /** 200 body of GET /api/v1/billing/usage. */
 export class ShiftUsageStatusDto implements ShiftUsageStatus {
     @ApiProperty({
-        description: 'Shifts created by this organisation so far this calendar month.',
+        description:
+            'Shifts created by this organisation so far this calendar month.',
         example: 23,
     })
     shiftsUsedThisPeriod: number;
@@ -34,7 +35,8 @@ export class ShiftUsageStatusDto implements ShiftUsageStatus {
 
     @ApiProperty({
         type: String,
-        description: 'ISO 8601 instant the free allowance resets (start of next calendar month).',
+        description:
+            'ISO 8601 instant the free allowance resets (start of next calendar month).',
         example: '2026-09-01T00:00:00.000Z',
     })
     periodEnd: string;

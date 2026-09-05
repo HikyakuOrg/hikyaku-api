@@ -5,4 +5,4 @@ import { VroomService } from './vroom.service';
     providers: [VroomService],
     exports: [VroomService],
 })
-export class VroomModule { }
+export class VroomModule {}

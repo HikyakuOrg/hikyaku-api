@@ -11,8 +11,15 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { AssignmentService } from 'src/dispatch/assignment.service';
 import { ShiftPlanWriter } from 'src/dispatch/shift-plan.writer';
-import type { AddPackagesToShiftDto, CreateShiftDto } from './dto/create-shift.dto';
-import type { ShiftDto, ShiftPlanDto, ShiftVersionDto } from './dto/shift-result.dto';
+import type {
+    AddPackagesToShiftDto,
+    CreateShiftDto,
+} from './dto/create-shift.dto';
+import type {
+    ShiftDto,
+    ShiftPlanDto,
+    ShiftVersionDto,
+} from './dto/shift-result.dto';
 
 interface ShiftRow {
     id: string;
@@ -46,7 +53,7 @@ export class ShiftsService {
         @InjectDataSource() private readonly dataSource: DataSource,
         private readonly assignment: AssignmentService,
         private readonly planWriter: ShiftPlanWriter,
-    ) { }
+    ) {}
 
     /**
      * Opens an empty planned shift.
@@ -56,7 +63,10 @@ export class ShiftsService {
      * existing shift can take a package and a driver/vehicle pair is genuinely
      * idle — here, someone pressed a button.
      */
-    async create(organisationId: string, dto: CreateShiftDto): Promise<ShiftDto> {
+    async create(
+        organisationId: string,
+        dto: CreateShiftDto,
+    ): Promise<ShiftDto> {
         const warehouse: { id: string }[] = await this.dataSource.query(
             `SELECT id FROM warehouse WHERE id = $1 AND organisation_id = $2`,
             [dto.warehouseId, organisationId],
@@ -64,24 +74,32 @@ export class ShiftsService {
         if (warehouse.length === 0) {
             // Cross-org rows read as unknown, never as "wrong organisation" —
             // same non-disclosure rule as OptimisationService.runAdhoc.
-            throw new BadRequestException('Warehouse not found for this organisation.');
+            throw new BadRequestException(
+                'Warehouse not found for this organisation.',
+            );
         }
 
-        const driver: { warehouse_id: string | null }[] = await this.dataSource.query(
-            `SELECT warehouse_id FROM drivers WHERE id = $1 AND organisation_id = $2`,
-            [dto.driverId, organisationId],
-        );
+        const driver: { warehouse_id: string | null }[] =
+            await this.dataSource.query(
+                `SELECT warehouse_id FROM drivers WHERE id = $1 AND organisation_id = $2`,
+                [dto.driverId, organisationId],
+            );
         if (driver.length === 0) {
-            throw new BadRequestException('Driver not found for this organisation.');
+            throw new BadRequestException(
+                'Driver not found for this organisation.',
+            );
         }
 
-        const vehicle: { warehouse_id: string | null }[] = await this.dataSource.query(
-            `SELECT warehouse_id FROM vehicles
+        const vehicle: { warehouse_id: string | null }[] =
+            await this.dataSource.query(
+                `SELECT warehouse_id FROM vehicles
               WHERE id = $1 AND organisation_id = $2 AND is_deleted = false`,
-            [dto.vehicleId, organisationId],
-        );
+                [dto.vehicleId, organisationId],
+            );
         if (vehicle.length === 0) {
-            throw new BadRequestException('Vehicle not found for this organisation.');
+            throw new BadRequestException(
+                'Vehicle not found for this organisation.',
+            );
         }
 
         // package_assignment carries an enforce_driver_vehicle_warehouse
@@ -106,16 +124,19 @@ export class ShiftsService {
                 `assign:${dto.warehouseId}`,
             ]);
 
-            const clash: { id: string; driver_id: string; vehicle_id: string }[] =
-                await runner.query(
-                    `SELECT id, driver_id, vehicle_id
+            const clash: {
+                id: string;
+                driver_id: string;
+                vehicle_id: string;
+            }[] = await runner.query(
+                `SELECT id, driver_id, vehicle_id
                        FROM vrp_optimization
                       WHERE shift_date = $1::date
                         AND status IN ('planned', 'dispatched')
                         AND (driver_id = $2 OR vehicle_id = $3)
                       LIMIT 1`,
-                    [dto.shiftDate, dto.driverId, dto.vehicleId],
-                );
+                [dto.shiftDate, dto.driverId, dto.vehicleId],
+            );
             if (clash.length > 0) {
                 const who =
                     clash[0].driver_id === dto.driverId ? 'driver' : 'vehicle';
@@ -152,7 +173,7 @@ export class ShiftsService {
                     // has done nothing wrong, the organisation needs to pay.
                     throw new HttpException(
                         (err as { message?: string }).message ??
-                        'You have used your free shifts for this billing period.',
+                            'You have used your free shifts for this billing period.',
                         HttpStatus.PAYMENT_REQUIRED,
                     );
                 }
@@ -190,7 +211,10 @@ export class ShiftsService {
      * reloads only when `revision` moves, so a package added to a planned shift
      * is never silently absent from the manifest.
      */
-    async version(organisationId: string, id: string): Promise<ShiftVersionDto> {
+    async version(
+        organisationId: string,
+        id: string,
+    ): Promise<ShiftVersionDto> {
         const shift = await this.load(organisationId, id);
         return {
             id: shift.id,
@@ -226,7 +250,8 @@ export class ShiftsService {
                   FOR UPDATE`,
                 [id, organisationId],
             );
-            if (rows.length === 0) throw new NotFoundException('Shift not found.');
+            if (rows.length === 0)
+                throw new NotFoundException('Shift not found.');
             if (rows[0].status !== 'planned') {
                 throw new ConflictException(
                     `Shift is ${rows[0].status}, so it cannot be dispatched.`,

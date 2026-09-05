@@ -65,7 +65,9 @@ function ctx(overrides: Partial<InsertionContext> = {}): InsertionContext {
     };
 }
 
-function stop(overrides: Partial<RouteStop> & { packageId: string }): RouteStop {
+function stop(
+    overrides: Partial<RouteStop> & { packageId: string },
+): RouteStop {
     return {
         lon: 0,
         lat: 0,
@@ -105,9 +107,13 @@ function pkg(overrides: Partial<IncomingPackage> = {}): IncomingPackage {
     };
 }
 
-function expectFeasible(result: ReturnType<typeof tryInsert>): InsertionSuccess {
+function expectFeasible(
+    result: ReturnType<typeof tryInsert>,
+): InsertionSuccess {
     if (!result.feasible) {
-        throw new Error(`expected a feasible insertion, got "${result.reason}"`);
+        throw new Error(
+            `expected a feasible insertion, got "${result.reason}"`,
+        );
     }
     return result;
 }
@@ -118,7 +124,10 @@ describe('haversineMeters', () => {
     });
 
     it('measures a degree of longitude at the equator', () => {
-        expect(haversineMeters(DEPOT, { lon: 1, lat: 0 })).toBeCloseTo(111_195, -2);
+        expect(haversineMeters(DEPOT, { lon: 1, lat: 0 })).toBeCloseTo(
+            111_195,
+            -2,
+        );
     });
 
     it('is symmetric', () => {
@@ -133,7 +142,7 @@ describe('estimateLeg', () => {
         const metres = haversineMeters(DEPOT, east(10));
         // 1.35 detour, 11.1 m/s, 1.2 safety.
         expect(estimateLeg(DEPOT, east(10))).toBeCloseTo(
-            (metres * 1.35) / 11.1 * 1.2,
+            ((metres * 1.35) / 11.1) * 1.2,
             6,
         );
     });
@@ -169,16 +178,26 @@ describe('effectiveDeadline', () => {
 describe('tryInsert gates', () => {
     it('rejects on mass before doing any timing work', () => {
         const result = tryInsert(
-            shift({ capacityG: 5_000, stops: [stop({ packageId: 'a', weightG: 4_000 })] }),
+            shift({
+                capacityG: 5_000,
+                stops: [stop({ packageId: 'a', weightG: 4_000 })],
+            }),
             pkg({ weightG: 2_000 }),
             ctx(),
         );
-        expect(result).toEqual({ feasible: false, shiftId: 'shift-a', reason: 'weight' });
+        expect(result).toEqual({
+            feasible: false,
+            shiftId: 'shift-a',
+            reason: 'weight',
+        });
     });
 
     it('accepts a package that exactly fills the remaining capacity', () => {
         const result = tryInsert(
-            shift({ capacityG: 6_000, stops: [stop({ packageId: 'a', weightG: 4_000 })] }),
+            shift({
+                capacityG: 6_000,
+                stops: [stop({ packageId: 'a', weightG: 4_000 })],
+            }),
             pkg({ weightG: 2_000 }),
             ctx(),
         );
@@ -222,7 +241,9 @@ describe('tryInsert gates', () => {
 
     it('is capacity-feasible but time-infeasible when only the window binds', () => {
         const far = shift({ capacityG: 10_000_000 });
-        expect(tryInsert(far, pkg({ lon: east(200).lon, weightG: 1 }), ctx())).toEqual({
+        expect(
+            tryInsert(far, pkg({ lon: east(200).lon, weightG: 1 }), ctx()),
+        ).toEqual({
             feasible: false,
             shiftId: 'shift-a',
             reason: 'window',
@@ -265,7 +286,9 @@ describe('cheapestPosition', () => {
 
     it('prices the detour, not the whole route', () => {
         // A stop exactly on top of an existing one is free to serve.
-        const existing = shift({ stops: [stop({ packageId: 'near', ...east(5) })] });
+        const existing = shift({
+            stops: [stop({ packageId: 'near', ...east(5) })],
+        });
         const result = expectFeasible(
             cheapestPosition(existing, pkg({ lon: east(5).lon }), ctx()),
         );
@@ -279,7 +302,13 @@ describe('cheapestPosition', () => {
         // exactly where it was.
         const farDeadline = DEPARTURE + (driveSeconds(10) + 60) * 1000;
         const existing = shift({
-            stops: [stop({ packageId: 'far', ...east(10), deadlineMs: farDeadline })],
+            stops: [
+                stop({
+                    packageId: 'far',
+                    ...east(10),
+                    deadlineMs: farDeadline,
+                }),
+            ],
         });
 
         const result = expectFeasible(
@@ -312,7 +341,9 @@ describe('cheapestPosition', () => {
     it('ignores a deadline that falls beyond the service day', () => {
         const tomorrow = DAY_END + 3_600_000;
         const existing = shift({
-            stops: [stop({ packageId: 'far', ...east(10), deadlineMs: tomorrow })],
+            stops: [
+                stop({ packageId: 'far', ...east(10), deadlineMs: tomorrow }),
+            ],
         });
         // Inserting in front of "far" would breach `tomorrow` if it were binding.
         const result = expectFeasible(
@@ -375,9 +406,9 @@ describe('grey band', () => {
     });
 
     it('never flags a rejection', () => {
-        expect(isGreyBand({ feasible: false, shiftId: 'x', reason: 'weight' })).toBe(
-            false,
-        );
+        expect(
+            isGreyBand({ feasible: false, shiftId: 'x', reason: 'weight' }),
+        ).toBe(false);
     });
 
     it('lets a measured leg rescue an estimate that just missed', () => {
@@ -393,9 +424,10 @@ describe('grey band', () => {
             [legKey(DEPOT, east(5))]: 300,
             [legKey(east(5), DEPOT)]: 300,
         };
-        expect(tryInsert(candidate, target, ctx({ measuredLegs: measured })).feasible).toBe(
-            true,
-        );
+        expect(
+            tryInsert(candidate, target, ctx({ measuredLegs: measured }))
+                .feasible,
+        ).toBe(true);
     });
 });
 
@@ -415,12 +447,18 @@ describe('chooseBest', () => {
 
     it('returns null when nothing is feasible', () => {
         expect(
-            chooseBest([{ feasible: false, shiftId: 'a', reason: 'weight' }], {}),
+            chooseBest(
+                [{ feasible: false, shiftId: 'a', reason: 'weight' }],
+                {},
+            ),
         ).toBeNull();
     });
 
     it('prefers the cheapest detour', () => {
-        const best = chooseBest([success('a', 900), success('b', 120)], { a: 1, b: 1 });
+        const best = chooseBest([success('a', 900), success('b', 120)], {
+            a: 1,
+            b: 1,
+        });
         expect(best?.shiftId).toBe('b');
     });
 
@@ -429,7 +467,10 @@ describe('chooseBest', () => {
     // inputs, opposite expectation, and it is now the penalty rather than the
     // tie-break that decides it (300 + 480 against 300 + 2160).
     it('sends an equal-cost package to the emptier shift', () => {
-        const best = chooseBest([success('a', 300), success('b', 300)], { a: 2, b: 9 });
+        const best = chooseBest([success('a', 300), success('b', 300)], {
+            a: 2,
+            b: 9,
+        });
         expect(best?.shiftId).toBe('a');
     });
 
@@ -448,15 +489,21 @@ describe('chooseBest', () => {
         // would drive 5000 s to serve it. The penalty is a preference, not a
         // rule: sending a van across town to keep the counts level is worse for
         // everybody.
-        const best = chooseBest([success('full', 100), success('empty', 5_000)], {
-            full: 20,
-            empty: 0,
-        });
+        const best = chooseBest(
+            [success('full', 100), success('empty', 5_000)],
+            {
+                full: 20,
+                empty: 0,
+            },
+        );
         expect(best?.shiftId).toBe('full');
     });
 
     it('breaks a full tie on id, so the choice is reproducible', () => {
-        const best = chooseBest([success('b', 300), success('a', 300)], { a: 4, b: 4 });
+        const best = chooseBest([success('b', 300), success('a', 300)], {
+            a: 4,
+            b: 4,
+        });
         expect(best?.shiftId).toBe('a');
     });
 
@@ -464,7 +511,9 @@ describe('chooseBest', () => {
     // shift, and that is preserved. Only the winner flips, for the same reason
     // as the case above: 'a' is the one with no stops.
     it('treats a shift with no recorded stop count as empty', () => {
-        const best = chooseBest([success('a', 300), success('b', 300)], { b: 1 });
+        const best = chooseBest([success('a', 300), success('b', 300)], {
+            b: 1,
+        });
         expect(best?.shiftId).toBe('a');
     });
 
@@ -473,9 +522,13 @@ describe('chooseBest', () => {
             // The kill switch AssignmentService.loadSpread feeds. A 9-stop shift
             // 60 s closer wins again, which is what LOAD_SPREAD_ENABLED=false
             // exists to restore.
-            const best = chooseBest([success('a', 300), success('b', 240)], { a: 0, b: 9 }, {
-                spreadLoad: false,
-            });
+            const best = chooseBest(
+                [success('a', 300), success('b', 240)],
+                { a: 0, b: 9 },
+                {
+                    spreadLoad: false,
+                },
+            );
             expect(best?.shiftId).toBe('b');
         });
 
@@ -483,9 +536,13 @@ describe('chooseBest', () => {
             // The tie-break flip is not gated. It fires only on exact equality of
             // detour seconds and can never open a shift, so it carries none of
             // the billing risk the penalty does.
-            const best = chooseBest([success('a', 300), success('b', 300)], { a: 2, b: 9 }, {
-                spreadLoad: false,
-            });
+            const best = chooseBest(
+                [success('a', 300), success('b', 300)],
+                { a: 2, b: 9 },
+                {
+                    spreadLoad: false,
+                },
+            );
             expect(best?.shiftId).toBe('a');
         });
     });
@@ -543,12 +600,17 @@ describe('isEvictable', () => {
 
     it('refuses a package with a deadline binding today', () => {
         expect(
-            isEvictable(stop({ ...base, deadlineMs: DEPARTURE + 3_600_000 }), ctx()),
+            isEvictable(
+                stop({ ...base, deadlineMs: DEPARTURE + 3_600_000 }),
+                ctx(),
+            ),
         ).toBe(false);
     });
 
     it('allows a package whose deadline is beyond the service day', () => {
-        expect(isEvictable(stop({ ...base, deadlineMs: DAY_END + 1 }), ctx())).toBe(true);
+        expect(
+            isEvictable(stop({ ...base, deadlineMs: DAY_END + 1 }), ctx()),
+        ).toBe(true);
     });
 
     it('pins a package that has already been bumped MAX_EVICTIONS times', () => {
@@ -556,19 +618,28 @@ describe('isEvictable', () => {
             isEvictable(stop({ ...base, evictionCount: MAX_EVICTIONS }), ctx()),
         ).toBe(false);
         expect(
-            isEvictable(stop({ ...base, evictionCount: MAX_EVICTIONS - 1 }), ctx()),
+            isEvictable(
+                stop({ ...base, evictionCount: MAX_EVICTIONS - 1 }),
+                ctx(),
+            ),
         ).toBe(true);
     });
 
     it('pins a package that has already waited AGING_HOURS', () => {
         const old = DEPARTURE - AGING_HOURS * 3_600_000 - 1;
-        expect(isEvictable(stop({ ...base, createdAtMs: old }), ctx())).toBe(false);
+        expect(isEvictable(stop({ ...base, createdAtMs: old }), ctx())).toBe(
+            false,
+        );
     });
 });
 
 describe('pickVictims', () => {
     const incoming = () =>
-        pkg({ lon: east(5).lon, deadlineMs: DEPARTURE + 6 * 3_600_000, weightG: 5_000 });
+        pkg({
+            lon: east(5).lon,
+            deadlineMs: DEPARTURE + 6 * 3_600_000,
+            weightG: 5_000,
+        });
 
     it('refuses to evict for a package with no promise of its own', () => {
         const full = shift({
@@ -665,12 +736,31 @@ describe('pickVictims', () => {
         const full = shift({
             capacityG: 12_000,
             stops: [
-                stop({ packageId: 'a', ...east(4), weightG: 4_000, createdAtMs: DEPARTURE - 1 }),
-                stop({ packageId: 'b', ...east(5), weightG: 4_000, createdAtMs: DEPARTURE - 2 }),
-                stop({ packageId: 'c', ...east(6), weightG: 4_000, createdAtMs: DEPARTURE - 3 }),
+                stop({
+                    packageId: 'a',
+                    ...east(4),
+                    weightG: 4_000,
+                    createdAtMs: DEPARTURE - 1,
+                }),
+                stop({
+                    packageId: 'b',
+                    ...east(5),
+                    weightG: 4_000,
+                    createdAtMs: DEPARTURE - 2,
+                }),
+                stop({
+                    packageId: 'c',
+                    ...east(6),
+                    weightG: 4_000,
+                    createdAtMs: DEPARTURE - 3,
+                }),
             ],
         });
-        const plan = pickVictims(full, pkg({ weightG: 8_000, deadlineMs: DEPARTURE + 6 * 3_600_000 }), ctx());
+        const plan = pickVictims(
+            full,
+            pkg({ weightG: 8_000, deadlineMs: DEPARTURE + 6 * 3_600_000 }),
+            ctx(),
+        );
         expect(plan?.victimIds).toEqual(['a', 'b']);
     });
 
@@ -687,7 +777,11 @@ describe('pickVictims', () => {
     });
 
     it('is deterministic when two candidates are identical but for their id', () => {
-        const common = { weightG: 4_000, createdAtMs: DEPARTURE, evictionCount: 0 };
+        const common = {
+            weightG: 4_000,
+            createdAtMs: DEPARTURE,
+            evictionCount: 0,
+        };
         const full = shift({
             capacityG: 10_000,
             stops: [
@@ -695,7 +789,9 @@ describe('pickVictims', () => {
                 stop({ packageId: 'aaa', ...east(6), ...common }),
             ],
         });
-        expect(pickVictims(full, incoming(), ctx())?.victimIds).toEqual(['aaa']);
+        expect(pickVictims(full, incoming(), ctx())?.victimIds).toEqual([
+            'aaa',
+        ]);
     });
 });
 
@@ -734,7 +830,12 @@ describe('scheduleArrivals', () => {
 
     it('honours measured legs, so a rewrite after a removal uses real numbers when it has them', () => {
         const measured = { [legKey(DEPOT, east(4))]: 120 };
-        const arrivals = scheduleArrivals(DEPOT, DEPARTURE, [east(4)], measured);
+        const arrivals = scheduleArrivals(
+            DEPOT,
+            DEPARTURE,
+            [east(4)],
+            measured,
+        );
         expect(arrivals[0]).toBe(DEPARTURE + 120_000);
     });
 });
@@ -803,11 +904,15 @@ describe('a synthetic metro day', () => {
      * nowhere else, purely to produce the "before" half of the table above.
      */
     const legacy: Comparator = (results, stopCounts) => {
-        const feasible = results.filter((r): r is InsertionSuccess => r.feasible);
+        const feasible = results.filter(
+            (r): r is InsertionSuccess => r.feasible,
+        );
         if (feasible.length === 0) return null;
         return feasible.reduce((best, candidate) => {
             if (candidate.deltaSeconds !== best.deltaSeconds) {
-                return candidate.deltaSeconds < best.deltaSeconds ? candidate : best;
+                return candidate.deltaSeconds < best.deltaSeconds
+                    ? candidate
+                    : best;
             }
             const candidateStops = stopCounts[candidate.shiftId] ?? 0;
             const bestStops = stopCounts[best.shiftId] ?? 0;
@@ -857,10 +962,12 @@ describe('a synthetic metro day', () => {
                 shifts.map((s) => tryInsert(s, parcel, ctx())),
                 stopCounts,
             );
-            if (!chosen) throw new Error(`${parcel.id} fitted on no shift at all`);
+            if (!chosen)
+                throw new Error(`${parcel.id} fitted on no shift at all`);
 
             const target = shifts.find((s) => s.id === chosen.shiftId);
-            if (!target) throw new Error(`chose an unknown shift ${chosen.shiftId}`);
+            if (!target)
+                throw new Error(`chose an unknown shift ${chosen.shiftId}`);
             target.stops.splice(
                 chosen.index,
                 0,
@@ -899,7 +1006,9 @@ describe('a synthetic metro day', () => {
         // triple so that retuning the estimator does not fail this on a stop
         // moving between two already-balanced vans.
         expect(Math.min(...counts)).toBeGreaterThan(0);
-        expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(4);
+        expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(
+            4,
+        );
         // The before/after that matters: 30 was one van's whole day.
         expect(Math.max(...counts)).toBeLessThan(15);
     });

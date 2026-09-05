@@ -52,7 +52,7 @@ import { InvitationsService } from './invitations.service';
 @Controller('api/v1/invitations')
 @UseGuards(PermissionGuard)
 export class InvitationsController {
-    constructor(private readonly invitationsService: InvitationsService) { }
+    constructor(private readonly invitationsService: InvitationsService) {}
 
     @Post()
     @HttpCode(HttpStatus.CREATED)
@@ -92,7 +92,9 @@ export class InvitationsController {
     })
     @ApiAuthErrors()
     @ApiOkResponse({ type: [PendingInvitationDto] })
-    listPending(@Req() req: Request & { user: AuthedUser }): Promise<PendingInvitationDto[]> {
+    listPending(
+        @Req() req: Request & { user: AuthedUser },
+    ): Promise<PendingInvitationDto[]> {
         return this.invitationsService.listPendingFor(req.user.email);
     }
 

@@ -45,15 +45,13 @@ async function buildApp(options: {
 }): Promise<NestFastifyApplication> {
     const { bypass = false } = options;
     const supabase = options.supabase ?? { from: jest.fn() };
-    const tokenVerifier =
-        options.tokenVerifier ??
-        {
-            verify: jest
-                .fn()
-                .mockRejectedValue(
-                    new UnauthorizedException('Missing Authorization header'),
-                ),
-        };
+    const tokenVerifier = options.tokenVerifier ?? {
+        verify: jest
+            .fn()
+            .mockRejectedValue(
+                new UnauthorizedException('Missing Authorization header'),
+            ),
+    };
 
     const builder = Test.createTestingModule({
         controllers: [UsersController],
@@ -81,7 +79,6 @@ async function buildApp(options: {
     await app.getHttpAdapter().getInstance().ready();
     return app;
 }
-
 
 describe('UsersController (integration)', () => {
     let app: NestFastifyApplication;

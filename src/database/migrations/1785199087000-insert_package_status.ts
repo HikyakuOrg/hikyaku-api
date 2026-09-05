@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-
 export class InsertPackageStatus1785199087000 implements MigrationInterface {
-
     name = 'InsertPackageStatus1785199087000';
 
     private read(file: string): string {
@@ -13,9 +10,10 @@ export class InsertPackageStatus1785199087000 implements MigrationInterface {
     }
 
     public async up(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(this.read('1785199087000-insert_package_status.sql'));
+        await queryRunner.query(
+            this.read('1785199087000-insert_package_status.sql'),
+        );
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {}
-
 }

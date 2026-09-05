@@ -14,6 +14,9 @@ export class CreateBillingPortalSessionDto {
 }
 
 export class BillingPortalSessionDto {
-    @ApiProperty({ description: 'Stripe-hosted Billing Portal URL to redirect the browser to.' })
+    @ApiProperty({
+        description:
+            'Stripe-hosted Billing Portal URL to redirect the browser to.',
+    })
     url: string;
 }

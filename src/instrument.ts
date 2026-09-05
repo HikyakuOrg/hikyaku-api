@@ -9,10 +9,10 @@ dotenv.config({ path: '.env' });
 
 // Error tracking is opt-in: only initialize Sentry when a DSN is configured.
 if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    integrations: [nodeProfilingIntegration()],
-    tracesSampleRate: 1.0,
-    profilesSampleRate: 1.0,
-  });
+    Sentry.init({
+        dsn: process.env.SENTRY_DSN,
+        integrations: [nodeProfilingIntegration()],
+        tracesSampleRate: 1.0,
+        profilesSampleRate: 1.0,
+    });
 }

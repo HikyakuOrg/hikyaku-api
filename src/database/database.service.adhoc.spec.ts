@@ -24,22 +24,31 @@ function makeRunner(claimed?: { id: string }[]) {
         Promise.resolve({ identifiers: [{ id: idByEntity[entity.name] }] }),
     );
     const upsert = jest.fn().mockResolvedValue(undefined);
-    const query = jest.fn((sql: string, params?: unknown[], useStructuredResult?: boolean) => {
-        if (String(sql).includes('UPDATE packages')) {
-            const requested = (params?.[1] ?? []) as string[];
-            const rows = claimed ?? requested.map((id) => ({ id }));
-            // Mirrors TypeORM's postgres driver: an UPDATE resolves to the
-            // [rows, rowCount] tuple unless the caller opts into the structured
-            // result, in which case the rows live under `records`.
-            return Promise.resolve(
-                useStructuredResult
-                    ? { records: rows, affected: rows.length, raw: [rows, rows.length] }
-                    : [rows, rows.length],
-            );
-        }
-        return Promise.resolve([]);
-    });
-    const runner = { manager: { insert, upsert }, query } as unknown as QueryRunner;
+    const query = jest.fn(
+        (sql: string, params?: unknown[], useStructuredResult?: boolean) => {
+            if (String(sql).includes('UPDATE packages')) {
+                const requested = (params?.[1] ?? []) as string[];
+                const rows = claimed ?? requested.map((id) => ({ id }));
+                // Mirrors TypeORM's postgres driver: an UPDATE resolves to the
+                // [rows, rowCount] tuple unless the caller opts into the structured
+                // result, in which case the rows live under `records`.
+                return Promise.resolve(
+                    useStructuredResult
+                        ? {
+                              records: rows,
+                              affected: rows.length,
+                              raw: [rows, rows.length],
+                          }
+                        : [rows, rows.length],
+                );
+            }
+            return Promise.resolve([]);
+        },
+    );
+    const runner = {
+        manager: { insert, upsert },
+        query,
+    } as unknown as QueryRunner;
     return { runner, insert, upsert, query };
 }
 
@@ -54,8 +63,13 @@ function newService(): DatabaseService {
     // insertAdhocRoutes only touches the passed-in runner; the injected
     // DataSource/repositories are irrelevant, so stub them.
     const svc = new DatabaseService(
-        {} as never, {} as never, {} as never, {} as never,
-        {} as never, {} as never, {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
     );
     // Normally resolved in onApplicationBootstrap; set directly here since
     // these tests construct the service without bootstrapping it.
@@ -66,15 +80,31 @@ function newService(): DatabaseService {
 describe('DatabaseService.insertAdhocRoutes', () => {
     const response: OptimizationResponse = {
         code: 0,
-        summary: { cost: 100, routes: 1, unassigned: 1, duration: 1500, service: 900 },
+        summary: {
+            cost: 100,
+            routes: 1,
+            unassigned: 1,
+            duration: 1500,
+            service: 900,
+        },
         routes: [
             {
                 vehicle: 1,
                 cost: 100,
                 steps: [
                     { type: 'start', arrival: START_EPOCH, location: [1, 2] },
-                    { type: 'job', id: 1, arrival: START_EPOCH + 600, location: [10, 20], service: 900 },
-                    { type: 'end', arrival: START_EPOCH + 1500, location: [1, 2] },
+                    {
+                        type: 'job',
+                        id: 1,
+                        arrival: START_EPOCH + 600,
+                        location: [10, 20],
+                        service: 900,
+                    },
+                    {
+                        type: 'end',
+                        arrival: START_EPOCH + 1500,
+                        location: [1, 2],
+                    },
                 ],
             },
         ],
@@ -100,7 +130,9 @@ describe('DatabaseService.insertAdhocRoutes', () => {
             unassignedPackageIds: ['pkg-b'],
         });
 
-        const optInsert = insert.mock.calls.find((c) => c[0].name === 'VrpOptimization');
+        const optInsert = insert.mock.calls.find(
+            (c) => c[0].name === 'VrpOptimization',
+        );
         expect(optInsert?.[1]).toMatchObject({
             provider: 'vroom',
             organisationId: 'org-1',
@@ -130,11 +162,11 @@ describe('DatabaseService.insertAdhocRoutes', () => {
         const PARAMS_PER_ROW = 13;
         const rows = params.length / PARAMS_PER_ROW;
         expect(rows).toBe(3);
-        expect(params[0 * PARAMS_PER_ROW + 4]).toBeNull();   // start → no package
+        expect(params[0 * PARAMS_PER_ROW + 4]).toBeNull(); // start → no package
         expect(params[1 * PARAMS_PER_ROW + 4]).toBe('pkg-a'); // job → its package
-        expect(params[2 * PARAMS_PER_ROW + 4]).toBeNull();   // end → no package
-        expect(params[0 * PARAMS_PER_ROW + 7]).toBe(0);    // start → departure baseline
-        expect(params[1 * PARAMS_PER_ROW + 7]).toBe(600);  // job arrival relative
+        expect(params[2 * PARAMS_PER_ROW + 4]).toBeNull(); // end → no package
+        expect(params[0 * PARAMS_PER_ROW + 7]).toBe(0); // start → departure baseline
+        expect(params[1 * PARAMS_PER_ROW + 7]).toBe(600); // job arrival relative
         expect(params[2 * PARAMS_PER_ROW + 7]).toBe(1500); // end arrival relative
     });
 
@@ -154,7 +186,11 @@ describe('DatabaseService.insertAdhocRoutes', () => {
         const [entity, rows, conflictCols] = upsert.mock.calls[0];
         expect((entity as { name: string }).name).toBe('PackageAssignment');
         expect(rows).toEqual([
-            { packageId: 'pkg-a', vehicleId: 'vehicle-1', driverId: 'driver-1' },
+            {
+                packageId: 'pkg-a',
+                vehicleId: 'vehicle-1',
+                driverId: 'driver-1',
+            },
         ]);
         expect(conflictCols).toEqual(['packageId']);
     });
@@ -282,17 +318,49 @@ describe('DatabaseService.insertAdhocRoutes', () => {
         // packages 409'd even though the claim itself had succeeded.
         const threeJobs: OptimizationResponse = {
             code: 0,
-            summary: { cost: 100, routes: 1, unassigned: 0, duration: 1500, service: 900 },
+            summary: {
+                cost: 100,
+                routes: 1,
+                unassigned: 0,
+                duration: 1500,
+                service: 900,
+            },
             routes: [
                 {
                     vehicle: 1,
                     cost: 100,
                     steps: [
-                        { type: 'start', arrival: START_EPOCH, location: [1, 2] },
-                        { type: 'job', id: 1, arrival: START_EPOCH + 600, location: [10, 20], service: 900 },
-                        { type: 'job', id: 2, arrival: START_EPOCH + 900, location: [30, 40], service: 900 },
-                        { type: 'job', id: 3, arrival: START_EPOCH + 1200, location: [50, 60], service: 900 },
-                        { type: 'end', arrival: START_EPOCH + 1500, location: [1, 2] },
+                        {
+                            type: 'start',
+                            arrival: START_EPOCH,
+                            location: [1, 2],
+                        },
+                        {
+                            type: 'job',
+                            id: 1,
+                            arrival: START_EPOCH + 600,
+                            location: [10, 20],
+                            service: 900,
+                        },
+                        {
+                            type: 'job',
+                            id: 2,
+                            arrival: START_EPOCH + 900,
+                            location: [30, 40],
+                            service: 900,
+                        },
+                        {
+                            type: 'job',
+                            id: 3,
+                            arrival: START_EPOCH + 1200,
+                            location: [50, 60],
+                            service: 900,
+                        },
+                        {
+                            type: 'end',
+                            arrival: START_EPOCH + 1500,
+                            location: [1, 2],
+                        },
                     ],
                 },
             ],

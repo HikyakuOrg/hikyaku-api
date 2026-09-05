@@ -80,7 +80,9 @@ export class IssuingController {
             'account or issuing is not active yet.',
     })
     @ApiOkResponse({ type: [IssuingCardDto] })
-    listCards(@Req() req: Request & { organisationId: string }): Promise<IssuingCardDto[]> {
+    listCards(
+        @Req() req: Request & { organisationId: string },
+    ): Promise<IssuingCardDto[]> {
         return this.issuing.listCards(req.organisationId);
     }
 

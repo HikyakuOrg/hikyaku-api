@@ -11,9 +11,10 @@ describe('GeocodeService', () => {
         service = new GeocodeService();
         mockFetch = jest.fn().mockResolvedValue({
             ok: true,
-            json: () => Promise.resolve({ type: 'FeatureCollection', features: [] }),
+            json: () =>
+                Promise.resolve({ type: 'FeatureCollection', features: [] }),
         });
-        global.fetch = mockFetch as unknown as typeof fetch;
+        global.fetch = mockFetch;
         process.env.PHOTON_URL = 'http://photon.test';
     });
 
@@ -50,7 +51,9 @@ describe('GeocodeService', () => {
 
         const promise = service.get('/api', { q: 'x' });
         await expect(promise).rejects.toBeInstanceOf(HttpException);
-        await promise.catch((err: HttpException) => expect(err.getStatus()).toBe(500));
+        await promise.catch((err: HttpException) =>
+            expect(err.getStatus()).toBe(500),
+        );
         expect(mockFetch).not.toHaveBeenCalled();
     });
 

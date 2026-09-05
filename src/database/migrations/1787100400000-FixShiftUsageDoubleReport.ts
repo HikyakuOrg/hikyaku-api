@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class FixShiftUsageDoubleReport1787100400000 implements MigrationInterface {
     name = 'FixShiftUsageDoubleReport1787100400000';
 

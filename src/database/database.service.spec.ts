@@ -74,13 +74,22 @@ describe('DatabaseService', () => {
                 DatabaseService,
                 {
                     provide: getDataSourceToken(),
-                    useValue: { query: dsQuery, createQueryRunner: dsCreateQueryRunner },
+                    useValue: {
+                        query: dsQuery,
+                        createQueryRunner: dsCreateQueryRunner,
+                    },
                 },
-                { provide: getRepositoryToken(PackageStatus), useValue: { findOneBy } },
+                {
+                    provide: getRepositoryToken(PackageStatus),
+                    useValue: { findOneBy },
+                },
                 // The remaining repositories are injected but never called directly —
                 // all writes go through runner.manager.
                 { provide: getRepositoryToken(Package), useValue: {} },
-                { provide: getRepositoryToken(PackageAssignment), useValue: {} },
+                {
+                    provide: getRepositoryToken(PackageAssignment),
+                    useValue: {},
+                },
                 { provide: getRepositoryToken(VrpOptimization), useValue: {} },
                 { provide: getRepositoryToken(VrpSolution), useValue: {} },
                 { provide: getRepositoryToken(VrpRoute), useValue: {} },
@@ -96,7 +105,9 @@ describe('DatabaseService', () => {
     describe('onApplicationBootstrap', () => {
         it('resolves when the PENDING status row exists', async () => {
             findOneBy.mockResolvedValueOnce({ id: 7 });
-            await expect(service.onApplicationBootstrap()).resolves.not.toThrow();
+            await expect(
+                service.onApplicationBootstrap(),
+            ).resolves.not.toThrow();
             expect(findOneBy).toHaveBeenCalledWith({ enums: 'PENDING' });
         });
 
@@ -147,7 +158,8 @@ describe('DatabaseService', () => {
 
         it('throws when warehouse location cannot be determined', async () => {
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([]) // no packages
                     .mockResolvedValueOnce([]), // no assignments
             );
@@ -159,7 +171,8 @@ describe('DatabaseService', () => {
         it('returns a BuildResult with jobs and vehicles', async () => {
             const today = new Date();
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-1',
@@ -178,7 +191,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.jobs).toHaveLength(1);
             expect(result.request.vehicles).toHaveLength(1);
@@ -189,7 +204,8 @@ describe('DatabaseService', () => {
         it('maps ors_vehicle_type to a Valhalla costing profile', async () => {
             const today = new Date();
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-1',
@@ -206,12 +222,18 @@ describe('DatabaseService', () => {
                     ])
                     .mockResolvedValueOnce([
                         ASSIGNMENT_ROW, // driving-car
-                        { ...ASSIGNMENT_ROW, vehicle_id: 'veh-2', ors_vehicle_type: 'driving-hgv' },
+                        {
+                            ...ASSIGNMENT_ROW,
+                            vehicle_id: 'veh-2',
+                            ors_vehicle_type: 'driving-hgv',
+                        },
                     ])
                     .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.vehicles[0].profile).toBe('auto');
             expect(result.request.vehicles[1].profile).toBe('truck');
@@ -220,7 +242,8 @@ describe('DatabaseService', () => {
         it('assigns priority 100 to past-due packages', async () => {
             const pastDue = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-past',
@@ -239,7 +262,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.jobs[0].priority).toBe(100);
         });
@@ -247,7 +272,8 @@ describe('DatabaseService', () => {
         it('plans a future-dated package instead of dropping it', async () => {
             const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-future',
@@ -266,7 +292,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             // The old behaviour excluded it entirely, so a package promised for
             // next week never got planned until the night before. With a real
@@ -281,7 +309,8 @@ describe('DatabaseService', () => {
         it('gives a package due today a hard time window, not just a priority', async () => {
             const dueToday = new Date(Date.now() + 4 * 60 * 60 * 1000);
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-today',
@@ -300,7 +329,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]),
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.jobs[0].time_windows).toEqual([
                 [expect.any(Number), Math.floor(dueToday.getTime() / 1000)],
@@ -313,7 +344,8 @@ describe('DatabaseService', () => {
             // it would refuse the job outright. Best effort is the right answer.
             const pastDue = new Date(Date.now() - 48 * 60 * 60 * 1000);
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-late',
@@ -332,7 +364,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]),
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.jobs[0].time_windows).toBeUndefined();
             expect(result.request.jobs[0].priority).toBe(100);
@@ -344,7 +378,8 @@ describe('DatabaseService', () => {
             // vehicle fell back to a capacity of 1000 -- read as grams, one kilo --
             // and every package was sent weighing one gram.
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-heavy',
@@ -365,7 +400,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]),
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.vehicles[0].capacity).toEqual([1_500_000]);
             expect(result.request.jobs[0].amount).toEqual([2_500]);
@@ -373,7 +410,8 @@ describe('DatabaseService', () => {
 
         it('gives every vehicle a time window, so job windows are on the same clock', async () => {
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-plain',
@@ -392,7 +430,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]),
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.vehicles[0].time_window).toHaveLength(2);
             expect(result.timeWindowed).toBe(true);
@@ -401,7 +441,8 @@ describe('DatabaseService', () => {
         it('skips packages whose customer has no geocoded location', async () => {
             const today = new Date();
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-no-geo',
@@ -420,7 +461,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.jobs).toHaveLength(0);
             expect(result.skipReason).toBe(
@@ -430,14 +473,19 @@ describe('DatabaseService', () => {
 
         it('explains an empty candidate set via the already-assigned/not-pending diagnostic query', async () => {
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([]) // no PENDING/unassigned packages
                     .mockResolvedValueOnce([ASSIGNMENT_ROW]) // assignment supplies warehouse coords
-                    .mockResolvedValueOnce([{ already_assigned: '2', not_pending: '1' }]) // diagnostic query
+                    .mockResolvedValueOnce([
+                        { already_assigned: '2', not_pending: '1' },
+                    ]) // diagnostic query
                     .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             expect(result.request.jobs).toHaveLength(0);
             expect(result.skipReason).toBe(
@@ -447,22 +495,30 @@ describe('DatabaseService', () => {
 
         it('reports a plain "no packages" reason when the diagnostic query also finds nothing', async () => {
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([]) // no PENDING/unassigned packages
                     .mockResolvedValueOnce([ASSIGNMENT_ROW])
-                    .mockResolvedValueOnce([{ already_assigned: '0', not_pending: '0' }])
+                    .mockResolvedValueOnce([
+                        { already_assigned: '0', not_pending: '0' },
+                    ])
                     .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
-            expect(result.skipReason).toBe('No unassigned packages found for this warehouse.');
+            expect(result.skipReason).toBe(
+                'No unassigned packages found for this warehouse.',
+            );
         });
 
         it('falls back to vehicle warehouse coords when packages have none', async () => {
             const today = new Date();
             const runner = makeRunner(
-                jest.fn()
+                jest
+                    .fn()
                     .mockResolvedValueOnce([
                         {
                             id: 'pkg-no-wh',
@@ -481,7 +537,9 @@ describe('DatabaseService', () => {
                     .mockResolvedValueOnce([]), // no pinned (already-assigned) packages
             );
 
-            const result = await service.buildOptimizationRequest(runner as never);
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
 
             // Vehicle warehouse coords used — start/end should be set
             expect(result.request.vehicles[0].start).toEqual([151.2, -33.8]);
@@ -515,13 +573,16 @@ describe('DatabaseService', () => {
 
             it('builds a single-vehicle pinned route alongside the main request', async () => {
                 const runner = makeRunner(
-                    jest.fn()
+                    jest
+                        .fn()
                         .mockResolvedValueOnce([NORMAL_PACKAGE])
                         .mockResolvedValueOnce([ASSIGNMENT_ROW])
                         .mockResolvedValueOnce([PINNED_ROW]),
                 );
 
-                const result = await service.buildOptimizationRequest(runner as never);
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                );
 
                 expect(result.request.jobs).toHaveLength(1); // main solve unaffected
                 expect(result.pinnedRoutes).toHaveLength(1);
@@ -538,52 +599,74 @@ describe('DatabaseService', () => {
 
             it('groups multiple pinned packages sharing a driver/vehicle pair into one route', async () => {
                 const runner = makeRunner(
-                    jest.fn()
+                    jest
+                        .fn()
                         .mockResolvedValueOnce([NORMAL_PACKAGE])
                         .mockResolvedValueOnce([ASSIGNMENT_ROW])
                         .mockResolvedValueOnce([
                             PINNED_ROW,
-                            { ...PINNED_ROW, id: 'pkg-pinned-2', customer_lon: 151.5, customer_lat: -34.1 },
+                            {
+                                ...PINNED_ROW,
+                                id: 'pkg-pinned-2',
+                                customer_lon: 151.5,
+                                customer_lat: -34.1,
+                            },
                         ]),
                 );
 
-                const result = await service.buildOptimizationRequest(runner as never);
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                );
 
                 expect(result.pinnedRoutes).toHaveLength(1);
                 expect(result.pinnedRoutes[0].request.jobs).toHaveLength(2);
-                expect(Object.values(result.pinnedRoutes[0].jobPackageMap).sort()).toEqual([
-                    'pkg-pinned-1',
-                    'pkg-pinned-2',
-                ]);
+                expect(
+                    Object.values(result.pinnedRoutes[0].jobPackageMap).sort(),
+                ).toEqual(['pkg-pinned-1', 'pkg-pinned-2']);
             });
 
             it('keeps separately-paired vehicles as separate routes', async () => {
                 const runner = makeRunner(
-                    jest.fn()
+                    jest
+                        .fn()
                         .mockResolvedValueOnce([NORMAL_PACKAGE])
                         .mockResolvedValueOnce([ASSIGNMENT_ROW])
                         .mockResolvedValueOnce([
                             PINNED_ROW,
-                            { ...PINNED_ROW, id: 'pkg-pinned-2', driver_id: 'drv-8', vehicle_id: 'veh-8' },
+                            {
+                                ...PINNED_ROW,
+                                id: 'pkg-pinned-2',
+                                driver_id: 'drv-8',
+                                vehicle_id: 'veh-8',
+                            },
                         ]),
                 );
 
-                const result = await service.buildOptimizationRequest(runner as never);
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                );
 
                 expect(result.pinnedRoutes).toHaveLength(2);
             });
 
             it('drops a pinned group entirely when every package in it lacks a geocoded location', async () => {
                 const runner = makeRunner(
-                    jest.fn()
+                    jest
+                        .fn()
                         .mockResolvedValueOnce([NORMAL_PACKAGE])
                         .mockResolvedValueOnce([ASSIGNMENT_ROW])
                         .mockResolvedValueOnce([
-                            { ...PINNED_ROW, customer_lon: null, customer_lat: null },
+                            {
+                                ...PINNED_ROW,
+                                customer_lon: null,
+                                customer_lat: null,
+                            },
                         ]),
                 );
 
-                const result = await service.buildOptimizationRequest(runner as never);
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                );
 
                 expect(result.pinnedRoutes).toHaveLength(0);
             });
@@ -591,25 +674,34 @@ describe('DatabaseService', () => {
             it('routes a future-dated pinned package under a wide time window', async () => {
                 const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
                 const runner = makeRunner(
-                    jest.fn()
+                    jest
+                        .fn()
                         .mockResolvedValueOnce([NORMAL_PACKAGE])
                         .mockResolvedValueOnce([ASSIGNMENT_ROW])
                         .mockResolvedValueOnce([
-                            { ...PINNED_ROW, scheduled_arrival: future.toISOString() },
+                            {
+                                ...PINNED_ROW,
+                                scheduled_arrival: future.toISOString(),
+                            },
                         ]),
                 );
 
-                const result = await service.buildOptimizationRequest(runner as never);
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                );
 
                 expect(result.pinnedRoutes).toHaveLength(1);
-                expect(result.pinnedRoutes[0].request.jobs[0].time_windows).toEqual([
+                expect(
+                    result.pinnedRoutes[0].request.jobs[0].time_windows,
+                ).toEqual([
                     [expect.any(Number), Math.floor(future.getTime() / 1000)],
                 ]);
             });
 
             it('converts the pinned vehicle capacity to grams as well', async () => {
                 const runner = makeRunner(
-                    jest.fn()
+                    jest
+                        .fn()
                         .mockResolvedValueOnce([NORMAL_PACKAGE])
                         .mockResolvedValueOnce([ASSIGNMENT_ROW])
                         .mockResolvedValueOnce([
@@ -617,11 +709,13 @@ describe('DatabaseService', () => {
                         ]),
                 );
 
-                const result = await service.buildOptimizationRequest(runner as never);
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                );
 
-                expect(result.pinnedRoutes[0].request.vehicles[0].capacity).toEqual([
-                    3_500_000,
-                ]);
+                expect(
+                    result.pinnedRoutes[0].request.vehicles[0].capacity,
+                ).toEqual([3_500_000]);
             });
         });
     });
@@ -673,7 +767,15 @@ describe('DatabaseService', () => {
             await service.insertOptimisedRoutes(
                 runner as never,
                 {
-                    jobs: [{ id: 1, service: 900, location: [151.2, -33.8], amount: [1000], priority: 50 }],
+                    jobs: [
+                        {
+                            id: 1,
+                            service: 900,
+                            location: [151.2, -33.8],
+                            amount: [1000],
+                            priority: 50,
+                        },
+                    ],
                     vehicles: [],
                 },
                 {
@@ -714,7 +816,10 @@ describe('DatabaseService', () => {
             expect(runner.manager.insert).toHaveBeenNthCalledWith(
                 3,
                 VrpRoute,
-                expect.objectContaining({ solutionId: 'sol-1', duration: 3600 }),
+                expect.objectContaining({
+                    solutionId: 'sol-1',
+                    duration: 3600,
+                }),
             );
             // package_assignment upserted before the route steps insert
             expect(runner.manager.upsert).toHaveBeenCalledWith(
@@ -723,8 +828,8 @@ describe('DatabaseService', () => {
                 ['packageId'],
             );
             // vrp_route_step batch insert went through runner.query
-            const stepInsertCall = runner.query.mock.calls.find((call: unknown[]) =>
-                String(call[0]).includes('vrp_route_step'),
+            const stepInsertCall = runner.query.mock.calls.find(
+                (call: unknown[]) => String(call[0]).includes('vrp_route_step'),
             );
             expect(stepInsertCall).toBeDefined();
             // packages marked as processed
@@ -734,8 +839,9 @@ describe('DatabaseService', () => {
                 { optimisationId: 'opt-1' },
             );
             // and advanced to ASSIGNED via package_timeline
-            const timelineCall = runner.query.mock.calls.find((call: unknown[]) =>
-                String(call[0]).includes('INSERT INTO package_timeline'),
+            const timelineCall = runner.query.mock.calls.find(
+                (call: unknown[]) =>
+                    String(call[0]).includes('INSERT INTO package_timeline'),
             );
             expect(timelineCall).toBeDefined();
             // Array-valued now: the write is one statement over unnest() with a
@@ -752,14 +858,20 @@ describe('DatabaseService', () => {
             await service.insertOptimisedRoutes(
                 runner as never,
                 { jobs: [], vehicles: [] },
-                { code: 0, summary: { cost: 0, routes: 0, unassigned: 0 }, routes: [], unassigned: [] },
+                {
+                    code: 0,
+                    summary: { cost: 0, routes: 0, unassigned: 0 },
+                    routes: [],
+                    unassigned: [],
+                },
                 {},
                 {},
                 {},
             );
 
-            const timelineCall = runner.query.mock.calls.find((call: unknown[]) =>
-                String(call[0]).includes('INSERT INTO package_timeline'),
+            const timelineCall = runner.query.mock.calls.find(
+                (call: unknown[]) =>
+                    String(call[0]).includes('INSERT INTO package_timeline'),
             );
             expect(timelineCall).toBeUndefined();
         });
@@ -821,7 +933,11 @@ describe('DatabaseService', () => {
                         routes: 0,
                         unassigned: 0,
                         // computing_times is not in the typed interface but VROOM includes it
-                        computing_times: { loading: 10, solving: 20, routing: 5 },
+                        computing_times: {
+                            loading: 10,
+                            solving: 20,
+                            routing: 5,
+                        },
                     } as never,
                     routes: [],
                     unassigned: [],
@@ -834,7 +950,11 @@ describe('DatabaseService', () => {
             expect(runner.manager.insert).toHaveBeenNthCalledWith(
                 2,
                 VrpSolution,
-                expect.objectContaining({ loadingTime: 10, solvingTime: 20, routingTime: 5 }),
+                expect.objectContaining({
+                    loadingTime: 10,
+                    solvingTime: 20,
+                    routingTime: 5,
+                }),
             );
         });
 
@@ -883,8 +1003,8 @@ describe('DatabaseService', () => {
                 { 1: 'drv-1' },
             );
 
-            const stepInsertCall = runner.query.mock.calls.find((call: unknown[]) =>
-                String(call[0]).includes('vrp_route_step'),
+            const stepInsertCall = runner.query.mock.calls.find(
+                (call: unknown[]) => String(call[0]).includes('vrp_route_step'),
             );
             expect(stepInsertCall).toBeDefined();
             const params = stepInsertCall![1] as unknown[];

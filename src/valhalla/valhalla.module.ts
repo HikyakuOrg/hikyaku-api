@@ -5,4 +5,4 @@ import { ValhallaService } from './valhalla.service';
     providers: [ValhallaService],
     exports: [ValhallaService],
 })
-export class ValhallaModule { }
+export class ValhallaModule {}

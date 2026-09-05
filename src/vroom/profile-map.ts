@@ -10,7 +10,8 @@
 export function orsProfileToValhallaCosting(orsType: string): string {
     if (orsType === 'driving-hgv') return 'truck';
     if (orsType.startsWith('cycling-')) return 'bicycle';
-    if (orsType.startsWith('foot-') || orsType === 'wheelchair') return 'pedestrian';
+    if (orsType.startsWith('foot-') || orsType === 'wheelchair')
+        return 'pedestrian';
     if (orsType === 'public-transport') return 'bus';
     return 'auto'; // driving-car and anything unknown
 }

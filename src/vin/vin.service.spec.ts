@@ -28,7 +28,7 @@ describe('VinService', () => {
     });
 
     it('normalises the VIN to uppercase and trimmed before decoding', async () => {
-        decodeMock.mockResolvedValue({} as DecodeResult);
+        decodeMock.mockResolvedValue({});
 
         await service.decode('  1hgcm82633a123456  ');
 
@@ -40,7 +40,14 @@ describe('VinService', () => {
             vin: 'INVALID',
             valid: false,
             components: {},
-            errors: [{ code: '100', category: 'structure', severity: 'error', message: 'Invalid length' }],
+            errors: [
+                {
+                    code: '100',
+                    category: 'structure',
+                    severity: 'error',
+                    message: 'Invalid length',
+                },
+            ],
         } as unknown as DecodeResult;
         decodeMock.mockResolvedValue(result);
 

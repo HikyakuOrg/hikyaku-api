@@ -138,7 +138,8 @@ export class ServicesService {
         organisationId: string,
         dto: CreateServiceDto,
     ): Promise<{ id: string }> {
-        const stripeAccount = await this.requireConnectedAccount(organisationId);
+        const stripeAccount =
+            await this.requireConnectedAccount(organisationId);
         const accountCurrency = await this.requireChargesEnabled(stripeAccount);
         const currency = (dto.currency ?? accountCurrency).toLowerCase();
         const unitAmount = toStripeMinorUnits(dto.amountMajor, currency);
@@ -161,7 +162,8 @@ export class ServicesService {
         serviceProductId: string,
         dto: CreateAddonDto,
     ): Promise<{ id: string }> {
-        const stripeAccount = await this.requireConnectedAccount(organisationId);
+        const stripeAccount =
+            await this.requireConnectedAccount(organisationId);
         const map = await this.fetchActiveProductMap(stripeAccount);
         const parent = map.get(serviceProductId);
         if (!parent || parent.kind !== 'service') {
@@ -191,7 +193,8 @@ export class ServicesService {
         productId: string,
         dto: UpdateServiceDto,
     ): Promise<{ id: string }> {
-        const stripeAccount = await this.requireConnectedAccount(organisationId);
+        const stripeAccount =
+            await this.requireConnectedAccount(organisationId);
         const map = await this.fetchActiveProductMap(stripeAccount);
         const product = map.get(productId);
         if (!product || product.kind !== 'service') {
@@ -206,7 +209,8 @@ export class ServicesService {
         productId: string,
         dto: UpdateAddonDto,
     ): Promise<{ id: string }> {
-        const stripeAccount = await this.requireConnectedAccount(organisationId);
+        const stripeAccount =
+            await this.requireConnectedAccount(organisationId);
         const map = await this.fetchActiveProductMap(stripeAccount);
         const product = map.get(productId);
         if (!product || product.kind !== 'addon') {
@@ -216,7 +220,10 @@ export class ServicesService {
         return { id: product.productId };
     }
 
-    async deleteService(organisationId: string, productId: string): Promise<void> {
+    async deleteService(
+        organisationId: string,
+        productId: string,
+    ): Promise<void> {
         const stripeAccount = (await this.orgs.getStripeAccount(organisationId))
             ?.stripeAccountId;
         if (!stripeAccount) throw new NotFoundException('Service not found');
@@ -229,13 +236,24 @@ export class ServicesService {
         // Archive child addons first (replaces the old FK cascade), then the service.
         for (const item of map.values()) {
             if (item.kind === 'addon' && item.parentProductId === productId) {
-                await this.archive(stripeAccount, item.productId, item.defaultPriceId);
+                await this.archive(
+                    stripeAccount,
+                    item.productId,
+                    item.defaultPriceId,
+                );
             }
         }
-        await this.archive(stripeAccount, service.productId, service.defaultPriceId);
+        await this.archive(
+            stripeAccount,
+            service.productId,
+            service.defaultPriceId,
+        );
     }
 
-    async deleteAddon(organisationId: string, productId: string): Promise<void> {
+    async deleteAddon(
+        organisationId: string,
+        productId: string,
+    ): Promise<void> {
         const stripeAccount = (await this.orgs.getStripeAccount(organisationId))
             ?.stripeAccountId;
         if (!stripeAccount) throw new NotFoundException('Add-on not found');
@@ -245,7 +263,11 @@ export class ServicesService {
         if (!addon || addon.kind !== 'addon') {
             throw new NotFoundException('Add-on not found');
         }
-        await this.archive(stripeAccount, addon.productId, addon.defaultPriceId);
+        await this.archive(
+            stripeAccount,
+            addon.productId,
+            addon.defaultPriceId,
+        );
     }
 
     /**
@@ -265,14 +287,24 @@ export class ServicesService {
         if (dto.pricingUnit !== undefined) {
             productUpdate.metadata = { pricing_unit: dto.pricingUnit };
         }
-        if (productUpdate.name !== undefined || productUpdate.metadata !== undefined) {
-            await this.stripe.products.update(product.productId, productUpdate, {
-                stripeAccount,
-            });
+        if (
+            productUpdate.name !== undefined ||
+            productUpdate.metadata !== undefined
+        ) {
+            await this.stripe.products.update(
+                product.productId,
+                productUpdate,
+                {
+                    stripeAccount,
+                },
+            );
         }
 
         if (dto.amountMajor !== undefined) {
-            const unitAmount = toStripeMinorUnits(dto.amountMajor, product.currency);
+            const unitAmount = toStripeMinorUnits(
+                dto.amountMajor,
+                product.currency,
+            );
             const newPrice = await this.stripe.prices.create(
                 {
                     product: product.productId,
@@ -374,7 +406,9 @@ export class ServicesService {
                 { stripeAccount },
             );
         } catch (err) {
-            this.logger.error(`Failed to archive price ${priceId}: ${String(err)}`);
+            this.logger.error(
+                `Failed to archive price ${priceId}: ${String(err)}`,
+            );
         }
         try {
             await this.stripe.products.update(

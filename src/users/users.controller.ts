@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, HttpCode, HttpStatus, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import {
+    Body,
+    Controller,
+    Delete,
+    HttpCode,
+    HttpStatus,
+    Patch,
+    Post,
+    Req,
+    UseGuards,
+} from '@nestjs/common';
 import {
     ApiBearerAuth,
     ApiCreatedResponse,
@@ -34,7 +44,7 @@ import { UsersService } from './users.service';
 @Controller('api/v1/users')
 @UseGuards(PermissionGuard)
 export class UsersController {
-    constructor(private readonly usersService: UsersService) { }
+    constructor(private readonly usersService: UsersService) {}
 
     @Post()
     @HttpCode(HttpStatus.CREATED)
@@ -53,7 +63,11 @@ export class UsersController {
         @Body() dto: CreateUserDto,
         @Req() req: Request & { user: { id: string }; organisationId: string },
     ): Promise<CreateUserResultDto> {
-        return this.usersService.createUser(dto, req.user.id, req.organisationId);
+        return this.usersService.createUser(
+            dto,
+            req.user.id,
+            req.organisationId,
+        );
     }
 
     @Delete()
@@ -73,7 +87,11 @@ export class UsersController {
         @Body() dto: DeactivateUsersDto,
         @Req() req: Request & { user: { id: string }; organisationId: string },
     ): Promise<DeactivateUsersResultDto> {
-        return this.usersService.deactivateUsers(dto, req.user.id, req.organisationId);
+        return this.usersService.deactivateUsers(
+            dto,
+            req.user.id,
+            req.organisationId,
+        );
     }
 
     @Patch('reactivate')
@@ -86,7 +104,9 @@ export class UsersController {
             '`failed`.',
     })
     @ApiOkResponse({ type: ReactivateUsersResultDto })
-    reactivateUsers(@Body() dto: ReactivateUsersDto): Promise<ReactivateUsersResultDto> {
+    reactivateUsers(
+        @Body() dto: ReactivateUsersDto,
+    ): Promise<ReactivateUsersResultDto> {
         return this.usersService.reactivateUsers(dto);
     }
 
@@ -104,6 +124,10 @@ export class UsersController {
         @Body() dto: UpdateUserRoleDto,
         @Req() req: Request & { organisationId: string },
     ): Promise<UpdateUserRoleResultDto> {
-        return this.usersService.updateUserRole(dto.user_id, dto.role_name, req.organisationId);
+        return this.usersService.updateUserRole(
+            dto.user_id,
+            dto.role_name,
+            req.organisationId,
+        );
     }
 }

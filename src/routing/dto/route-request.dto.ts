@@ -18,7 +18,9 @@ export class CoordinatePairsConstraint implements ValidatorConstraintInterface {
                 (pair) =>
                     Array.isArray(pair) &&
                     pair.length === 2 &&
-                    pair.every((n) => typeof n === 'number' && Number.isFinite(n)),
+                    pair.every(
+                        (n) => typeof n === 'number' && Number.isFinite(n),
+                    ),
             )
         );
     }
@@ -34,7 +36,9 @@ export class CoordinatePairsConstraint implements ValidatorConstraintInterface {
  * at least two are required to form a route.
  */
 export class RouteRequestDto {
-    @ApiProperty({ description: "ORS-style vehicle profile, e.g. 'driving-car'." })
+    @ApiProperty({
+        description: "ORS-style vehicle profile, e.g. 'driving-car'.",
+    })
     @IsString()
     @IsNotEmpty()
     profile: string;
@@ -43,7 +47,8 @@ export class RouteRequestDto {
     // Array at runtime, so without this the generated spec typed coordinates as
     // array<string> and clients emitted List<String> instead of [lng, lat] pairs.
     @ApiProperty({
-        description: 'Stops to route through, as [lng, lat] pairs in visit order.',
+        description:
+            'Stops to route through, as [lng, lat] pairs in visit order.',
         type: 'array',
         minItems: 2,
         items: {

@@ -22,13 +22,17 @@ export class AdhocOptimisationDto {
     @IsISO8601()
     startDateTime: string;
 
-    @ApiProperty({ format: 'uuid', description: 'warehouse.id — the start/end location.' })
+    @ApiProperty({
+        format: 'uuid',
+        description: 'warehouse.id — the start/end location.',
+    })
     @IsUUID()
     startingLocationId: string;
 
     @ApiProperty({
         format: 'uuid',
-        description: 'drivers.id — the driver this shift is assigned to. Must share a warehouse with vehicleId.',
+        description:
+            'drivers.id — the driver this shift is assigned to. Must share a warehouse with vehicleId.',
     })
     @IsUUID()
     driverId: string;

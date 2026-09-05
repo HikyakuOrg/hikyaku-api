@@ -73,7 +73,10 @@ export class BookingService {
     ) {}
 
     /** Itemised, server-authoritative quote. No charge. */
-    async quote(organisationId: string, dto: QuoteBookingDto): Promise<QuoteResponse> {
+    async quote(
+        organisationId: string,
+        dto: QuoteBookingDto,
+    ): Promise<QuoteResponse> {
         const { service, addons } = await this.loadItems(
             organisationId,
             dto.serviceId,
@@ -104,7 +107,10 @@ export class BookingService {
      * the booking so the Stripe webhook can fulfil it after payment. No package or
      * customer is created here.
      */
-    async pay(organisationId: string, dto: PayBookingDto): Promise<CheckoutResult> {
+    async pay(
+        organisationId: string,
+        dto: PayBookingDto,
+    ): Promise<CheckoutResult> {
         const { service, addons, stripeAccount } = await this.loadItems(
             organisationId,
             dto.serviceId,
@@ -118,9 +124,11 @@ export class BookingService {
 
         const paymentId = randomUUID();
         const successUrl =
-            process.env.FRONTEND_SUCCESS_URL ?? 'http://localhost:3000/booking/success';
+            process.env.FRONTEND_SUCCESS_URL ??
+            'http://localhost:3000/booking/success';
         const cancelUrl =
-            process.env.FRONTEND_CANCEL_URL ?? 'http://localhost:3000/booking/cancel';
+            process.env.FRONTEND_CANCEL_URL ??
+            'http://localhost:3000/booking/cancel';
 
         const lineItems: StripeLineItem[] = lines.map((line) =>
             line.isInteger
@@ -143,7 +151,10 @@ export class BookingService {
                 cancel_url: cancelUrl,
                 client_reference_id: paymentId,
                 customer_email: booking.sender.email,
-                metadata: { payment_id: paymentId, organisation_id: organisationId },
+                metadata: {
+                    payment_id: paymentId,
+                    organisation_id: organisationId,
+                },
             },
             { stripeAccount, idempotencyKey: paymentId },
         );
@@ -274,10 +285,14 @@ export class BookingService {
         try {
             distanceKm = await this.valhalla.routeDistanceKm(coordinates);
         } catch {
-            throw new ServiceUnavailableException('Distance calculation unavailable');
+            throw new ServiceUnavailableException(
+                'Distance calculation unavailable',
+            );
         }
         if (!Number.isFinite(distanceKm)) {
-            throw new ServiceUnavailableException('Distance calculation unavailable');
+            throw new ServiceUnavailableException(
+                'Distance calculation unavailable',
+            );
         }
         return distanceKm;
     }

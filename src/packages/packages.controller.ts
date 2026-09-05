@@ -44,7 +44,7 @@ interface StatusReply {
 @Controller('api/v1/packages')
 @UseGuards(PermissionGuard)
 export class PackagesController {
-    constructor(private readonly packages: PackagesService) { }
+    constructor(private readonly packages: PackagesService) {}
 
     @Post()
     @HttpCode(HttpStatus.CREATED)

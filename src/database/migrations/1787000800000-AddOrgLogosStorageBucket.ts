@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-export class AddOrgLogosStorageBucket1787000800000
-    implements MigrationInterface
-{
+export class AddOrgLogosStorageBucket1787000800000 implements MigrationInterface {
     name = 'AddOrgLogosStorageBucket1787000800000';
 
     private read(file: string): string {

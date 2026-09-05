@@ -53,7 +53,10 @@ function build(state: State = {}) {
     const log: { sql: string; params: unknown[] }[] = [];
 
     const answer = (sql: string): unknown[] => {
-        if (sql.includes('FROM stripe.payments') && sql.includes('FOR UPDATE')) {
+        if (
+            sql.includes('FROM stripe.payments') &&
+            sql.includes('FOR UPDATE')
+        ) {
             return [{ id: 'pay-1', status: state.lockedStatus ?? 'pending' }];
         }
         if (sql.includes('FROM stripe.payments')) {
@@ -86,7 +89,9 @@ function build(state: State = {}) {
         upsertFromBooking: jest
             .fn()
             .mockImplementation((_party, _acct, _org, key: string) =>
-                Promise.resolve(key.endsWith(':sender') ? 'cust-from' : 'cust-to'),
+                Promise.resolve(
+                    key.endsWith(':sender') ? 'cust-from' : 'cust-to',
+                ),
             ),
     };
     const packages = {
@@ -102,14 +107,18 @@ function build(state: State = {}) {
     return { service, packages, customers, runner, log };
 }
 
-const session = { id: 'cs_test_1', payment_status: 'paid', payment_intent: 'pi_1' };
+const session = {
+    id: 'cs_test_1',
+    payment_status: 'paid',
+    payment_intent: 'pi_1',
+};
 
 describe('PaymentsService.fulfillCheckoutSession', () => {
     it('throws when the webhook beats our own payment row, so Stripe retries', async () => {
         const { service } = build({ payment: null });
-        await expect(service.fulfillCheckoutSession(session)).rejects.toBeInstanceOf(
-            NotFoundException,
-        );
+        await expect(
+            service.fulfillCheckoutSession(session),
+        ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('is a no-op for a payment already fulfilled', async () => {
@@ -121,7 +130,9 @@ describe('PaymentsService.fulfillCheckoutSession', () => {
     });
 
     it('is a no-op when a concurrent retry won the row lock', async () => {
-        const { service, packages, runner } = build({ lockedStatus: 'completed' });
+        const { service, packages, runner } = build({
+            lockedStatus: 'completed',
+        });
         await service.fulfillCheckoutSession(session);
         expect(packages.createMany).not.toHaveBeenCalled();
         expect(runner.commitTransaction).toHaveBeenCalled();
@@ -164,7 +175,9 @@ describe('PaymentsService.fulfillCheckoutSession', () => {
         const lookup = log.find((q) => q.sql.includes('FROM warehouse w'));
         expect(lookup?.sql).toContain('<->');
         expect(lookup?.params).toEqual(['org-1', 'cust-from']);
-        expect(packages.createMany.mock.calls[0][2][0].warehouseId).toBe('wh-nearest');
+        expect(packages.createMany.mock.calls[0][2][0].warehouseId).toBe(
+            'wh-nearest',
+        );
     });
 
     it('refuses when the organisation has no warehouse at all', async () => {
@@ -206,7 +219,9 @@ describe('PaymentsService.fulfillCheckoutSession', () => {
         const { service, log } = build();
         await service.fulfillCheckoutSession(session);
 
-        const update = log.find((q) => q.sql.includes('UPDATE stripe.payments'));
+        const update = log.find((q) =>
+            q.sql.includes('UPDATE stripe.payments'),
+        );
         expect(update?.params).toEqual(['pkg-1', 'pi_1', 'pay-1']);
     });
 
@@ -228,13 +243,19 @@ describe('PaymentsService.fulfillCheckoutSession', () => {
 
     it('does not fail a paid booking because no van had room', async () => {
         const { service, packages } = build();
-        packages.assignCreated.mockRejectedValue(new Error('every van is full'));
-        await expect(service.fulfillCheckoutSession(session)).resolves.toBeUndefined();
+        packages.assignCreated.mockRejectedValue(
+            new Error('every van is full'),
+        );
+        await expect(
+            service.fulfillCheckoutSession(session),
+        ).resolves.toBeUndefined();
     });
 
     it('rolls back everything when package creation throws', async () => {
         const { service, packages, runner } = build();
-        packages.createMany.mockRejectedValue(new Error('constraint violation'));
+        packages.createMany.mockRejectedValue(
+            new Error('constraint violation'),
+        );
 
         await expect(service.fulfillCheckoutSession(session)).rejects.toThrow();
         expect(runner.rollbackTransaction).toHaveBeenCalled();
@@ -247,7 +268,9 @@ describe('PaymentsService.fulfillCheckoutSession', () => {
             id: 'cs_test_1',
             payment_intent: { id: 'pi_obj' },
         });
-        const update = log.find((q) => q.sql.includes('UPDATE stripe.payments'));
+        const update = log.find((q) =>
+            q.sql.includes('UPDATE stripe.payments'),
+        );
         expect(update?.params[1]).toBe('pi_obj');
     });
 });

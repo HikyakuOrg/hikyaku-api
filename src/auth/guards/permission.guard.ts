@@ -50,7 +50,7 @@ export class PermissionGuard implements CanActivate {
         private readonly supabase: SupabaseClient,
         private readonly tokenVerifier: TokenVerifier,
         private readonly reflector: Reflector,
-    ) { }
+    ) {}
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
         const requiredPermission = this.reflector.get<string>(
@@ -82,8 +82,7 @@ export class PermissionGuard implements CanActivate {
         }
 
         // Resolve + authorise the active organisation.
-        const slug: string | undefined =
-            request.headers['x-organisation-slug'];
+        const slug: string | undefined = request.headers['x-organisation-slug'];
         if (!slug) {
             throw new BadRequestException('Missing X-Organisation-Slug header');
         }
@@ -95,7 +94,8 @@ export class PermissionGuard implements CanActivate {
         // team_members answers membership, and (when a permission is
         // required) user_permission answers that too — see OrgGuardRow for
         // why both embeds are left joins.
-        const baseSelect = 'id, trial_ends_at, subscription_status, team_members(id)';
+        const baseSelect =
+            'id, trial_ends_at, subscription_status, team_members(id)';
         const select = requiredPermission
             ? `${baseSelect}, user_permission(app_permission!inner(permission))`
             : baseSelect;
@@ -107,7 +107,10 @@ export class PermissionGuard implements CanActivate {
             .eq('team_members.id', userId);
         if (requiredPermission) {
             query.eq('user_permission.user_id', userId);
-            query.eq('user_permission.app_permission.permission', requiredPermission);
+            query.eq(
+                'user_permission.app_permission.permission',
+                requiredPermission,
+            );
         }
 
         const { data } = await query.maybeSingle();

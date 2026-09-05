@@ -56,7 +56,7 @@ export class InvitationsService {
         @InjectRepository(UserPermission)
         private readonly userPermissionRepo: Repository<UserPermission>,
         private readonly mailer: MailerService,
-    ) { }
+    ) {}
 
     async createInvitation(
         dto: CreateInvitationDto,
@@ -156,13 +156,16 @@ export class InvitationsService {
             // The partial unique index (organisation_id, email) WHERE status='pending'
             // means a second outstanding invite for the same (org, email) is rejected
             // by the DB. We catch that case and update the existing row instead.
-            const existing = await runner.manager.findOne(OrganisationInvitation, {
-                where: {
-                    organisationId,
-                    email: inviteEmail,
-                    status: 'pending',
+            const existing = await runner.manager.findOne(
+                OrganisationInvitation,
+                {
+                    where: {
+                        organisationId,
+                        email: inviteEmail,
+                        status: 'pending',
+                    },
                 },
-            });
+            );
 
             if (existing) {
                 invitationId = existing.id;
@@ -216,7 +219,11 @@ export class InvitationsService {
         //    row is the source of truth; a missed email can be re-sent later.
         const loginUrl = `${process.env.APP_URL ?? ''}/auth/login`;
         try {
-            await this.mailer.sendInvitationEmail(dto.user_email, orgName, loginUrl);
+            await this.mailer.sendInvitationEmail(
+                dto.user_email,
+                orgName,
+                loginUrl,
+            );
         } catch (mailError) {
             this.logger.error(
                 `Mail send failed for invitation ${invitationId}: ${(mailError as Error).message}`,
@@ -302,7 +309,10 @@ export class InvitationsService {
                 [id, user.email],
                 true,
             );
-            const claimed = (claimResult.records ?? []) as { organisation_id: string; role_id: string }[];
+            const claimed = (claimResult.records ?? []) as {
+                organisation_id: string;
+                role_id: string;
+            }[];
 
             if (!claimed || claimed.length === 0) {
                 throw new NotFoundException(
@@ -354,10 +364,7 @@ export class InvitationsService {
         }
     }
 
-    async decline(
-        id: string,
-        user: { email: string },
-    ): Promise<{ ok: true }> {
+    async decline(id: string, user: { email: string }): Promise<{ ok: true }> {
         // queryReturning, not query: TypeORM resolves an UPDATE to
         // [rows, rowCount], so plain query() would report a length of 2 here
         // even when the statement matched nothing and the 404 below could never

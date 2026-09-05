@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-export class TouchDriverCurrentLocationUpdatedAt1787101000000
-    implements MigrationInterface
-{
+export class TouchDriverCurrentLocationUpdatedAt1787101000000 implements MigrationInterface {
     name = 'TouchDriverCurrentLocationUpdatedAt1787101000000';
 
     private read(file: string): string {

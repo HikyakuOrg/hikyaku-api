@@ -60,17 +60,21 @@ export class ShiftPlanWriter {
         runner: QueryRunner,
         optimisationId: string,
     ): Promise<{ routeId: string; solutionId: string }> {
-        const existing: { route_id: string; solution_id: string }[] = await runner.query(
-            `SELECT r.id AS route_id, s.id AS solution_id
+        const existing: { route_id: string; solution_id: string }[] =
+            await runner.query(
+                `SELECT r.id AS route_id, s.id AS solution_id
                FROM vrp_solution s
                JOIN vrp_route  r ON r.solution_id = s.id
               WHERE s.optimization_id = $1
               ORDER BY r.id
               LIMIT 1`,
-            [optimisationId],
-        );
+                [optimisationId],
+            );
         if (existing[0]) {
-            return { routeId: existing[0].route_id, solutionId: existing[0].solution_id };
+            return {
+                routeId: existing[0].route_id,
+                solutionId: existing[0].solution_id,
+            };
         }
 
         const solutionRows: { id: string }[] = await runner.query(
@@ -233,7 +237,9 @@ export class ShiftPlanWriter {
         const claimed = (result.records ?? []) as { id: string }[];
 
         if (claimed.length < packageIds.length) {
-            const lost = packageIds.filter((id) => !claimed.some((c) => c.id === id));
+            const lost = packageIds.filter(
+                (id) => !claimed.some((c) => c.id === id),
+            );
             throw new ConflictException(
                 `Package(s) claimed by another shift while this assignment was being planned: ${lost.join(', ')}`,
             );
@@ -264,7 +270,10 @@ export class ShiftPlanWriter {
         plan: PlanWrite,
     ): Promise<void> {
         const values = plan.stops
-            .map((_, i) => `($${i + 1}, $${plan.stops.length + 1}, $${plan.stops.length + 2})`)
+            .map(
+                (_, i) =>
+                    `($${i + 1}, $${plan.stops.length + 1}, $${plan.stops.length + 2})`,
+            )
             .join(', ');
 
         await runner.query(
@@ -273,7 +282,11 @@ export class ShiftPlanWriter {
              ON CONFLICT (package_id)
              DO UPDATE SET driver_id  = EXCLUDED.driver_id,
                            vehicle_id = EXCLUDED.vehicle_id`,
-            [...plan.stops.map((s) => s.packageId), plan.driverId, plan.vehicleId],
+            [
+                ...plan.stops.map((s) => s.packageId),
+                plan.driverId,
+                plan.vehicleId,
+            ],
         );
     }
 
@@ -283,7 +296,10 @@ export class ShiftPlanWriter {
      * Arrivals are stored as seconds relative to departure, which is the
      * convention every other writer and both clients already read.
      */
-    private async insertSteps(runner: QueryRunner, plan: PlanWrite): Promise<void> {
+    private async insertSteps(
+        runner: QueryRunner,
+        plan: PlanWrite,
+    ): Promise<void> {
         const rows: {
             index: number;
             type: string;
@@ -313,14 +329,25 @@ export class ShiftPlanWriter {
                 packageId: stop.packageId,
                 lon: stop.lon,
                 lat: stop.lat,
-                arrival: Math.max(0, Math.round((stop.arrivalMs - plan.departureMs) / 1000)),
+                arrival: Math.max(
+                    0,
+                    Math.round((stop.arrivalMs - plan.departureMs) / 1000),
+                ),
                 load: [cumulativeLoad],
             });
         });
 
-        const lastArrival = plan.stops.length > 0
-            ? Math.max(0, Math.round((plan.stops[plan.stops.length - 1].arrivalMs - plan.departureMs) / 1000))
-            : 0;
+        const lastArrival =
+            plan.stops.length > 0
+                ? Math.max(
+                      0,
+                      Math.round(
+                          (plan.stops[plan.stops.length - 1].arrivalMs -
+                              plan.departureMs) /
+                              1000,
+                      ),
+                  )
+                : 0;
         rows.push({
             index: plan.stops.length + 1,
             type: 'end',
@@ -387,7 +414,10 @@ export class ShiftPlanWriter {
      * to the customer and writing planner output there is what destroyed
      * deadlines before SplitDeadlineFromEta.
      */
-    private async writeEtas(runner: QueryRunner, stops: PlanStop[]): Promise<void> {
+    private async writeEtas(
+        runner: QueryRunner,
+        stops: PlanStop[],
+    ): Promise<void> {
         const values = stops
             .map((_, i) => `($${i * 2 + 1}::uuid, $${i * 2 + 2}::timestamptz)`)
             .join(', ');

@@ -30,12 +30,20 @@ import {
 const ADVISORY_LOCK_KEY = 727_002_026;
 
 function log(message: string): void {
-    parentPort?.postMessage({ type: 'log', message: redactSecrets(message) } satisfies TzdataWorkerMessage);
+    parentPort?.postMessage({
+        type: 'log',
+        message: redactSecrets(message),
+    } satisfies TzdataWorkerMessage);
 }
 
 /** Reports a phase transition — TzdataService surfaces this via GET /api/v1/tzdata/status. */
-function status(phase: Extract<TzdataWorkerMessage, { type: 'status' }>['phase']): void {
-    parentPort?.postMessage({ type: 'status', phase } satisfies TzdataWorkerMessage);
+function status(
+    phase: Extract<TzdataWorkerMessage, { type: 'status' }>['phase'],
+): void {
+    parentPort?.postMessage({
+        type: 'status',
+        phase,
+    } satisfies TzdataWorkerMessage);
 }
 
 /** Quotes a value for a libpq keyword/value string (the part after `PG:`). */
@@ -51,7 +59,10 @@ function quotePgValue(value: string): string {
  * The password travels to the child via PGPASSWORD (a standard libpq env
  * fallback) instead — see the `env` option below.
  */
-function buildPgConnectionString(dbUrl: string): { dsn: string; password: string } {
+function buildPgConnectionString(dbUrl: string): {
+    dsn: string;
+    password: string;
+} {
     const url = new URL(dbUrl);
     const parts: Record<string, string> = {
         host: url.hostname,
@@ -71,11 +82,15 @@ async function downloadAndVerify(destPath: string): Promise<void> {
     log(`Downloading ${TIMEZONE_BOUNDARY_URL}`);
     const response = await fetch(TIMEZONE_BOUNDARY_URL);
     if (!response.ok || !response.body) {
-        throw new Error(`Download failed: HTTP ${response.status} ${response.statusText}`);
+        throw new Error(
+            `Download failed: HTTP ${response.status} ${response.statusText}`,
+        );
     }
 
     const hash = createHash('sha256');
-    const source = Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>);
+    const source = Readable.fromWeb(
+        response.body as unknown as NodeWebReadableStream<Uint8Array>,
+    );
     source.on('data', (chunk: Buffer) => hash.update(chunk));
 
     await pipeline(source, createWriteStream(destPath));
@@ -111,7 +126,9 @@ async function run(): Promise<void> {
         );
         if (!lockResult.rows[0]?.locked) {
             status('skipped_locked_elsewhere');
-            log('Another instance is already importing timezone data — skipping.');
+            log(
+                'Another instance is already importing timezone data — skipping.',
+            );
             return;
         }
 
@@ -122,10 +139,14 @@ async function run(): Promise<void> {
             // Large multipolygons (Russia, Antarctica) can take longer to COPY
             // than the project's default statement_timeout. Set on the role
             // itself, not the session, for the same pooler reason as above.
-            await client.query('ALTER ROLE CURRENT_USER SET statement_timeout = 0');
+            await client.query(
+                'ALTER ROLE CURRENT_USER SET statement_timeout = 0',
+            );
 
             log(`Truncating ${TZDATA_SCHEMA}.${TZDATA_TABLE}...`);
-            await client.query(`TRUNCATE TABLE "${TZDATA_SCHEMA}"."${TZDATA_TABLE}"`);
+            await client.query(
+                `TRUNCATE TABLE "${TZDATA_SCHEMA}"."${TZDATA_TABLE}"`,
+            );
 
             status('importing');
             log('Importing via ogr2ogr...');
@@ -140,11 +161,15 @@ async function run(): Promise<void> {
                 skipFailures: false,
                 timeout: 0,
                 options: [
-                    '-nln', `${TZDATA_SCHEMA}.${TZDATA_TABLE}`,
+                    '-nln',
+                    `${TZDATA_SCHEMA}.${TZDATA_TABLE}`,
                     '-append',
-                    '-nlt', 'PROMOTE_TO_MULTI',
-                    '-lco', 'GEOMETRY_NAME=geom',
-                    '-t_srs', 'EPSG:4326',
+                    '-nlt',
+                    'PROMOTE_TO_MULTI',
+                    '-lco',
+                    'GEOMETRY_NAME=geom',
+                    '-t_srs',
+                    'EPSG:4326',
                     // NOT PG_USE_COPY=YES: appending via COPY writes an explicit
                     // NULL into the "id" column (its NOT NULL + sequence default
                     // only apply when a column is omitted from the row, and
@@ -153,19 +178,25 @@ async function run(): Promise<void> {
                     // The regular INSERT path correctly omits unset-FID columns
                     // and lets the DB assign id via its default; ~450 rows makes
                     // the COPY speed advantage irrelevant here.
-                    '--config', 'PG_USE_COPY', 'NO',
+                    '--config',
+                    'PG_USE_COPY',
+                    'NO',
                 ],
             });
             if (result.details) log(`ogr2ogr: ${result.details}`);
             status('completed');
             log('Import complete.');
         } finally {
-            await client.query('ALTER ROLE CURRENT_USER RESET statement_timeout').catch(() => { });
-            await client.query('SELECT pg_advisory_unlock($1)', [ADVISORY_LOCK_KEY]).catch(() => { });
+            await client
+                .query('ALTER ROLE CURRENT_USER RESET statement_timeout')
+                .catch(() => {});
+            await client
+                .query('SELECT pg_advisory_unlock($1)', [ADVISORY_LOCK_KEY])
+                .catch(() => {});
         }
     } finally {
-        await client.end().catch(() => { });
-        await rm(tmpDir, { recursive: true, force: true }).catch(() => { });
+        await client.end().catch(() => {});
+        await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
 }
 

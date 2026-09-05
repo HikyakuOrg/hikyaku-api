@@ -41,6 +41,11 @@ import { ShiftPlanWriter } from './shift-plan.writer';
         AssignmentService,
         ReplanWorker,
     ],
-    exports: [QueueService, AssignmentService, ShiftPlanWriter, PgNotifyService],
+    exports: [
+        QueueService,
+        AssignmentService,
+        ShiftPlanWriter,
+        PgNotifyService,
+    ],
 })
-export class DispatchModule { }
+export class DispatchModule {}

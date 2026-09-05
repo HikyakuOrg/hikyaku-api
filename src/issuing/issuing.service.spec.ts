@@ -11,7 +11,12 @@ describe('IssuingService', () => {
     let stripe: {
         issuing: {
             cardholders: { create: jest.Mock };
-            cards: { list: jest.Mock; create: jest.Mock; update: jest.Mock; retrieve: jest.Mock };
+            cards: {
+                list: jest.Mock;
+                create: jest.Mock;
+                update: jest.Mock;
+                retrieve: jest.Mock;
+            };
             transactions: { list: jest.Mock };
         };
         ephemeralKeys: { create: jest.Mock };
@@ -25,7 +30,12 @@ describe('IssuingService', () => {
         stripe = {
             issuing: {
                 cardholders: { create: jest.fn() },
-                cards: { list: jest.fn(), create: jest.fn(), update: jest.fn(), retrieve: jest.fn() },
+                cards: {
+                    list: jest.fn(),
+                    create: jest.fn(),
+                    update: jest.fn(),
+                    retrieve: jest.fn(),
+                },
                 transactions: { list: jest.fn() },
             },
             ephemeralKeys: { create: jest.fn() },
@@ -34,7 +44,9 @@ describe('IssuingService', () => {
         cardRepo = {
             findOne: jest.fn(),
             create: jest.fn().mockImplementation((v: unknown) => v),
-            save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
+            save: jest
+                .fn()
+                .mockImplementation((v: unknown) => Promise.resolve(v)),
         };
         dataSource = { query: jest.fn() };
         orgs = {
@@ -50,7 +62,10 @@ describe('IssuingService', () => {
                 IssuingService,
                 { provide: STRIPE_CLIENT, useValue: stripe },
                 { provide: SUPABASE_CLIENT, useValue: supabase },
-                { provide: getRepositoryToken(IssuingCard), useValue: cardRepo },
+                {
+                    provide: getRepositoryToken(IssuingCard),
+                    useValue: cardRepo,
+                },
                 { provide: getDataSourceToken(), useValue: dataSource },
                 { provide: OrganisationsService, useValue: orgs },
             ],
@@ -67,7 +82,11 @@ describe('IssuingService', () => {
                 cardholder: 'ich_existing',
             });
 
-            const result = await service.ensureCardholder('org1', 'd1', 'acct_1');
+            const result = await service.ensureCardholder(
+                'org1',
+                'd1',
+                'acct_1',
+            );
 
             expect(result).toBe('ich_existing');
             expect(stripe.issuing.cards.retrieve).toHaveBeenCalledWith(
@@ -100,9 +119,15 @@ describe('IssuingService', () => {
                     warehouse_country: 'MY',
                 },
             ]);
-            stripe.issuing.cardholders.create.mockResolvedValue({ id: 'ich_new' });
+            stripe.issuing.cardholders.create.mockResolvedValue({
+                id: 'ich_new',
+            });
 
-            const result = await service.ensureCardholder('org1', 'd1', 'acct_1');
+            const result = await service.ensureCardholder(
+                'org1',
+                'd1',
+                'acct_1',
+            );
 
             expect(stripe.issuing.cardholders.create).toHaveBeenCalledWith(
                 expect.objectContaining({
@@ -153,7 +178,11 @@ describe('IssuingService', () => {
                         },
                     ],
                 },
-                metadata: { organisationId: 'org1', driverId: 'd1', vehicleId: 'v1' },
+                metadata: {
+                    organisationId: 'org1',
+                    driverId: 'd1',
+                    vehicleId: 'v1',
+                },
             });
 
             const card = await service.issueCard('org1', {
@@ -222,7 +251,10 @@ describe('IssuingService', () => {
                 metadata: { organisationId: 'org1', driverId: 'd1' },
             });
 
-            await service.issueCard('org1', { driverId: 'd1', currency: 'usd' });
+            await service.issueCard('org1', {
+                driverId: 'd1',
+                currency: 'usd',
+            });
 
             const params = stripe.issuing.cards.create.mock.calls[0][0];
             expect(params.spending_controls.spending_limits).toBeUndefined();
@@ -270,7 +302,9 @@ describe('IssuingService', () => {
                         status: 'active',
                         created: 1_700_000_000,
                         spending_controls: {
-                            spending_limits: [{ amount: 10000, interval: 'daily' }],
+                            spending_limits: [
+                                { amount: 10000, interval: 'daily' },
+                            ],
                         },
                         metadata: { vehicleId: 'v1' },
                     },
@@ -369,7 +403,10 @@ describe('IssuingService', () => {
                     {
                         ...txn,
                         id: 'ipi_2',
-                        cardholder: { id: 'ich_2', metadata: { driverId: 'd2' } },
+                        cardholder: {
+                            id: 'ich_2',
+                            metadata: { driverId: 'd2' },
+                        },
                     },
                 ],
             });
@@ -417,7 +454,11 @@ describe('IssuingService', () => {
                 metadata: {},
             });
 
-            const result = await service.setCardStatus('org1', 'ic_1', 'inactive');
+            const result = await service.setCardStatus(
+                'org1',
+                'ic_1',
+                'inactive',
+            );
 
             expect(stripe.issuing.cards.update).toHaveBeenCalledWith(
                 'ic_1',

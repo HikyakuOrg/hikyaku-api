@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-export class ResolveOrganisationsByVanitySlug1787000600000
-    implements MigrationInterface
-{
+export class ResolveOrganisationsByVanitySlug1787000600000 implements MigrationInterface {
     name = 'ResolveOrganisationsByVanitySlug1787000600000';
 
     private read(file: string): string {

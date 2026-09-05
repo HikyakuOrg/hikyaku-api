@@ -10,7 +10,7 @@ describe('ValhallaService', () => {
     beforeEach(() => {
         service = new ValhallaService();
         mockFetch = jest.fn();
-        global.fetch = mockFetch as unknown as typeof fetch;
+        global.fetch = mockFetch;
         process.env.VALHALLA_URL = 'http://valhalla.test:8002';
     });
 
@@ -26,7 +26,10 @@ describe('ValhallaService', () => {
     it('POSTs [lon, lat] pairs as {lat, lon} break locations with auto costing in km', async () => {
         mockFetch.mockResolvedValueOnce({
             ok: true,
-            json: () => Promise.resolve({ trip: { summary: { time: 600, length: 12.345 }, legs: [] } }),
+            json: () =>
+                Promise.resolve({
+                    trip: { summary: { time: 600, length: 12.345 }, legs: [] },
+                }),
         });
 
         await service.routeDistanceKm([
@@ -34,25 +37,31 @@ describe('ValhallaService', () => {
             [151.2, -33.8],
         ]);
 
-        expect(mockFetch).toHaveBeenCalledWith('http://valhalla.test:8002/route', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                locations: [
-                    { lat: -33.7, lon: 151.0, type: 'break' },
-                    { lat: -33.8, lon: 151.2, type: 'break' },
-                ],
-                costing: 'auto',
-                units: 'kilometers',
-                directions_type: 'none',
-            }),
-        });
+        expect(mockFetch).toHaveBeenCalledWith(
+            'http://valhalla.test:8002/route',
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    locations: [
+                        { lat: -33.7, lon: 151.0, type: 'break' },
+                        { lat: -33.8, lon: 151.2, type: 'break' },
+                    ],
+                    costing: 'auto',
+                    units: 'kilometers',
+                    directions_type: 'none',
+                }),
+            },
+        );
     });
 
     it('returns trip.summary.length (kilometers)', async () => {
         mockFetch.mockResolvedValueOnce({
             ok: true,
-            json: () => Promise.resolve({ trip: { summary: { time: 600, length: 12.345 }, legs: [] } }),
+            json: () =>
+                Promise.resolve({
+                    trip: { summary: { time: 600, length: 12.345 }, legs: [] },
+                }),
         });
 
         await expect(
@@ -64,7 +73,11 @@ describe('ValhallaService', () => {
     });
 
     it('throws an HttpException carrying status and body on error', async () => {
-        const errorBody = { error: 'No path could be found for input', error_code: 442, status_code: 400 };
+        const errorBody = {
+            error: 'No path could be found for input',
+            error_code: 442,
+            status_code: 400,
+        };
         mockFetch.mockResolvedValueOnce({
             ok: false,
             status: 400,

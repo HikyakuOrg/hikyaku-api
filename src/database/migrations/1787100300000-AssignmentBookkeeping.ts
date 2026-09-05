@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class AssignmentBookkeeping1787100300000 implements MigrationInterface {
     name = 'AssignmentBookkeeping1787100300000';
 

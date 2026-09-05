@@ -52,10 +52,13 @@ export class UsersService {
         @Inject(SUPABASE_CLIENT)
         private readonly supabase: SupabaseClient,
         private readonly db: DatabaseService,
-        @InjectRepository(AppRole) private readonly appRoleRepo: Repository<AppRole>,
-        @InjectRepository(AppPermission) private readonly appPermissionRepo: Repository<AppPermission>,
-        @InjectRepository(UserPermission) private readonly userPermissionRepo: Repository<UserPermission>,
-    ) { }
+        @InjectRepository(AppRole)
+        private readonly appRoleRepo: Repository<AppRole>,
+        @InjectRepository(AppPermission)
+        private readonly appPermissionRepo: Repository<AppPermission>,
+        @InjectRepository(UserPermission)
+        private readonly userPermissionRepo: Repository<UserPermission>,
+    ) {}
 
     async createUser(
         dto: CreateUserDto,
@@ -119,7 +122,9 @@ export class UsersService {
             });
 
         if (inviteError) {
-            if (inviteError.message.toLowerCase().includes('already registered')) {
+            if (
+                inviteError.message.toLowerCase().includes('already registered')
+            ) {
                 throw new BadRequestException(
                     `A user with email ${dto.user_email} already exists`,
                 );
@@ -145,7 +150,11 @@ export class UsersService {
 
         const runner = await this.db.beginTransaction();
         try {
-            await runner.manager.insert(TeamMember, { organisationId, id: userId, roleId });
+            await runner.manager.insert(TeamMember, {
+                organisationId,
+                id: userId,
+                roleId,
+            });
 
             if (isDriver) {
                 const meta = dto.user_metadata ?? {};
@@ -164,7 +173,13 @@ export class UsersService {
                     .createQueryBuilder()
                     .insert()
                     .into(UserPermission)
-                    .values(permissionIds.map((pid) => ({ organisationId, userId, permissionId: pid })))
+                    .values(
+                        permissionIds.map((pid) => ({
+                            organisationId,
+                            userId,
+                            permissionId: pid,
+                        })),
+                    )
                     .orIgnore()
                     .execute();
             }
@@ -239,7 +254,9 @@ export class UsersService {
         const results = await Promise.allSettled(
             dto.user_ids.map(async (userId) => {
                 if (userId === callerUserId) {
-                    throw new BadRequestException('Cannot deactivate your own account');
+                    throw new BadRequestException(
+                        'Cannot deactivate your own account',
+                    );
                 }
 
                 const [userPermCount, totalPermCount] = await Promise.all([
@@ -247,7 +264,9 @@ export class UsersService {
                     this.appPermissionRepo.count(),
                 ]);
                 if (totalPermCount > 0 && userPermCount === totalPermCount) {
-                    throw new BadRequestException('Admin accounts cannot be deactivated');
+                    throw new BadRequestException(
+                        'Admin accounts cannot be deactivated',
+                    );
                 }
 
                 const { error: banError } =
@@ -326,7 +345,11 @@ export class UsersService {
         return { reactivated, failed };
     }
 
-    async updateUserRole(userId: string, roleName: string, organisationId: string): Promise<{ user_id: string; role: string }> {
+    async updateUserRole(
+        userId: string,
+        roleName: string,
+        organisationId: string,
+    ): Promise<{ user_id: string; role: string }> {
         const role = await this.appRoleRepo.findOne({
             where: { name: roleName },
             select: { id: true, name: true },
@@ -337,12 +360,18 @@ export class UsersService {
 
         const runner = await this.db.beginTransaction();
         try {
-            await runner.manager.update(TeamMember, { organisationId, id: userId }, { roleId: role.id });
+            await runner.manager.update(
+                TeamMember,
+                { organisationId, id: userId },
+                { roleId: role.id },
+            );
             await runner.commitTransaction();
         } catch (dbError) {
             await runner.rollbackTransaction();
             const msg = (dbError as Error).message ?? String(dbError);
-            throw new InternalServerErrorException(`Failed to update role: ${msg}`);
+            throw new InternalServerErrorException(
+                `Failed to update role: ${msg}`,
+            );
         } finally {
             await runner.release();
         }

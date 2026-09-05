@@ -20,7 +20,9 @@ describe('trialState', () => {
     // it, or silently re-enrolled into a trial it was never told it was on.
     it('treats "grandfathered" as permanently unrestricted', () => {
         expect(trialState('grandfathered', null, NOW)).toBe('none');
-        expect(trialState('grandfathered', offset(-30 * DAY), NOW)).toBe('none');
+        expect(trialState('grandfathered', offset(-30 * DAY), NOW)).toBe(
+            'none',
+        );
     });
 
     it('is active while trialing and the deadline is in the future', () => {

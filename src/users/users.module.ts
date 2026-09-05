@@ -13,8 +13,18 @@ import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 
 @Module({
-    imports: [DatabaseModule, TypeOrmModule.forFeature([AppRole, AppPermission, RolePermission, TeamMember, Driver, UserPermission])],
+    imports: [
+        DatabaseModule,
+        TypeOrmModule.forFeature([
+            AppRole,
+            AppPermission,
+            RolePermission,
+            TeamMember,
+            Driver,
+            UserPermission,
+        ]),
+    ],
     controllers: [UsersController],
     providers: [UsersService, PermissionGuard, Reflector],
 })
-export class UsersModule { }
+export class UsersModule {}

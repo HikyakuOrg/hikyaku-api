@@ -14,4 +14,4 @@ import { TokenVerifier } from './token-verifier.service';
     providers: [TokenVerifier],
     exports: [TokenVerifier],
 })
-export class AuthModule { }
+export class AuthModule {}

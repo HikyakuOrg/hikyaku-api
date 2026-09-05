@@ -29,7 +29,8 @@ const ORGANISATION_PRICE_LOOKUP_KEY = 'hikyaku_organisation_monthly';
  * alongside ORGANISATION_PRICE_LOOKUP_KEY — see its "Shift usage metering"
  * CONFIG block for the actual free allowance / block size / rate.
  */
-const PERSONAL_SHIFT_OVERAGE_PRICE_LOOKUP_KEY = 'hikyaku_personal_shift_overage';
+const PERSONAL_SHIFT_OVERAGE_PRICE_LOOKUP_KEY =
+    'hikyaku_personal_shift_overage';
 const ORGANISATION_SHIFT_OVERAGE_PRICE_LOOKUP_KEY =
     'hikyaku_organisation_shift_overage';
 
@@ -188,7 +189,9 @@ export class BillingService {
             return org;
         }
 
-        const price = await this.resolveActivePrice(ORGANISATION_PRICE_LOOKUP_KEY);
+        const price = await this.resolveActivePrice(
+            ORGANISATION_PRICE_LOOKUP_KEY,
+        );
         const trialDays = price.recurring?.trial_period_days ?? 0;
 
         const customer = await this.stripe.customers.create({
@@ -384,7 +387,8 @@ export class BillingService {
         identifier: string,
     ): Promise<void> {
         const org = await this.organisations.getOrFail(organisationId);
-        const { customerId } = await this.ensureShiftOverageSubscriptionItem(org);
+        const { customerId } =
+            await this.ensureShiftOverageSubscriptionItem(org);
 
         await this.stripe.billing.meterEvents.create({
             event_name: SHIFT_METER_EVENT_NAME,
@@ -402,7 +406,9 @@ export class BillingService {
      * actual enforcement, this only mirrors what it's deciding on. See
      * ShiftUsageStatus for field meanings.
      */
-    async getShiftUsageStatus(organisationId: string): Promise<ShiftUsageStatus> {
+    async getShiftUsageStatus(
+        organisationId: string,
+    ): Promise<ShiftUsageStatus> {
         const org = await this.organisations.getOrFail(organisationId);
         const now = new Date();
         const periodEnd = new Date(
@@ -442,7 +448,8 @@ export class BillingService {
         returnUrl: string,
     ): Promise<{ url: string }> {
         const org = await this.organisations.getOrFail(organisationId);
-        const { customerId } = await this.ensureShiftOverageSubscriptionItem(org);
+        const { customerId } =
+            await this.ensureShiftOverageSubscriptionItem(org);
 
         const session = await this.stripe.billingPortal.sessions.create({
             customer: customerId,
@@ -471,7 +478,8 @@ export class BillingService {
             return;
         }
 
-        const hasPaymentMethod = !!customer.invoice_settings?.default_payment_method;
+        const hasPaymentMethod =
+            !!customer.invoice_settings?.default_payment_method;
         await this.organisations.updatePaymentMethodStatus(
             organisationId,
             hasPaymentMethod,
@@ -488,9 +496,10 @@ export class BillingService {
         organisationId: string,
         stripeCustomerId: string,
     ): Promise<void> {
-        const entitlements = await this.stripe.entitlements.activeEntitlements.list({
-            customer: stripeCustomerId,
-        });
+        const entitlements =
+            await this.stripe.entitlements.activeEntitlements.list({
+                customer: stripeCustomerId,
+            });
         const hasEntitlement = entitlements.data.some(
             (e) => e.lookup_key === VANITY_URL_ENTITLEMENT_LOOKUP_KEY,
         );

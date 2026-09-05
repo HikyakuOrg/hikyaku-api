@@ -20,7 +20,9 @@ import { IssuingCard } from './entities/issuing-card.entity';
  * rather than the `Stripe.*` namespace — the namespace doesn't resolve under
  * `module: nodenext` (see stripe.provider.ts).
  */
-type CardCreateParams = Parameters<StripeClient['issuing']['cards']['create']>[0];
+type CardCreateParams = Parameters<
+    StripeClient['issuing']['cards']['create']
+>[0];
 type AllowedCategory = NonNullable<
     NonNullable<CardCreateParams['spending_controls']>['allowed_categories']
 >[number];
@@ -132,7 +134,9 @@ export class IssuingService {
                 'Card issuing is not active for this organisation. Set up payments in Settings → Payments first.',
             );
         }
-        const account = await this.stripe.accounts.retrieve(stripe.stripeAccountId);
+        const account = await this.stripe.accounts.retrieve(
+            stripe.stripeAccountId,
+        );
         if (account.capabilities?.card_issuing !== 'active') {
             throw new BadRequestException(
                 'Card issuing is not active for this organisation. Set up payments in Settings → Payments first.',
@@ -148,7 +152,9 @@ export class IssuingService {
     ): Promise<string | null> {
         const stripe = await this.orgs.getStripeAccount(organisationId);
         if (!stripe?.stripeAccountId) return null;
-        const account = await this.stripe.accounts.retrieve(stripe.stripeAccountId);
+        const account = await this.stripe.accounts.retrieve(
+            stripe.stripeAccountId,
+        );
         if (account.capabilities?.card_issuing !== 'active') return null;
         return stripe.stripeAccountId;
     }
@@ -273,7 +279,8 @@ export class IssuingService {
     }
 
     async listCards(organisationId: string): Promise<CardDto[]> {
-        const stripeAccount = await this.getStripeAccountIdOrNull(organisationId);
+        const stripeAccount =
+            await this.getStripeAccountIdOrNull(organisationId);
         if (!stripeAccount) return [];
         const cards = await this.stripe.issuing.cards.list(
             { limit: 100 },
@@ -292,7 +299,8 @@ export class IssuingService {
         organisationId: string,
         filters: { driverId?: string; vehicleId?: string } = {},
     ): Promise<TransactionDto[]> {
-        const stripeAccount = await this.getStripeAccountIdOrNull(organisationId);
+        const stripeAccount =
+            await this.getStripeAccountIdOrNull(organisationId);
         if (!stripeAccount) return [];
 
         const txns = await this.stripe.issuing.transactions.list(
@@ -306,7 +314,8 @@ export class IssuingService {
         let data = txns.data;
         if (filters.driverId) {
             data = data.filter((t) => {
-                const ch = typeof t.cardholder === 'object' ? t.cardholder : null;
+                const ch =
+                    typeof t.cardholder === 'object' ? t.cardholder : null;
                 return ch?.metadata?.driverId === filters.driverId;
             });
         }

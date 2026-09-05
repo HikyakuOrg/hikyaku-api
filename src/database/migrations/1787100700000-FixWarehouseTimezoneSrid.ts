@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class FixWarehouseTimezoneSrid1787100700000 implements MigrationInterface {
     name = 'FixWarehouseTimezoneSrid1787100700000';
 

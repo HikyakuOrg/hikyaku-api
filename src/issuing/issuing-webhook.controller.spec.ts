@@ -30,7 +30,9 @@ describe('IssuingWebhookController', () => {
             ],
         }).compile();
 
-        controller = module.get<IssuingWebhookController>(IssuingWebhookController);
+        controller = module.get<IssuingWebhookController>(
+            IssuingWebhookController,
+        );
     });
 
     it('syncs the connected account state and requests card_issuing on account.updated', async () => {
@@ -63,7 +65,14 @@ describe('IssuingWebhookController', () => {
     it('no-ops (200) on issuing_transaction.created — cards/transactions are now read on demand from Stripe', async () => {
         stripe.webhooks.constructEvent.mockReturnValue({
             type: 'issuing_transaction.created',
-            data: { object: { id: 'ipi_1', amount: -100, currency: 'usd', card: 'ic_1' } },
+            data: {
+                object: {
+                    id: 'ipi_1',
+                    amount: -100,
+                    currency: 'usd',
+                    card: 'ic_1',
+                },
+            },
         });
 
         const res = await controller.handle(rawReq, 'sig');

@@ -26,7 +26,10 @@ export class QuoteBookingDto {
     @IsUUID()
     serviceId: string;
 
-    @ApiPropertyOptional({ type: [String], description: 'Selected add-on UUIDs.' })
+    @ApiPropertyOptional({
+        type: [String],
+        description: 'Selected add-on UUIDs.',
+    })
     @IsOptional()
     @IsArray()
     @IsUUID('all', { each: true })

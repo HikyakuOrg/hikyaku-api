@@ -72,7 +72,10 @@ export class CustomersService {
 
     // ── Write operations ────────────────────────────────────────────────────────
 
-    async createCustomer(organisationId: string, dto: UpsertCustomerDto): Promise<CustomerRow> {
+    async createCustomer(
+        organisationId: string,
+        dto: UpsertCustomerDto,
+    ): Promise<CustomerRow> {
         const customerId = randomUUID();
 
         const rows: DbRow[] = await this.dataSource.query(
@@ -91,18 +94,33 @@ export class CustomersService {
              )
              RETURNING ${SELECT_COLS}`,
             [
-                customerId, organisationId,
-                dto.name, dto.phone, dto.email ?? null,
-                dto.address.street, dto.address.suburb, dto.address.state, dto.address.postcode, dto.address.country,
-                dto.confidence ?? null, dto.peliasGid ?? null, dto.peliasRaw ? JSON.stringify(dto.peliasRaw) : null,
-                dto.lon, dto.lat,
+                customerId,
+                organisationId,
+                dto.name,
+                dto.phone,
+                dto.email ?? null,
+                dto.address.street,
+                dto.address.suburb,
+                dto.address.state,
+                dto.address.postcode,
+                dto.address.country,
+                dto.confidence ?? null,
+                dto.peliasGid ?? null,
+                dto.peliasRaw ? JSON.stringify(dto.peliasRaw) : null,
+                dto.lon,
+                dto.lat,
             ],
         );
 
         // Optional Stripe sync — only when the org has enabled payment features.
         const stripeAccountId = await this.resolveStripeAccount(organisationId);
         if (stripeAccountId) {
-            const stripeCustomerId = await this.createStripeCustomer(stripeAccountId, customerId, dto, `create:${customerId}`);
+            const stripeCustomerId = await this.createStripeCustomer(
+                stripeAccountId,
+                customerId,
+                dto,
+                `create:${customerId}`,
+            );
             if (stripeCustomerId) {
                 await this.dataSource.query(
                     `UPDATE public.customer SET stripe_customer_id = $1 WHERE id = $2`,
@@ -115,17 +133,28 @@ export class CustomersService {
         return this.mapRow(rows[0]);
     }
 
-    async updateCustomer(organisationId: string, customerId: string, dto: UpsertCustomerDto): Promise<CustomerRow> {
-        const existing: { stripe_customer_id: string | null }[] = await this.dataSource.query(
-            `SELECT stripe_customer_id FROM public.customer WHERE id = $1 AND organisation_id = $2`,
-            [customerId, organisationId],
-        );
-        if (!existing[0]) throw new NotFoundException(`Customer ${customerId} not found`);
+    async updateCustomer(
+        organisationId: string,
+        customerId: string,
+        dto: UpsertCustomerDto,
+    ): Promise<CustomerRow> {
+        const existing: { stripe_customer_id: string | null }[] =
+            await this.dataSource.query(
+                `SELECT stripe_customer_id FROM public.customer WHERE id = $1 AND organisation_id = $2`,
+                [customerId, organisationId],
+            );
+        if (!existing[0])
+            throw new NotFoundException(`Customer ${customerId} not found`);
 
         // Optional Stripe sync — keep the linked Stripe customer in step when payments are on.
         const stripeAccountId = await this.resolveStripeAccount(organisationId);
         const stripeCustomerId = stripeAccountId
-            ? await this.updateOrCreateStripeCustomer(stripeAccountId, existing[0].stripe_customer_id, customerId, dto)
+            ? await this.updateOrCreateStripeCustomer(
+                  stripeAccountId,
+                  existing[0].stripe_customer_id,
+                  customerId,
+                  dto,
+              )
             : existing[0].stripe_customer_id;
 
         // No RETURNING here: TypeORM resolves an UPDATE to [rows, rowCount], so
@@ -142,13 +171,22 @@ export class CustomersService {
                 stripe_customer_id = $14
              WHERE id = $15 AND organisation_id = $16`,
             [
-                dto.name, dto.phone, dto.email ?? null,
-                dto.address.street, dto.address.suburb, dto.address.state,
-                dto.address.postcode, dto.address.country,
-                dto.confidence ?? null, dto.peliasGid ?? null, dto.peliasRaw ? JSON.stringify(dto.peliasRaw) : null,
-                dto.lon, dto.lat,
+                dto.name,
+                dto.phone,
+                dto.email ?? null,
+                dto.address.street,
+                dto.address.suburb,
+                dto.address.state,
+                dto.address.postcode,
+                dto.address.country,
+                dto.confidence ?? null,
+                dto.peliasGid ?? null,
+                dto.peliasRaw ? JSON.stringify(dto.peliasRaw) : null,
+                dto.lon,
+                dto.lat,
                 stripeCustomerId,
-                customerId, organisationId,
+                customerId,
+                organisationId,
             ],
         );
 
@@ -166,7 +204,15 @@ export class CustomersService {
             name: string;
             phone: string;
             email?: string | null;
-            address: { lon: number; lat: number; street: string; suburb: string; state: string; postcode?: string | null; country: string };
+            address: {
+                lon: number;
+                lat: number;
+                street: string;
+                suburb: string;
+                state: string;
+                postcode?: string | null;
+                country: string;
+            };
         },
         stripeAccountId: string | null,
         organisationId: string | null,
@@ -198,7 +244,9 @@ export class CustomersService {
                     [customer.id, customerId],
                 );
             } catch (err) {
-                this.logger.error(`Stripe customer sync failed (${idempotencyKey}): ${String(err)}`);
+                this.logger.error(
+                    `Stripe customer sync failed (${idempotencyKey}): ${String(err)}`,
+                );
             }
         }
 
@@ -224,7 +272,15 @@ export class CustomersService {
             name: string;
             phone: string | null;
             email?: string | null;
-            address: { lon: number; lat: number; street: string; suburb: string; state: string; postcode?: string | null; country: string };
+            address: {
+                lon: number;
+                lat: number;
+                street: string;
+                suburb: string;
+                state: string;
+                postcode?: string | null;
+                country: string;
+            };
             confidence?: number | null;
             peliasGid?: string | null;
             peliasRaw?: Record<string, unknown> | null;
@@ -245,38 +301,53 @@ export class CustomersService {
 
     // ── Read operations ───────────────────────────────────────────────────────────
 
-    async getCustomer(organisationId: string, customerId: string): Promise<CustomerRow> {
+    async getCustomer(
+        organisationId: string,
+        customerId: string,
+    ): Promise<CustomerRow> {
         const rows: DbRow[] = await this.dataSource.query(
             `SELECT ${SELECT_COLS} FROM public.customer WHERE id = $1 AND organisation_id = $2`,
             [customerId, organisationId],
         );
-        if (!rows[0]) throw new NotFoundException(`Customer ${customerId} not found`);
+        if (!rows[0])
+            throw new NotFoundException(`Customer ${customerId} not found`);
         return this.mapRow(rows[0]);
     }
 
-    async listCustomers(organisationId: string, page: number, pageSize: number): Promise<{ data: CustomerRow[]; total: number }> {
+    async listCustomers(
+        organisationId: string,
+        page: number,
+        pageSize: number,
+    ): Promise<{ data: CustomerRow[]; total: number }> {
         const offset = (page - 1) * pageSize;
 
-        const [rows, countRows]: [DbRow[], [{ count: string }]] = await Promise.all([
-            this.dataSource.query(
-                `SELECT ${SELECT_COLS} FROM public.customer WHERE organisation_id = $1
+        const [rows, countRows]: [DbRow[], [{ count: string }]] =
+            await Promise.all([
+                this.dataSource.query(
+                    `SELECT ${SELECT_COLS} FROM public.customer WHERE organisation_id = $1
                  ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-                [organisationId, pageSize, offset],
-            ),
-            this.dataSource.query(
-                `SELECT COUNT(*)::int AS count FROM public.customer WHERE organisation_id = $1`,
-                [organisationId],
-            ),
-        ]);
+                    [organisationId, pageSize, offset],
+                ),
+                this.dataSource.query(
+                    `SELECT COUNT(*)::int AS count FROM public.customer WHERE organisation_id = $1`,
+                    [organisationId],
+                ),
+            ]);
 
-        return { data: rows.map((r) => this.mapRow(r)), total: Number(countRows[0]?.count ?? 0) };
+        return {
+            data: rows.map((r) => this.mapRow(r)),
+            total: Number(countRows[0]?.count ?? 0),
+        };
     }
 
     /**
      * Trigram/ILIKE search over name, phone and email — scoped to the org and
      * backed by the gin_trgm indexes. Works for every org, with or without Stripe.
      */
-    async searchCustomers(organisationId: string, query: string): Promise<CustomerRow[]> {
+    async searchCustomers(
+        organisationId: string,
+        query: string,
+    ): Promise<CustomerRow[]> {
         const trimmed = query.trim();
         if (trimmed.length < 2) return [];
 
@@ -291,7 +362,10 @@ export class CustomersService {
         return rows.map((r) => this.mapRow(r));
     }
 
-    async getCustomersByDbIds(organisationId: string, ids: string[]): Promise<CustomerRow[]> {
+    async getCustomersByDbIds(
+        organisationId: string,
+        ids: string[],
+    ): Promise<CustomerRow[]> {
         if (!ids.length) return [];
 
         const rows: DbRow[] = await this.dataSource.query(
@@ -302,7 +376,10 @@ export class CustomersService {
         return rows.map((r) => this.mapRow(r));
     }
 
-    async getCustomersByStripeIds(organisationId: string, stripeIds: string[]): Promise<CustomerRow[]> {
+    async getCustomersByStripeIds(
+        organisationId: string,
+        stripeIds: string[],
+    ): Promise<CustomerRow[]> {
         if (!stripeIds.length) return [];
 
         const rows: DbRow[] = await this.dataSource.query(
@@ -338,7 +415,15 @@ export class CustomersService {
             name: string;
             phone: string | null;
             email?: string | null;
-            address: { lon: number; lat: number; street: string; suburb: string; state: string; postcode?: string | null; country: string };
+            address: {
+                lon: number;
+                lat: number;
+                street: string;
+                suburb: string;
+                state: string;
+                postcode?: string | null;
+                country: string;
+            };
             confidence?: number | null;
             peliasGid?: string | null;
             peliasRaw?: Record<string, unknown> | null;
@@ -347,8 +432,8 @@ export class CustomersService {
         const conflictClause = person.phone
             ? `ON CONFLICT (organisation_id, lower(customer_phone)) WHERE customer_phone IS NOT NULL`
             : person.email
-                ? `ON CONFLICT (organisation_id, lower(customer_email)) WHERE customer_email IS NOT NULL AND customer_phone IS NULL`
-                : `ON CONFLICT (organisation_id, lower(customer_name)) WHERE customer_name IS NOT NULL AND customer_phone IS NULL AND customer_email IS NULL`;
+              ? `ON CONFLICT (organisation_id, lower(customer_email)) WHERE customer_email IS NOT NULL AND customer_phone IS NULL`
+              : `ON CONFLICT (organisation_id, lower(customer_name)) WHERE customer_name IS NOT NULL AND customer_phone IS NULL AND customer_email IS NULL`;
 
         const rows: { id: string }[] = await this.dataSource.query(
             `INSERT INTO public.customer (
@@ -379,12 +464,21 @@ export class CustomersService {
                 pelias_raw = COALESCE(EXCLUDED.pelias_raw, public.customer.pelias_raw)
              RETURNING id`,
             [
-                randomUUID(), organisationId,
-                person.name, person.phone, person.email ?? null,
-                person.address.street, person.address.suburb, person.address.state,
-                person.address.postcode ?? null, person.address.country,
-                person.confidence ?? null, person.peliasGid ?? null, person.peliasRaw ? JSON.stringify(person.peliasRaw) : null,
-                person.address.lon, person.address.lat,
+                randomUUID(),
+                organisationId,
+                person.name,
+                person.phone,
+                person.email ?? null,
+                person.address.street,
+                person.address.suburb,
+                person.address.state,
+                person.address.postcode ?? null,
+                person.address.country,
+                person.confidence ?? null,
+                person.peliasGid ?? null,
+                person.peliasRaw ? JSON.stringify(person.peliasRaw) : null,
+                person.address.lon,
+                person.address.lat,
             ],
         );
 
@@ -443,7 +537,9 @@ export class CustomersService {
             );
             return customer.id;
         } catch (err) {
-            this.logger.error(`Stripe customer create failed (${dbCustomerId}): ${String(err)}`);
+            this.logger.error(
+                `Stripe customer create failed (${dbCustomerId}): ${String(err)}`,
+            );
             return null;
         }
     }
@@ -468,16 +564,23 @@ export class CustomersService {
         };
         try {
             if (currentStripeId) {
-                await this.stripe.customers.update(currentStripeId, params, { stripeAccount: stripeAccountId });
+                await this.stripe.customers.update(currentStripeId, params, {
+                    stripeAccount: stripeAccountId,
+                });
                 return currentStripeId;
             }
             const created = await this.stripe.customers.create(
                 { ...params, metadata: { db_customer_id: dbCustomerId } },
-                { stripeAccount: stripeAccountId, idempotencyKey: `update-create:${dbCustomerId}` },
+                {
+                    stripeAccount: stripeAccountId,
+                    idempotencyKey: `update-create:${dbCustomerId}`,
+                },
             );
             return created.id;
         } catch (err) {
-            this.logger.error(`Stripe customer update failed (${dbCustomerId}): ${String(err)}`);
+            this.logger.error(
+                `Stripe customer update failed (${dbCustomerId}): ${String(err)}`,
+            );
             return currentStripeId;
         }
     }

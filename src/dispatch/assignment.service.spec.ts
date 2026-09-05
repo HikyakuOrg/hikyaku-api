@@ -89,8 +89,8 @@ function nearbyStop(index: number, lon: number) {
  * among them is nearly free, so shift-1 wins on raw detour by a mile and only
  * the load-spreading penalty can send the package to the empty shift-2.
  */
-const CLUSTERED_ON_SHIFT_1 = [0.019, 0.0195, 0.02, 0.0205, 0.021].map((lon, i) =>
-    nearbyStop(i, lon),
+const CLUSTERED_ON_SHIFT_1 = [0.019, 0.0195, 0.02, 0.0205, 0.021].map(
+    (lon, i) => nearbyStop(i, lon),
 );
 
 function makeDb(state: DbState) {
@@ -100,37 +100,53 @@ function makeDb(state: DbState) {
         if (state.failOn && sql.includes(state.failOn.fragment)) {
             throw state.failOn.error;
         }
-        if (sql.includes('FROM packages p') && sql.includes('LEFT JOIN package_dimensions')) {
-            return state.package === undefined ? [PACKAGE] : state.package ? [state.package] : [];
+        if (
+            sql.includes('FROM packages p') &&
+            sql.includes('LEFT JOIN package_dimensions')
+        ) {
+            return state.package === undefined
+                ? [PACKAGE]
+                : state.package
+                  ? [state.package]
+                  : [];
         }
         if (sql.includes('FROM warehouse w')) {
             return state.warehouse === undefined
                 ? [WAREHOUSE]
                 : state.warehouse
-                    ? [state.warehouse]
-                    : [];
+                  ? [state.warehouse]
+                  : [];
         }
-        if (sql.includes('FROM vrp_optimization v') && sql.includes('JOIN vehicles')) {
+        if (
+            sql.includes('FROM vrp_optimization v') &&
+            sql.includes('JOIN vehicles')
+        ) {
             return state.shifts ?? [];
         }
         if (sql.includes('FROM vrp_route_step rs')) return state.stops ?? [];
-        if (sql.includes('FROM driver_vehicle_assignment dva')) return state.freePairs ?? [];
+        if (sql.includes('FROM driver_vehicle_assignment dva'))
+            return state.freePairs ?? [];
         if (sql.includes('SELECT revision, status FROM vrp_optimization')) {
             return state.revision === undefined
                 ? [{ revision: SHIFT.revision, status: 'planned' }]
                 : state.revision
-                    ? [state.revision]
-                    : [];
+                  ? [state.revision]
+                  : [];
         }
-        if (sql.includes('FROM vrp_solution s') && sql.includes('JOIN vrp_route')) {
+        if (
+            sql.includes('FROM vrp_solution s') &&
+            sql.includes('JOIN vrp_route')
+        ) {
             return state.route === undefined
                 ? [{ route_id: 'route-1', solution_id: 'sol-1' }]
                 : state.route
-                    ? [state.route]
-                    : [];
+                  ? [state.route]
+                  : [];
         }
-        if (sql.includes('INSERT INTO vrp_solution')) return [{ id: 'sol-new' }];
-        if (sql.includes('INSERT INTO vrp_route ')) return [{ id: 'route-new' }];
+        if (sql.includes('INSERT INTO vrp_solution'))
+            return [{ id: 'sol-new' }];
+        if (sql.includes('INSERT INTO vrp_route '))
+            return [{ id: 'route-new' }];
         if (sql.includes('INSERT INTO vrp_optimization\n')) {
             return [{ id: 'shift-new', revision: 1 }];
         }
@@ -194,11 +210,9 @@ describe('AssignmentService', () => {
         // Only the clock is faked. Faking the microtask queue as well makes every
         // `await` in the service wait on a timer that nothing advances, which
         // turns this suite from seconds into minutes.
-        jest
-            .useFakeTimers({
-                doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
-            })
-            .setSystemTime(NOW);
+        jest.useFakeTimers({
+            doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+        }).setSystemTime(NOW);
         process.env.ASSIGNMENT_MODE = 'instant';
         // Hermetic: the default is on, but a developer with the kill switch set
         // in their shell should not get a different suite.
@@ -209,7 +223,8 @@ describe('AssignmentService', () => {
         jest.useRealTimers();
         if (originalMode === undefined) delete process.env.ASSIGNMENT_MODE;
         else process.env.ASSIGNMENT_MODE = originalMode;
-        if (originalSpread === undefined) delete process.env.LOAD_SPREAD_ENABLED;
+        if (originalSpread === undefined)
+            delete process.env.LOAD_SPREAD_ENABLED;
         else process.env.LOAD_SPREAD_ENABLED = originalSpread;
     });
 
@@ -249,11 +264,14 @@ describe('AssignmentService', () => {
             expect(service.loadSpread).toBe(true);
         });
 
-        it.each(['false', '0'])('is switched off by LOAD_SPREAD_ENABLED=%s', (value) => {
-            process.env.LOAD_SPREAD_ENABLED = value;
-            const { service } = build();
-            expect(service.loadSpread).toBe(false);
-        });
+        it.each(['false', '0'])(
+            'is switched off by LOAD_SPREAD_ENABLED=%s',
+            (value) => {
+                process.env.LOAD_SPREAD_ENABLED = value;
+                const { service } = build();
+                expect(service.loadSpread).toBe(false);
+            },
+        );
 
         it('treats an unrecognised value as on, like ASSIGNMENT_MODE does', () => {
             process.env.LOAD_SPREAD_ENABLED = 'maybe';
@@ -322,7 +340,9 @@ describe('AssignmentService', () => {
 
         it('skips a package that belongs to another organisation', async () => {
             const { service } = build({ package: null });
-            expect((await service.assign('org-1', 'pkg-1')).outcome).toBe('skipped');
+            expect((await service.assign('org-1', 'pkg-1')).outcome).toBe(
+                'skipped',
+            );
         });
 
         it('skips a package that is already on a shift', async () => {
@@ -334,15 +354,21 @@ describe('AssignmentService', () => {
         });
 
         it('defers a package with no warehouse', async () => {
-            const { service } = build({ package: { ...PACKAGE, warehouse_id: null } });
-            expect((await service.assign('org-1', 'pkg-1')).outcome).toBe('deferred');
+            const { service } = build({
+                package: { ...PACKAGE, warehouse_id: null },
+            });
+            expect((await service.assign('org-1', 'pkg-1')).outcome).toBe(
+                'deferred',
+            );
         });
 
         it('defers when the warehouse has no location to route from', async () => {
             const { service } = build({
                 warehouse: { ...WAREHOUSE, lon: null, lat: null },
             });
-            expect((await service.assign('org-1', 'pkg-1')).outcome).toBe('deferred');
+            expect((await service.assign('org-1', 'pkg-1')).outcome).toBe(
+                'deferred',
+            );
         });
     });
 
@@ -405,7 +431,9 @@ describe('AssignmentService', () => {
             );
             expect(deleteIndex).toBeGreaterThan(-1);
             expect(insertIndex).toBeGreaterThan(deleteIndex);
-            expect(log.some((q) => /step_index\s*=\s*step_index/.test(q.sql))).toBe(false);
+            expect(
+                log.some((q) => /step_index\s*=\s*step_index/.test(q.sql)),
+            ).toBe(false);
         });
 
         it('snapshots the superseded plan before overwriting it', async () => {
@@ -439,8 +467,8 @@ describe('AssignmentService', () => {
             const lockIndex = log.findIndex((q) =>
                 q.sql.includes('pg_advisory_xact_lock'),
             );
-            const firstWrite = log.findIndex(
-                (q) => /^\s*(INSERT|UPDATE|DELETE)/i.test(q.sql.trim()),
+            const firstWrite = log.findIndex((q) =>
+                /^\s*(INSERT|UPDATE|DELETE)/i.test(q.sql.trim()),
             );
             expect(lockIndex).toBeGreaterThan(-1);
             expect(firstWrite).toBeGreaterThan(lockIndex);
@@ -450,7 +478,9 @@ describe('AssignmentService', () => {
             const { service, log } = build({ shifts: [SHIFT] });
             await service.assign('org-1', 'pkg-1');
 
-            const lock = log.find((q) => q.sql.includes('pg_advisory_xact_lock'));
+            const lock = log.find((q) =>
+                q.sql.includes('pg_advisory_xact_lock'),
+            );
             expect(lock?.params).toEqual(['assign:wh-1']);
         });
 
@@ -471,12 +501,16 @@ describe('AssignmentService', () => {
                     ...PACKAGE,
                     // ~6 minutes out, against a ~5.4 minute estimated drive: about
                     // 12% slack, which is inside the grey band.
-                    scheduled_arrival: new Date(NOW.getTime() + 370_000).toISOString(),
+                    scheduled_arrival: new Date(
+                        NOW.getTime() + 370_000,
+                    ).toISOString(),
                 },
             });
             valhalla.route.mockImplementation(() => {
                 routingCalls.push(log.length);
-                return Promise.resolve({ legs: [{ duration: 60, distance: 1000 }] });
+                return Promise.resolve({
+                    legs: [{ duration: 60, distance: 1000 }],
+                });
             });
 
             await service.assign('org-1', 'pkg-1');
@@ -504,7 +538,9 @@ describe('AssignmentService', () => {
                 shifts: [SHIFT],
                 package: {
                     ...PACKAGE,
-                    scheduled_arrival: new Date(NOW.getTime() + 370_000).toISOString(),
+                    scheduled_arrival: new Date(
+                        NOW.getTime() + 370_000,
+                    ).toISOString(),
                 },
             });
             valhalla.route.mockRejectedValue(new Error('valhalla down'));
@@ -556,7 +592,9 @@ describe('AssignmentService', () => {
             });
             await service.assign('org-1', 'pkg-1');
 
-            const savepoint = log.findIndex((q) => q.sql.includes('SAVEPOINT open_shift'));
+            const savepoint = log.findIndex((q) =>
+                q.sql.includes('SAVEPOINT open_shift'),
+            );
             const insert = log.findIndex((q) =>
                 /INSERT INTO vrp_optimization\b/.test(q.sql),
             );
@@ -578,7 +616,10 @@ describe('AssignmentService', () => {
                         ors_vehicle_type: 'driving-car',
                     },
                 ],
-                failOn: { fragment: 'INSERT INTO vrp_optimization\n', error: allowance },
+                failOn: {
+                    fragment: 'INSERT INTO vrp_optimization\n',
+                    error: allowance,
+                },
             });
 
             const outcome = await service.assign('org-1', 'pkg-1');
@@ -614,7 +655,10 @@ describe('AssignmentService', () => {
                         ors_vehicle_type: 'driving-car',
                     },
                 ],
-                failOn: { fragment: 'INSERT INTO vrp_optimization\n', error: allowance },
+                failOn: {
+                    fragment: 'INSERT INTO vrp_optimization\n',
+                    error: allowance,
+                },
             });
 
             const outcome = await service.assign('org-1', 'pkg-1');
@@ -628,7 +672,9 @@ describe('AssignmentService', () => {
             // The savepoint absorbed the 23514 rather than the transaction
             // aborting under the advisory lock.
             expect(
-                log.some((q) => q.sql.includes('ROLLBACK TO SAVEPOINT open_shift')),
+                log.some((q) =>
+                    q.sql.includes('ROLLBACK TO SAVEPOINT open_shift'),
+                ),
             ).toBe(true);
             expect(runner.commitTransaction).not.toHaveBeenCalled();
             expect(runner.release).toHaveBeenCalled();
@@ -649,7 +695,10 @@ describe('AssignmentService', () => {
                 freePairs: [],
             });
             const outcome = await service.assign('org-1', 'pkg-1');
-            expect(outcome).toMatchObject({ outcome: 'deferred', reason: 'no_capacity' });
+            expect(outcome).toMatchObject({
+                outcome: 'deferred',
+                reason: 'no_capacity',
+            });
         });
     });
 
@@ -692,7 +741,10 @@ describe('AssignmentService', () => {
             });
 
             const outcome = await service.assign('org-1', 'pkg-1');
-            expect(outcome).toMatchObject({ outcome: 'deferred', reason: 'no_capacity' });
+            expect(outcome).toMatchObject({
+                outcome: 'deferred',
+                reason: 'no_capacity',
+            });
         });
 
         it('rolls back and releases the connection when a write throws', async () => {
@@ -719,14 +771,19 @@ describe('AssignmentService', () => {
     describe('assignMany', () => {
         it('returns one outcome per package, keyed by id', async () => {
             const { service } = build({ shifts: [SHIFT] });
-            const results = await service.assignMany('org-1', ['pkg-1', 'pkg-1']);
+            const results = await service.assignMany('org-1', [
+                'pkg-1',
+                'pkg-1',
+            ]);
             expect([...results.keys()]).toEqual(['pkg-1']);
         });
 
         it('takes the warehouse lock once per package, not once per batch item pair', async () => {
             const { service, log } = build({ shifts: [SHIFT] });
             await service.assignMany('org-1', ['pkg-1']);
-            const locks = log.filter((q) => q.sql.includes('pg_advisory_xact_lock'));
+            const locks = log.filter((q) =>
+                q.sql.includes('pg_advisory_xact_lock'),
+            );
             expect(locks).toHaveLength(1);
         });
     });

@@ -23,4 +23,4 @@ import { OptimisationService } from './optimisation.service';
     controllers: [OptimisationController],
     providers: [OptimisationService],
 })
-export class OptimisationModule { }
+export class OptimisationModule {}

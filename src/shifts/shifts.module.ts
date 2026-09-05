@@ -16,4 +16,4 @@ import { ShiftsService } from './shifts.service';
     providers: [ShiftsService],
     exports: [ShiftsService],
 })
-export class ShiftsModule { }
+export class ShiftsModule {}
