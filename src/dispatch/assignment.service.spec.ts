@@ -19,9 +19,46 @@ interface DbState {
     revision?: { revision: number; status: string } | null;
     route?: { route_id: string; solution_id: string } | null;
     claimed?: { id: string }[];
+    /**
+     * What the coverage query answers with.
+     *
+     * DEFAULTS TO AN EMPTY `driver_service_area`, which is the state of the live
+     * database and the state every test written before service areas existed
+     * assumes. An empty link table does not mean "nobody covers anything": it
+     * means every driver is a floater, and a floater covers everywhere (see the
+     * floater rule in coverage.ts). So the default is one floater row per driver
+     * the fixture knows about, which is exactly what the real query returns for
+     * an empty table, and under it the whole coverage order collapses back to
+     * "step 1 for everything", today's behaviour.
+     *
+     * Leaving this as literally no rows would ALSO have kept the old tests
+     * green, by sending every package down the step-3 fallback to the same
+     * shift. That is the trap this default exists to avoid: same answer, wrong
+     * path, and no test would have noticed.
+     */
+    coverage?: CoverageRow[];
+    /**
+     * Drivers at this warehouse, for the default floater set above. Derived from
+     * the shifts and idle pairs in the fixture when it is not given.
+     */
+    drivers?: string[];
     /** SQL fragment that should throw, and the error to throw. */
     failOn?: { fragment: string; error: Error };
 }
+
+/** One row of the coverage query's result, as the pg driver hands it back. */
+interface CoverageRow {
+    point_index: number | null;
+    driver_id: string;
+    is_floater: boolean;
+}
+
+/** A driver with no service areas at all, who therefore covers everywhere. */
+const floaterRow = (driverId: string): CoverageRow => ({
+    point_index: null,
+    driver_id: driverId,
+    is_floater: true,
+});
 
 const NOW = new Date('2026-09-01T09:00:00Z');
 
@@ -96,7 +133,22 @@ const CLUSTERED_ON_SHIFT_1 = [0.019, 0.0195, 0.02, 0.0205, 0.021].map(
 function makeDb(state: DbState) {
     const log: { sql: string; params: unknown[] }[] = [];
 
-    const answer = (sql: string): unknown => {
+    const thePackage = (): Record<string, unknown> | null =>
+        state.package === undefined ? PACKAGE : state.package;
+
+    /** Every driver the fixture mentions, whether on a shift or idle. */
+    const knownDrivers = (): string[] => {
+        if (state.drivers) return state.drivers;
+        const ids = new Set<string>();
+        for (const row of [...(state.shifts ?? []), ...(state.freePairs ?? [])])
+            if (typeof row.driver_id === 'string') ids.add(row.driver_id);
+        return [...ids];
+    };
+
+    const coverageRows = (): CoverageRow[] =>
+        state.coverage ?? knownDrivers().map(floaterRow);
+
+    const answer = (sql: string, params: unknown[]): unknown => {
         if (state.failOn && sql.includes(state.failOn.fragment)) {
             throw state.failOn.error;
         }
@@ -109,6 +161,25 @@ function makeDb(state: DbState) {
                 : state.package
                   ? [state.package]
                   : [];
+        }
+        // The lighter lookup assignMany uses to batch its coverage question:
+        // same table, none of the joins, so it has to be matched after the one
+        // above rather than before it.
+        if (sql.includes('FROM packages p')) {
+            const row = thePackage();
+            return row
+                ? [
+                      {
+                          id: row.id,
+                          warehouse_id: row.warehouse_id,
+                          lon: row.lon,
+                          lat: row.lat,
+                      },
+                  ]
+                : [];
+        }
+        if (sql.includes('FROM driver_service_area dsa')) {
+            return coverageRows();
         }
         if (sql.includes('FROM warehouse w')) {
             return state.warehouse === undefined
@@ -124,8 +195,18 @@ function makeDb(state: DbState) {
             return state.shifts ?? [];
         }
         if (sql.includes('FROM vrp_route_step rs')) return state.stops ?? [];
-        if (sql.includes('FROM driver_vehicle_assignment dva'))
-            return state.freePairs ?? [];
+        if (sql.includes('FROM driver_vehicle_assignment dva')) {
+            const pairs = state.freePairs ?? [];
+            // Step 2 asks the same question as step 4 with an allowlist bolted
+            // on, so the fake has to honour the allowlist or the two steps
+            // would be indistinguishable here.
+            if (!sql.includes('ANY($4::uuid[])')) return pairs;
+            const allowed = new Set((params[3] as string[] | undefined) ?? []);
+            return pairs.filter(
+                (p) =>
+                    typeof p.driver_id === 'string' && allowed.has(p.driver_id),
+            );
+        }
         if (sql.includes('SELECT revision, status FROM vrp_optimization')) {
             return state.revision === undefined
                 ? [{ revision: SHIFT.revision, status: 'planned' }]
@@ -157,7 +238,7 @@ function makeDb(state: DbState) {
     const query = jest.fn(
         (sql: string, params: unknown[] = [], structured?: boolean) => {
             log.push({ sql, params });
-            const rows = answer(sql);
+            const rows = answer(sql, params);
             if (structured) {
                 if (sql.includes('UPDATE packages')) {
                     const ids = (params[1] as string[]) ?? [];
