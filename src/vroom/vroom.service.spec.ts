@@ -4,7 +4,10 @@ import type { VroomRequest } from './vroom.types';
 
 describe('VroomService', () => {
     let service: VroomService;
-    let mockFetch: jest.Mock;
+    let mockFetch: jest.Mock<
+        Promise<{ ok: boolean; json: () => Promise<unknown> }>,
+        [string, RequestInit?]
+    >;
     const originalFetch = global.fetch;
     const originalVroomUrl = process.env.VROOM_URL;
 
@@ -31,7 +34,10 @@ describe('VroomService', () => {
 
     beforeEach(() => {
         service = new VroomService();
-        mockFetch = jest.fn();
+        mockFetch = jest.fn<
+            Promise<{ ok: boolean; json: () => Promise<unknown> }>,
+            [string, RequestInit?]
+        >();
         global.fetch = mockFetch;
         process.env.VROOM_URL = 'http://vroom.test:3000';
     });
@@ -68,7 +74,7 @@ describe('VroomService', () => {
 
         await service.solve({ ...request, options: { g: true } });
 
-        expect(mockFetch.mock.calls[0][1].body).toBe(
+        expect(mockFetch.mock.calls[0][1]!.body).toBe(
             JSON.stringify({ ...request, options: { c: false, g: true } }),
         );
     });

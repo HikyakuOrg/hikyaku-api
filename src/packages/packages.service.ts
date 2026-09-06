@@ -258,7 +258,7 @@ export class PackagesService {
         const ids: string[] = [];
 
         for (const spec of specs) {
-            const rows: { id: string }[] = await runner.query(
+            const rows = (await runner.query(
                 `INSERT INTO packages
                      (id, organisation_id, warehouse_id, from_customer, to_customer,
                       delivery_notes, tracking_number)
@@ -273,7 +273,7 @@ export class PackagesService {
                     spec.deliveryNotes ?? null,
                     spec.trackingNumber ?? null,
                 ],
-            );
+            )) as { id: string }[];
             const id = rows[0].id;
             ids.push(id);
 

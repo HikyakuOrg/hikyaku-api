@@ -7,7 +7,9 @@ import { CustomersService } from './customers.service';
 describe('CustomersService', () => {
     let service: CustomersService;
     let stripe: { customers: { create: jest.Mock; update: jest.Mock } };
-    let dataSource: { query: jest.Mock };
+    let dataSource: {
+        query: jest.Mock<Promise<unknown[]>, [string, unknown[]?]>;
+    };
     let orgs: { getStripeAccount: jest.Mock };
 
     const address = {
@@ -22,7 +24,9 @@ describe('CustomersService', () => {
 
     beforeEach(async () => {
         stripe = { customers: { create: jest.fn(), update: jest.fn() } };
-        dataSource = { query: jest.fn() };
+        dataSource = {
+            query: jest.fn<Promise<unknown[]>, [string, unknown[]?]>(),
+        };
         orgs = { getStripeAccount: jest.fn() };
 
         const module: TestingModule = await Test.createTestingModule({

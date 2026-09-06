@@ -46,6 +46,11 @@ const BATCH_SIZE = 20;
 /** Consumer attempts before a message is discarded as a poison pill. */
 const MAX_RETRIES = 3;
 
+/** Reads a string field off a raw queue payload, defaulting to '' for anything else. */
+function asString(value: unknown): string {
+    return typeof value === 'string' ? value : '';
+}
+
 interface ShiftRow {
     id: string;
     status: string;
@@ -173,7 +178,7 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             const body = message.message;
 
             if (body.kind === 'replan') {
-                const optimisationId = String(body.optimisationId ?? '');
+                const optimisationId = asString(body.optimisationId);
                 if (seenShifts.has(optimisationId)) {
                     await this.queue.archive(message.msg_id);
                     continue;
@@ -199,7 +204,7 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
 
         try {
             if (body.kind === 'replan') {
-                await this.replanShift(String(body.optimisationId ?? ''));
+                await this.replanShift(asString(body.optimisationId));
             } else if (body.kind === 'on_demand') {
                 await this.handleOnDemand(message.msg_id, body);
                 return; // handleOnDemand owns the message's fate.
@@ -420,9 +425,9 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
         msgId: bigint,
         body: Record<string, unknown>,
     ): Promise<void> {
-        const runId = String(body.runId ?? '');
-        const organisationId = String(body.organisationId ?? '');
-        const warehouseId = String(body.warehouseId ?? '');
+        const runId = asString(body.runId);
+        const organisationId = asString(body.organisationId);
+        const warehouseId = asString(body.warehouseId);
         const setOffOverrides =
             (body.setOffOverrides as SetOffOverride[] | undefined) ?? [];
 

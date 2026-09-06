@@ -27,7 +27,7 @@ interface DbRow {
     customer_country: string | null;
     geocode_confidence: number | null;
     pelias_gid: string | null;
-    pelias_raw: unknown | null;
+    pelias_raw: unknown;
     customer_location: { type: 'Point'; coordinates: [number, number] } | null;
     created_at: string;
 }
@@ -48,7 +48,7 @@ export interface CustomerRow {
     customer_country: string;
     geocode_confidence: number | null;
     pelias_gid: string | null;
-    pelias_raw: unknown | null;
+    pelias_raw: unknown;
     customer_location: { type: 'Point'; coordinates: [number, number] } | null;
     created_at: string;
 }
@@ -321,18 +321,17 @@ export class CustomersService {
     ): Promise<{ data: CustomerRow[]; total: number }> {
         const offset = (page - 1) * pageSize;
 
-        const [rows, countRows]: [DbRow[], [{ count: string }]] =
-            await Promise.all([
-                this.dataSource.query(
-                    `SELECT ${SELECT_COLS} FROM public.customer WHERE organisation_id = $1
+        const [rows, countRows] = await Promise.all([
+            this.dataSource.query<DbRow[]>(
+                `SELECT ${SELECT_COLS} FROM public.customer WHERE organisation_id = $1
                  ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-                    [organisationId, pageSize, offset],
-                ),
-                this.dataSource.query(
-                    `SELECT COUNT(*)::int AS count FROM public.customer WHERE organisation_id = $1`,
-                    [organisationId],
-                ),
-            ]);
+                [organisationId, pageSize, offset],
+            ),
+            this.dataSource.query<[{ count: string }]>(
+                `SELECT COUNT(*)::int AS count FROM public.customer WHERE organisation_id = $1`,
+                [organisationId],
+            ),
+        ]);
 
         return {
             data: rows.map((r) => this.mapRow(r)),

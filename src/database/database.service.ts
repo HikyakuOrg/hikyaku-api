@@ -171,11 +171,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         let organisationId: string | null = opts.organisationId ?? null;
 
         if (opts.warehouseId) {
-            const whRows: {
-                organisation_id: string;
-                warehouse_lon: number | null;
-                warehouse_lat: number | null;
-            }[] = await runner.query(
+            const whRows = (await runner.query(
                 `
         SELECT
           w.organisation_id,
@@ -185,7 +181,13 @@ export class DatabaseService implements OnApplicationBootstrap {
         WHERE w.id = $1
         `,
                 [opts.warehouseId],
-            );
+                // QueryRunner.query has no generic overload (unlike DataSource.query);
+                // the shape is guaranteed by the SELECT list above.
+            )) as {
+                organisation_id: string;
+                warehouse_lon: number | null;
+                warehouse_lat: number | null;
+            }[];
             const wh = whRows[0];
             if (!wh) {
                 throw new Error(`Warehouse ${opts.warehouseId} not found.`);
@@ -206,7 +208,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         //    a second concurrent worker will SKIP these rows entirely.
         // Current status is derived from the most recent package_timeline row
         // via a LATERAL subquery (packages has no status column directly).
-        const packages: PackageRow[] = await runner.query(
+        const packages = (await runner.query(
             `
       SELECT
         p.id,
@@ -242,14 +244,14 @@ export class DatabaseService implements OnApplicationBootstrap {
       FOR UPDATE OF p SKIP LOCKED
       `,
             [this.pendingStatusId, opts.warehouseId ?? null],
-        );
+        )) as PackageRow[];
 
         this.logger.debug(
             `Found ${packages.length} unassigned pending packages.`,
         );
 
         // 2. Fetch active driver–vehicle assignments with vehicle/warehouse details.
-        const assignments: AssignmentRow[] = await runner.query(
+        const assignments = (await runner.query(
             `
       SELECT
         dva.driver_id,
@@ -266,7 +268,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         AND ($1::uuid IS NULL OR v.warehouse_id = $1)
       `,
             [opts.warehouseId ?? null],
-        );
+        )) as AssignmentRow[];
 
         this.logger.debug(
             `Found ${assignments.length} driver–vehicle assignments.`,
@@ -453,7 +455,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         startOfDay: Date,
         endOfDay: Date,
     ): Promise<PinnedRouteRequest[]> {
-        const pinnedRows: PinnedPackageRow[] = await runner.query(
+        const pinnedRows = (await runner.query(
             `
       SELECT
         p.id,
@@ -480,7 +482,7 @@ export class DatabaseService implements OnApplicationBootstrap {
       FOR UPDATE OF p SKIP LOCKED
       `,
             [warehouseId],
-        );
+        )) as PinnedPackageRow[];
 
         interface PinnedGroup {
             driverId: string;
@@ -608,9 +610,8 @@ export class DatabaseService implements OnApplicationBootstrap {
         // No candidates even before the geocode/date filters — find out whether
         // that's because nothing is pending, or because it's pending but already
         // spoken for by a manual assignment.
-        const diagRows: { already_assigned: string; not_pending: string }[] =
-            await runner.query(
-                `
+        const diagRows = (await runner.query(
+            `
       SELECT
         COUNT(*) FILTER (WHERE pa.package_id IS NOT NULL) AS already_assigned,
         COUNT(*) FILTER (
@@ -629,8 +630,8 @@ export class DatabaseService implements OnApplicationBootstrap {
       WHERE  p.optimisation_id IS NULL
         AND  ($2::uuid IS NULL OR p.warehouse_id = $2)
       `,
-                [this.pendingStatusId, warehouseId],
-            );
+            [this.pendingStatusId, warehouseId],
+        )) as { already_assigned: string; not_pending: string }[];
         const diag = diagRows[0];
         const alreadyAssigned = Number(diag?.already_assigned ?? 0);
         const notPending = Number(diag?.not_pending ?? 0);
@@ -674,11 +675,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         if (vehicleIds.length > 0) {
             // One row per (vehicle, active route): the route's return reference
             // and its total duration. HAVING drops fully-delivered routes.
-            const rows: {
-                vehicle_id: string;
-                end_arrival: number | null;
-                return_ref: string | null;
-            }[] = await runner.query(
+            const rows = (await runner.query(
                 `
         WITH active AS (
           SELECT
@@ -722,7 +719,11 @@ export class DatabaseService implements OnApplicationBootstrap {
         WHERE a.all_terminal = false
         `,
                 [vehicleIds],
-            );
+            )) as {
+                vehicle_id: string;
+                end_arrival: number | null;
+                return_ref: string | null;
+            }[];
 
             for (const row of rows) {
                 const refEpoch = row.return_ref
@@ -787,7 +788,7 @@ export class DatabaseService implements OnApplicationBootstrap {
             response: optimisationResponse,
             organisationId: opts.organisationId ?? null,
         });
-        const optimizationId: string = optResult.identifiers[0].id;
+        const optimizationId = optResult.identifiers[0].id as string;
 
         // 2. vrp_solution — summary stats from the VROOM response.
         const summary = optimisationResponse.summary ?? {};
@@ -816,7 +817,7 @@ export class DatabaseService implements OnApplicationBootstrap {
             solvingTime: computingTimes?.solving ?? 0,
             routingTime: computingTimes?.routing ?? 0,
         });
-        const solutionId: string = solResult.identifiers[0].id;
+        const solutionId = solResult.identifiers[0].id as string;
 
         // Collected across all routes; written after the step inserts.
         const departureByPackage: { package_id: string; departure: string }[] =
@@ -843,7 +844,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                 waitingTime: route.waiting_time ?? null,
                 priority: routeExt.priority ?? null,
             });
-            const routeId: string = routeResult.identifiers[0].id;
+            const routeId = routeResult.identifiers[0].id as string;
 
             // When time-windowed, arrivals are absolute epoch; the start step's
             // arrival is this vehicle's actual departure. Subtract it to store
@@ -1015,7 +1016,7 @@ export class DatabaseService implements OnApplicationBootstrap {
             organisationId: opts.organisationId,
             scheduledStart: opts.scheduledStart,
         });
-        const optimizationId: string = optResult.identifiers[0].id;
+        const optimizationId = optResult.identifiers[0].id as string;
 
         // 2. vrp_solution — summary stats from the VROOM response.
         const summary = response.summary ?? {};
@@ -1044,7 +1045,7 @@ export class DatabaseService implements OnApplicationBootstrap {
             solvingTime: computingTimes?.solving ?? 0,
             routingTime: computingTimes?.routing ?? 0,
         });
-        const solutionId: string = solResult.identifiers[0].id;
+        const solutionId = solResult.identifiers[0].id as string;
 
         // 3. Single route (absent when every package is unassigned).
         let routeId: string | null = null;
@@ -1069,7 +1070,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                 waitingTime: route.waiting_time ?? null,
                 priority: routeExt.priority ?? null,
             });
-            const insertedRouteId: string = routeResult.identifiers[0].id;
+            const insertedRouteId = routeResult.identifiers[0].id as string;
             routeId = insertedRouteId;
 
             // Arrivals are absolute epoch (time_window is always set for ad-hoc);

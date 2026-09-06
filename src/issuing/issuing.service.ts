@@ -33,9 +33,6 @@ type AllowedCategory = NonNullable<
 type StripeCard = Awaited<
     ReturnType<StripeClient['issuing']['cards']['list']>
 >['data'][number];
-type StripeCardholder = Awaited<
-    ReturnType<StripeClient['issuing']['cardholders']['list']>
->['data'][number];
 type StripeTransaction = Awaited<
     ReturnType<StripeClient['issuing']['transactions']['list']>
 >['data'][number];

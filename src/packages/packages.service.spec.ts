@@ -59,7 +59,8 @@ function build(state: State = {}) {
         try {
             return Promise.resolve(answer(sql, params));
         } catch (err) {
-            return Promise.reject(err);
+            // answer() only ever throws state.insertError, which is typed Error.
+            return Promise.reject(err as Error);
         }
     });
 
@@ -353,7 +354,12 @@ describe('PackagesService', () => {
         it('lets one bad entry fail without taking the batch with it', async () => {
             let call = 0;
             const { service } = build();
-            const original = service['validateReferences'].bind(service);
+            // strictBindCallApply is off project-wide, so .bind() always types as
+            // `any`; assert the signature back to what validateReferences actually is.
+            const original = service['validateReferences'].bind(service) as (
+                organisationId: string,
+                dto: CreatePackageDto,
+            ) => Promise<void>;
             jest.spyOn(
                 service as unknown as {
                     validateReferences: () => Promise<void>;

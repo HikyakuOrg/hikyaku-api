@@ -1,5 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
+import type { PackageSpec } from 'src/packages/packages.service';
 
 const BOOKING = {
     sender: {
@@ -95,7 +96,9 @@ function build(state: State = {}) {
             ),
     };
     const packages = {
-        createMany: jest.fn().mockResolvedValue(['pkg-1']),
+        createMany: jest
+            .fn<Promise<string[]>, [unknown, string, PackageSpec[]]>()
+            .mockResolvedValue(['pkg-1']),
         assignCreated: jest.fn().mockResolvedValue(undefined),
     };
 

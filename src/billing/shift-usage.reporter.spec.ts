@@ -3,6 +3,7 @@ import {
     ShiftUsageReporter,
     SHIFT_USAGE_CHANNEL,
 } from './shift-usage.reporter';
+import type { NotifySubscription } from 'src/dispatch/pg-notify.service';
 
 interface State {
     /** Rows the claim UPDATE ... RETURNING hands back. */
@@ -34,9 +35,13 @@ function build(state: State = {}) {
     });
     const dataSource = { query, createQueryRunner: jest.fn(() => runner) };
 
-    const notify = { subscribe: jest.fn() };
+    const notify = {
+        subscribe: jest.fn<void, [NotifySubscription]>(),
+    };
     const billing = {
-        reportShiftUsageBatch: jest.fn().mockResolvedValue(undefined),
+        reportShiftUsageBatch: jest
+            .fn<Promise<void>, [string, number, string]>()
+            .mockResolvedValue(undefined),
     };
 
     const reporter = new ShiftUsageReporter(
@@ -66,7 +71,8 @@ describe('ShiftUsageReporter', () => {
         const { reporter, notify, billing } = build();
         reporter.onApplicationBootstrap();
 
-        await notify.subscribe.mock.calls[0][0].onWake(['org-1']);
+        const subscription = notify.subscribe.mock.calls[0][0];
+        await subscription.onWake(['org-1']);
         expect(billing.reportShiftUsageBatch).toHaveBeenCalled();
     });
 

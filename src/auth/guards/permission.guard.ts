@@ -15,7 +15,9 @@ import { NEEDS_FULL_USER_KEY } from 'src/auth/decorators/needs-full-user.decorat
 import { PERMISSION_KEY } from 'src/auth/decorators/required-permission.decorator';
 import { SKIP_ORG_CONTEXT_KEY } from 'src/auth/decorators/skip-org-context.decorator';
 import { TokenVerifier } from 'src/auth/token-verifier.service';
+import type { AuthedRequest } from 'src/auth/authed-user';
 import { isTrialExpired } from 'src/common/trial';
+import { headerValue } from 'src/common/http';
 import { SUPABASE_CLIENT } from 'src/supabase/supabase.provider';
 
 /**
@@ -68,12 +70,13 @@ export class PermissionGuard implements CanActivate {
                 context.getHandler(),
             ) === true;
 
-        const request = context.switchToHttp().getRequest();
-        const authHeader: string | undefined = request.headers['authorization'];
+        const request = context.switchToHttp().getRequest<AuthedRequest>();
+        const authHeader = headerValue(request.headers['authorization']);
 
-        request.user = needsFullUser
+        const user = needsFullUser
             ? await this.tokenVerifier.verifyFull(authHeader)
             : await this.tokenVerifier.verify(authHeader);
+        request.user = user;
 
         // Endpoints that run before a tenant is chosen (e.g. /organisations/me)
         // only need authentication.
@@ -82,12 +85,12 @@ export class PermissionGuard implements CanActivate {
         }
 
         // Resolve + authorise the active organisation.
-        const slug: string | undefined = request.headers['x-organisation-slug'];
+        const slug = headerValue(request.headers['x-organisation-slug']);
         if (!slug) {
             throw new BadRequestException('Missing X-Organisation-Slug header');
         }
 
-        const userId: string = request.user.id;
+        const userId = user.id;
 
         // One round trip for everything the rest of this guard needs:
         // trial_ends_at/subscription_status ride along on the org lookup,

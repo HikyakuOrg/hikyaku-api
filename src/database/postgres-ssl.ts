@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from 'fs';
-import type { TlsOptions } from 'tls';
 
 /**
  * Resolves TLS options for the Postgres connection from `DB_SSL_CA_PATH`.
@@ -14,8 +13,15 @@ import type { TlsOptions } from 'tls';
  * Shared by both connections this app opens to Postgres: TypeORM's pool
  * (src/database/data-source.ts, consumed by the CLI and TypeOrmModule.forRoot)
  * and the dedicated LISTEN/NOTIFY client (src/dispatch/pg-notify.service.ts).
+ *
+ * Returns this exact narrow shape, rather than node:tls's `TlsOptions` or
+ * `ConnectionOptions`, because TypeORM's `ssl` option is typed against the
+ * former and pg's `Client` against the latter — two incompatible interfaces
+ * (their `pskCallback` signatures differ). This shape has no such field, so
+ * it satisfies both.
  */
-export function resolvePostgresSsl(): TlsOptions | undefined {
+export function resolvePostgresSsl():
+    { ca: string; rejectUnauthorized: true } | undefined {
     const caPath = process.env.DB_SSL_CA_PATH;
     if (!caPath || !existsSync(caPath)) return undefined;
     return { ca: readFileSync(caPath, 'utf8'), rejectUnauthorized: true };

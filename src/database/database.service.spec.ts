@@ -828,8 +828,10 @@ describe('DatabaseService', () => {
                 ['packageId'],
             );
             // vrp_route_step batch insert went through runner.query
-            const stepInsertCall = runner.query.mock.calls.find(
-                (call: unknown[]) => String(call[0]).includes('vrp_route_step'),
+            const stepInsertCall = (
+                runner.query.mock.calls as unknown[][]
+            ).find((call: unknown[]) =>
+                String(call[0]).includes('vrp_route_step'),
             );
             expect(stepInsertCall).toBeDefined();
             // packages marked as processed
@@ -839,7 +841,7 @@ describe('DatabaseService', () => {
                 { optimisationId: 'opt-1' },
             );
             // and advanced to ASSIGNED via package_timeline
-            const timelineCall = runner.query.mock.calls.find(
+            const timelineCall = (runner.query.mock.calls as unknown[][]).find(
                 (call: unknown[]) =>
                     String(call[0]).includes('INSERT INTO package_timeline'),
             );
@@ -869,7 +871,7 @@ describe('DatabaseService', () => {
                 {},
             );
 
-            const timelineCall = runner.query.mock.calls.find(
+            const timelineCall = (runner.query.mock.calls as unknown[][]).find(
                 (call: unknown[]) =>
                     String(call[0]).includes('INSERT INTO package_timeline'),
             );
@@ -1003,8 +1005,10 @@ describe('DatabaseService', () => {
                 { 1: 'drv-1' },
             );
 
-            const stepInsertCall = runner.query.mock.calls.find(
-                (call: unknown[]) => String(call[0]).includes('vrp_route_step'),
+            const stepInsertCall = (
+                runner.query.mock.calls as unknown[][]
+            ).find((call: unknown[]) =>
+                String(call[0]).includes('vrp_route_step'),
             );
             expect(stepInsertCall).toBeDefined();
             const params = stepInsertCall![1] as unknown[];

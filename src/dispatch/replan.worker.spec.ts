@@ -1,6 +1,7 @@
 import { ReplanWorker } from './replan.worker';
 import { ShiftPlanWriter } from './shift-plan.writer';
 import { REPLAN_CHANNEL, type PgmqMessage } from './queue.service';
+import type { VroomRequest, OptimizationResponse } from '../vroom/vroom.types';
 
 const NOW = new Date('2026-09-01T09:00:00Z');
 
@@ -132,29 +133,34 @@ function build(state: WorkerState = {}) {
         insertAdhocRoutes: jest.fn(),
     };
     const vroom = {
-        solve: jest.fn().mockResolvedValue({
-            code: 0,
-            routes: [
-                {
-                    vehicle: 1,
-                    steps: [
-                        { type: 'start', arrival: NOW.getTime() / 1000 },
-                        {
-                            type: 'job',
-                            id: 2,
-                            arrival: NOW.getTime() / 1000 + 300,
-                        },
-                        {
-                            type: 'job',
-                            id: 1,
-                            arrival: NOW.getTime() / 1000 + 1500,
-                        },
-                        { type: 'end', arrival: NOW.getTime() / 1000 + 2000 },
-                    ],
-                },
-            ],
-            unassigned: [],
-        }),
+        solve: jest
+            .fn<Promise<OptimizationResponse>, [VroomRequest]>()
+            .mockResolvedValue({
+                code: 0,
+                routes: [
+                    {
+                        vehicle: 1,
+                        steps: [
+                            { type: 'start', arrival: NOW.getTime() / 1000 },
+                            {
+                                type: 'job',
+                                id: 2,
+                                arrival: NOW.getTime() / 1000 + 300,
+                            },
+                            {
+                                type: 'job',
+                                id: 1,
+                                arrival: NOW.getTime() / 1000 + 1500,
+                            },
+                            {
+                                type: 'end',
+                                arrival: NOW.getTime() / 1000 + 2000,
+                            },
+                        ],
+                    },
+                ],
+                unassigned: [],
+            }),
     };
 
     const worker = new ReplanWorker(
@@ -252,18 +258,14 @@ describe('ReplanWorker', () => {
             await worker.replanShift('shift-1');
 
             const request = vroom.solve.mock.calls[0][0];
-            const withDeadline = request.jobs.find(
-                (j: { id: number }) => j.id === 1,
-            );
-            const without = request.jobs.find(
-                (j: { id: number }) => j.id === 2,
-            );
+            const withDeadline = request.jobs.find((j) => j.id === 1);
+            const without = request.jobs.find((j) => j.id === 2);
 
-            expect(withDeadline.time_windows).toEqual([
+            expect(withDeadline!.time_windows).toEqual([
                 [NOW.getTime() / 1000, NOW.getTime() / 1000 + 6 * 3600],
             ]);
             // No promise, no window: an unconstrained job, not a rejected one.
-            expect(without.time_windows).toBeUndefined();
+            expect(without!.time_windows).toBeUndefined();
         });
 
         it('sends capacity and amounts in the same unit', async () => {
@@ -273,9 +275,10 @@ describe('ReplanWorker', () => {
             const request = vroom.solve.mock.calls[0][0];
             // 1000 kg gross → 1,000,000 g, against amounts of 2000 g and 3000 g.
             expect(request.vehicles[0].capacity).toEqual([1_000_000]);
-            expect(
-                request.jobs.map((j: { amount: number[] }) => j.amount),
-            ).toEqual([[2_000], [3_000]]);
+            expect(request.jobs.map((j) => j.amount)).toEqual([
+                [2_000],
+                [3_000],
+            ]);
         });
 
         it('writes the order VROOM returned, not the order it was given', async () => {

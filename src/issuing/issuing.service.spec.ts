@@ -13,7 +13,7 @@ describe('IssuingService', () => {
             cardholders: { create: jest.Mock };
             cards: {
                 list: jest.Mock;
-                create: jest.Mock;
+                create: jest.Mock<unknown, unknown[]>;
                 update: jest.Mock;
                 retrieve: jest.Mock;
             };
@@ -32,7 +32,7 @@ describe('IssuingService', () => {
                 cardholders: { create: jest.fn() },
                 cards: {
                     list: jest.fn(),
-                    create: jest.fn(),
+                    create: jest.fn<unknown, unknown[]>(),
                     update: jest.fn(),
                     retrieve: jest.fn(),
                 },
@@ -139,7 +139,7 @@ describe('IssuingService', () => {
                             line1: '1 Jalan Test',
                             city: 'Kuala Lumpur',
                             country: 'MY',
-                        }),
+                        }) as Record<string, unknown>,
                     },
                     metadata: { organisationId: 'org1', driverId: 'd1' },
                 }),
@@ -213,7 +213,7 @@ describe('IssuingService', () => {
                                 ],
                             }),
                         ],
-                    }),
+                    }) as Record<string, unknown>,
                     metadata: {
                         organisationId: 'org1',
                         driverId: 'd1',
@@ -256,7 +256,13 @@ describe('IssuingService', () => {
                 currency: 'usd',
             });
 
-            const params = stripe.issuing.cards.create.mock.calls[0][0];
+            const params = stripe.issuing.cards.create.mock.calls[0][0] as {
+                spending_controls: {
+                    spending_limits?: unknown;
+                    allowed_categories: string[];
+                };
+                metadata: Record<string, string>;
+            };
             expect(params.spending_controls.spending_limits).toBeUndefined();
             expect(params.spending_controls.allowed_categories).toEqual([
                 'automated_fuel_dispensers',

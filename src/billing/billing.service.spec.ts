@@ -394,7 +394,9 @@ describe('BillingService', () => {
             // no trial_settings — and never re-lists the company base price.
             expect(stripe.subscriptions.create).toHaveBeenCalledWith(
                 expect.not.objectContaining({
-                    trial_period_days: expect.anything(),
+                    // expect.anything() is typed `any`; cast to what the field
+                    // actually is so the matcher object isn't inferred as `any`.
+                    trial_period_days: expect.anything() as number,
                 }),
             );
             expect(stripe.prices.list).toHaveBeenCalledWith(

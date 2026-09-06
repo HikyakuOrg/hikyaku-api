@@ -51,7 +51,10 @@ describe('QueueService', () => {
         const [sql, params] = dsQuery.mock.calls[0] as [string, unknown[]];
         expect(sql).toContain('pgmq.send');
         expect(params[0]).toBe('warehouse-optimization');
-        const msg = JSON.parse(params[1] as string);
+        const msg = JSON.parse(params[1] as string) as {
+            kind: string;
+            optimisationId: string;
+        };
         expect(msg.kind).toBe('replan');
         expect(msg.optimisationId).toBe('shift-1');
     });
@@ -62,7 +65,9 @@ describe('QueueService', () => {
             // must not leave a queued replan for a plan that never happened, and
             // a committed one must not be missed because the process died between
             // COMMIT and send.
-            const runnerQuery = jest.fn().mockResolvedValue([]);
+            const runnerQuery = jest
+                .fn<Promise<unknown[]>, [string, unknown[]?]>()
+                .mockResolvedValue([]);
             await service.enqueueReplan({ query: runnerQuery } as never, {
                 kind: 'replan',
                 optimisationId: 'shift-1',

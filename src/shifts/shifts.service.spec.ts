@@ -66,7 +66,8 @@ function build(state: State = {}) {
         try {
             return Promise.resolve(answer(sql));
         } catch (err) {
-            return Promise.reject(err);
+            // answer() only ever throws state.insertError, which is typed Error.
+            return Promise.reject(err as Error);
         }
     });
 

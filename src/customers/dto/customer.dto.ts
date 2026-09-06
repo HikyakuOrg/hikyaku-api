@@ -100,7 +100,7 @@ export class CustomerDto implements CustomerRow {
             'Raw Pelias feature kept for provenance. Opaque — do not read fields ' +
             'off it.',
     })
-    pelias_raw: unknown | null;
+    pelias_raw: unknown;
 
     @ApiProperty({
         type: CustomerLocationDto,

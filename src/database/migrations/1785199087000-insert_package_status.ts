@@ -15,5 +15,5 @@ export class InsertPackageStatus1785199087000 implements MigrationInterface {
         );
     }
 
-    public async down(queryRunner: QueryRunner): Promise<void> {}
+    public async down(): Promise<void> {}
 }

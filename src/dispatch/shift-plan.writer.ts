@@ -73,16 +73,15 @@ export class ShiftPlanWriter {
         runner: QueryRunner,
         optimisationId: string,
     ): Promise<{ routeId: string; solutionId: string }> {
-        const existing: { route_id: string; solution_id: string }[] =
-            await runner.query(
-                `SELECT r.id AS route_id, s.id AS solution_id
+        const existing = (await runner.query(
+            `SELECT r.id AS route_id, s.id AS solution_id
                FROM vrp_solution s
                JOIN vrp_route  r ON r.solution_id = s.id
               WHERE s.optimization_id = $1
               ORDER BY r.id
               LIMIT 1`,
-                [optimisationId],
-            );
+            [optimisationId],
+        )) as { route_id: string; solution_id: string }[];
         if (existing[0]) {
             return {
                 routeId: existing[0].route_id,
@@ -90,18 +89,18 @@ export class ShiftPlanWriter {
             };
         }
 
-        const solutionRows: { id: string }[] = await runner.query(
+        const solutionRows = (await runner.query(
             `INSERT INTO vrp_solution (optimization_id, routes_count, unassigned_count)
              VALUES ($1, 1, 0)
              RETURNING id`,
             [optimisationId],
-        );
+        )) as { id: string }[];
         const solutionId = solutionRows[0].id;
 
-        const routeRows: { id: string }[] = await runner.query(
+        const routeRows = (await runner.query(
             `INSERT INTO vrp_route (solution_id) VALUES ($1) RETURNING id`,
             [solutionId],
-        );
+        )) as { id: string }[];
         return { routeId: routeRows[0].id, solutionId };
     }
 

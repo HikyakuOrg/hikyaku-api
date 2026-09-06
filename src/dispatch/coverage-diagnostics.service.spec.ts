@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { readFileSync } from 'fs';
 import type { DataSource } from 'typeorm';
 import {
     CoverageDiagnosticsService,
@@ -27,7 +28,8 @@ import { COVERING_AREAS_SQL, COVERING_DRIVERS_SQL } from './coverage';
 // tests exercise the actual parsing and floater merging, while the spies can
 // still prove the service went through coverage.ts to get its answer.
 jest.mock('./coverage', () => {
-    const actual = jest.requireActual('./coverage');
+    const actual =
+        jest.requireActual<typeof import('./coverage')>('./coverage');
     return {
         ...actual,
         coveringDriversForPoint: jest.fn(actual.coveringDriversForPoint),
@@ -220,8 +222,7 @@ describe('one containment predicate, not two', () => {
         // adding a field to the response without noticing why the query lives
         // in coverage.ts: a hand-rolled ST_Covers here would answer plausibly
         // and disagree with dispatch under exactly the cases that matter.
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const source: string = require('fs').readFileSync(
+        const source = readFileSync(
             require.resolve('./coverage-diagnostics.service'),
             'utf8',
         );

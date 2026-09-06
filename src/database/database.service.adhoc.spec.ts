@@ -23,7 +23,9 @@ function makeRunner(claimed?: { id: string }[]) {
     const insert = jest.fn((entity: { name: string }) =>
         Promise.resolve({ identifiers: [{ id: idByEntity[entity.name] }] }),
     );
-    const upsert = jest.fn().mockResolvedValue(undefined);
+    const upsert = jest
+        .fn<Promise<void>, [unknown, unknown, unknown]>()
+        .mockResolvedValue(undefined);
     const query = jest.fn(
         (sql: string, params?: unknown[], useStructuredResult?: boolean) => {
             if (String(sql).includes('UPDATE packages')) {

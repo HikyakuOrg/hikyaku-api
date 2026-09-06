@@ -106,7 +106,7 @@ describe('PgNotifyService', () => {
     });
 
     it('drains once on connect, because anything sent while connecting reached nobody', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 3_000, onWake });
         await service.onApplicationBootstrap();
 
@@ -115,7 +115,7 @@ describe('PgNotifyService', () => {
     });
 
     it('coalesces a burst of notifications into a single wake', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 3_000, onWake });
         await service.onApplicationBootstrap();
         onWake.mockClear();
@@ -136,7 +136,7 @@ describe('PgNotifyService', () => {
     });
 
     it('starts a fresh window after one closes', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 1_000, onWake });
         await service.onApplicationBootstrap();
         onWake.mockClear();
@@ -151,7 +151,7 @@ describe('PgNotifyService', () => {
     });
 
     it('ignores a notification on a channel nobody subscribed to', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 1_000, onWake });
         await service.onApplicationBootstrap();
         onWake.mockClear();
@@ -162,7 +162,7 @@ describe('PgNotifyService', () => {
     });
 
     it('re-LISTENs and drains again after the connection drops', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 1_000, onWake });
         await service.onApplicationBootstrap();
         onWake.mockClear();

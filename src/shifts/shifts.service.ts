@@ -124,11 +124,7 @@ export class ShiftsService {
                 `assign:${dto.warehouseId}`,
             ]);
 
-            const clash: {
-                id: string;
-                driver_id: string;
-                vehicle_id: string;
-            }[] = await runner.query(
+            const clash = (await runner.query(
                 `SELECT id, driver_id, vehicle_id
                        FROM vrp_optimization
                       WHERE shift_date = $1::date
@@ -136,7 +132,7 @@ export class ShiftsService {
                         AND (driver_id = $2 OR vehicle_id = $3)
                       LIMIT 1`,
                 [dto.shiftDate, dto.driverId, dto.vehicleId],
-            );
+            )) as { id: string; driver_id: string; vehicle_id: string }[];
             if (clash.length > 0) {
                 const who =
                     clash[0].driver_id === dto.driverId ? 'driver' : 'vehicle';
@@ -147,7 +143,7 @@ export class ShiftsService {
 
             let shiftId: string;
             try {
-                const rows: { id: string }[] = await runner.query(
+                const rows = (await runner.query(
                     `INSERT INTO vrp_optimization
                          (provider, request, response, organisation_id,
                           status, driver_id, vehicle_id, warehouse_id,
@@ -164,7 +160,7 @@ export class ShiftsService {
                         dto.shiftDate,
                         dto.scheduledStart ?? null,
                     ],
-                );
+                )) as { id: string }[];
                 shiftId = rows[0].id;
             } catch (err: unknown) {
                 const code = (err as { code?: string })?.code;
@@ -244,12 +240,12 @@ export class ShiftsService {
         try {
             // FOR UPDATE so a concurrent dispatch, or the driver app's
             // IN_TRANSIT trigger, cannot both decide the shift was planned.
-            const rows: { status: string }[] = await runner.query(
+            const rows = (await runner.query(
                 `SELECT status FROM vrp_optimization
                   WHERE id = $1 AND organisation_id = $2
                   FOR UPDATE`,
                 [id, organisationId],
-            );
+            )) as { status: string }[];
             if (rows.length === 0)
                 throw new NotFoundException('Shift not found.');
             if (rows[0].status !== 'planned') {

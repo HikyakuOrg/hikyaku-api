@@ -26,13 +26,17 @@ describe('TzdataService', () => {
         service = module.get(TzdataService);
     });
 
+    interface FakeWorkerInstance {
+        on: jest.Mock<void, [string, (...args: unknown[]) => void]>;
+    }
+
     /** Grabs the event handler TzdataService registered on the mocked worker. */
     function getHandler(
         event: string,
     ): ((...args: unknown[]) => void) | undefined {
-        const instance = (Worker as unknown as jest.Mock).mock.results[0].value;
-        const onCalls: [string, (...args: unknown[]) => void][] =
-            instance.on.mock.calls;
+        const instance = (Worker as unknown as jest.Mock).mock.results[0]
+            .value as FakeWorkerInstance;
+        const onCalls = instance.on.mock.calls;
         return onCalls.find(([e]) => e === event)?.[1];
     }
 

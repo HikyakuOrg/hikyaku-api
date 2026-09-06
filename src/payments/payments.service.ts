@@ -141,12 +141,11 @@ export class PaymentsService {
         try {
             // Re-lock and re-check — guards against concurrent retries that both
             // passed the optimistic check above.
-            const lockRows: { id: string; status: string }[] =
-                await runner.query(
-                    `SELECT id, status FROM stripe.payments
+            const lockRows = (await runner.query(
+                `SELECT id, status FROM stripe.payments
                  WHERE stripe_checkout_session_id = $1 FOR UPDATE`,
-                    [session.id],
-                );
+                [session.id],
+            )) as { id: string; status: string }[];
 
             if (lockRows[0]?.status === 'completed') {
                 await runner.commitTransaction();
@@ -265,7 +264,7 @@ export class PaymentsService {
         organisationId: string,
         senderCustomerId: string,
     ): Promise<string> {
-        const rows: { id: string }[] = await runner.query(
+        const rows = (await runner.query(
             `SELECT w.id
                FROM warehouse w
                LEFT JOIN customer c ON c.id = $2
@@ -277,7 +276,7 @@ export class PaymentsService {
                        w.warehouse_location <-> c.customer_location
               LIMIT 1`,
             [organisationId, senderCustomerId],
-        );
+        )) as { id: string }[];
 
         if (rows.length === 0) {
             throw new Error(

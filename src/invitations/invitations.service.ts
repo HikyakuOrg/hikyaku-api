@@ -17,7 +17,6 @@ import { AppPermission } from 'src/entities/app-permission.entity';
 import { AppRole } from 'src/entities/app-role.entity';
 import { OrganisationInvitation } from 'src/entities/organisation-invitation.entity';
 import { OrganisationInvitationPermission } from 'src/entities/organisation-invitation-permission.entity';
-import { TeamMember } from 'src/entities/team-member.entity';
 import { UserPermission } from 'src/entities/user-permission.entity';
 import { MailerService } from 'src/mailer/mailer.service';
 import { CreateInvitationDto } from './dto/create-invitation.dto';

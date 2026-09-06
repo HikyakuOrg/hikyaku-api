@@ -109,7 +109,11 @@ export class TokenVerifier {
         const { user, expiresAtMs } = await this.verifyClaims(token);
 
         if (this.memo.size >= MEMO_MAX_ENTRIES) {
-            const oldestKey = this.memo.keys().next().value;
+            // IteratorResult<T> types the done:true branch's `value` as `any`,
+            // so `.next().value` is `string | any` even though the Map key is
+            // always a string.
+            const oldestKey = this.memo.keys().next().value as
+                string | undefined;
             if (oldestKey !== undefined) this.memo.delete(oldestKey);
         }
         this.memo.set(key, {

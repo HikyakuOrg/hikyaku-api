@@ -2,9 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-export class ExposeCoverageOutcomeOnPackageReads1788915600000
-    implements MigrationInterface
-{
+export class ExposeCoverageOutcomeOnPackageReads1788915600000 implements MigrationInterface {
     name = 'ExposeCoverageOutcomeOnPackageReads1788915600000';
 
     private read(file: string): string {

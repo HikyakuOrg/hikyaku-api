@@ -37,4 +37,7 @@ async function bootstrap() {
 
     await app.listen(process.env.PORT ?? 3002, '0.0.0.0');
 }
-bootstrap();
+bootstrap().catch((err: unknown) => {
+    console.error('Failed to bootstrap application', err);
+    process.exitCode = 1;
+});

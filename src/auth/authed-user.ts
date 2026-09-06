@@ -14,3 +14,15 @@ export interface AuthedUser {
     email: string;
     email_confirmed_at?: string | null;
 }
+
+/**
+ * The minimal request shape AuthGuard/PermissionGuard read and write.
+ * `getRequest()` has no default type, and the concrete request object is
+ * whatever the underlying HTTP adapter (Fastify) provides — this is the
+ * narrow slice of it these guards actually touch.
+ */
+export interface AuthedRequest {
+    headers: Record<string, string | string[] | undefined>;
+    user?: AuthedUser;
+    organisationId?: string;
+}
