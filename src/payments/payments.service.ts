@@ -24,6 +24,8 @@ interface BookingAddress {
     lon: number;
     lat: number;
     street: string;
+    /** Subpremise line captured by the booking flow; optional throughout. */
+    unit?: string | null;
     suburb: string;
     state: string;
     country: string;

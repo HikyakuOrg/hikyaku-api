@@ -5280,6 +5280,10 @@
           "street": {
             "type": "string"
           },
+          "unit": {
+            "type": "string",
+            "description": "Subpremise line — unit, suite or business name for a building delivery. Last-metre instruction only: never part of the geocoded street line. Whitespace-only values are stored as unset."
+          },
           "suburb": {
             "type": "string"
           },
@@ -5414,6 +5418,10 @@
             "type": "string",
             "description": "Street line. Empty string when unset."
           },
+          "customer_unit": {
+            "type": "string",
+            "description": "Subpremise line — unit, suite or business name for a building delivery. Separate from the geocoded street line, and never fed back into geocoding or routing. Empty string when unset."
+          },
           "customer_suburb": {
             "type": "string",
             "description": "Empty string when unset."
@@ -5470,6 +5478,7 @@
           "customer_phone",
           "customer_email",
           "customer_address",
+          "customer_unit",
           "customer_suburb",
           "customer_state",
           "customer_postcode",
@@ -6813,6 +6822,10 @@
           },
           "street": {
             "type": "string"
+          },
+          "unit": {
+            "type": "string",
+            "description": "Subpremise line — unit, suite or business name for a building delivery. Carried into the customer record at fulfillment; never part of distance pricing or geocoding."
           },
           "lat": {
             "type": "number",

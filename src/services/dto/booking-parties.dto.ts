@@ -3,6 +3,7 @@ import {
     IsEmail,
     IsNotEmpty,
     IsNumber,
+    IsOptional,
     IsString,
     Max,
     Min,
@@ -12,7 +13,7 @@ import {
     ValidationArguments,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
  * Booking party DTOs shared by the quote + pay endpoints. Lifted verbatim from
@@ -40,6 +41,16 @@ export class AddressDto {
     @IsString()
     @IsNotEmpty()
     street: string;
+
+    @ApiPropertyOptional({
+        description:
+            'Subpremise line — unit, suite or business name for a building ' +
+            'delivery. Carried into the customer record at fulfillment; never ' +
+            'part of distance pricing or geocoding.',
+    })
+    @IsOptional()
+    @IsString()
+    unit?: string;
 
     @ApiProperty({ minimum: -90, maximum: 90 })
     @IsNumber()

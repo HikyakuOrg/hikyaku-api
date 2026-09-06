@@ -21,6 +21,7 @@ interface DbRow {
     customer_phone: string | null;
     customer_email: string | null;
     customer_address: string | null;
+    customer_unit: string | null;
     customer_suburb: string | null;
     customer_state: string | null;
     customer_postcode: string | null;
@@ -42,6 +43,7 @@ export interface CustomerRow {
     customer_phone: string;
     customer_email: string;
     customer_address: string;
+    customer_unit: string;
     customer_suburb: string;
     customer_state: string;
     customer_postcode: string;
@@ -56,9 +58,20 @@ export interface CustomerRow {
 /** Columns selected on every read. Location is emitted as GeoJSON. */
 const SELECT_COLS = `id, organisation_id, stripe_customer_id, shopify_customer_id,
     customer_name, customer_phone, customer_email,
-    customer_address, customer_suburb, customer_state, customer_postcode, customer_country,
+    customer_address, customer_unit, customer_suburb, customer_state, customer_postcode, customer_country,
     geocode_confidence, pelias_gid, pelias_raw,
     ST_AsGeoJSON(customer_location)::jsonb AS customer_location, created_at`;
+
+/**
+ * A unit is stored only when it carries information: trimmed, and null when
+ * absent, empty or whitespace-only. The column is therefore never polluted
+ * with '' — and an upsert that re-supplies the address without a unit clears
+ * the old one rather than leaving a stale unit attached to a new street line.
+ */
+function normalizeUnit(unit: string | null | undefined): string | null {
+    const trimmed = unit?.trim();
+    return trimmed ? trimmed : null;
+}
 
 @Injectable()
 export class CustomersService {
@@ -82,15 +95,15 @@ export class CustomersService {
             `INSERT INTO public.customer (
                 id, organisation_id,
                 customer_name, customer_phone, customer_email,
-                customer_address, customer_suburb, customer_state, customer_postcode, customer_country,
+                customer_address, customer_unit, customer_suburb, customer_state, customer_postcode, customer_country,
                 geocode_confidence, pelias_gid, pelias_raw,
                 customer_location
              ) VALUES (
                 $1, $2,
                 $3, $4, $5,
-                $6, $7, $8, $9, $10,
-                $11, $12, $13::jsonb,
-                ST_SetSRID(ST_Point($14, $15), 4326)
+                $6, $7, $8, $9, $10, $11,
+                $12, $13, $14::jsonb,
+                ST_SetSRID(ST_Point($15, $16), 4326)
              )
              RETURNING ${SELECT_COLS}`,
             [
@@ -100,6 +113,7 @@ export class CustomersService {
                 dto.phone,
                 dto.email ?? null,
                 dto.address.street,
+                normalizeUnit(dto.address.unit),
                 dto.address.suburb,
                 dto.address.state,
                 dto.address.postcode,
@@ -164,17 +178,18 @@ export class CustomersService {
         await this.dataSource.query(
             `UPDATE public.customer SET
                 customer_name = $1, customer_phone = $2, customer_email = $3,
-                customer_address = $4, customer_suburb = $5, customer_state = $6,
-                customer_postcode = $7, customer_country = $8,
-                geocode_confidence = $9, pelias_gid = $10, pelias_raw = $11::jsonb,
-                customer_location = ST_SetSRID(ST_Point($12, $13), 4326),
-                stripe_customer_id = $14
-             WHERE id = $15 AND organisation_id = $16`,
+                customer_address = $4, customer_unit = $5, customer_suburb = $6,
+                customer_state = $7, customer_postcode = $8, customer_country = $9,
+                geocode_confidence = $10, pelias_gid = $11, pelias_raw = $12::jsonb,
+                customer_location = ST_SetSRID(ST_Point($13, $14), 4326),
+                stripe_customer_id = $15
+             WHERE id = $16 AND organisation_id = $17`,
             [
                 dto.name,
                 dto.phone,
                 dto.email ?? null,
                 dto.address.street,
+                normalizeUnit(dto.address.unit),
                 dto.address.suburb,
                 dto.address.state,
                 dto.address.postcode,
@@ -208,6 +223,7 @@ export class CustomersService {
                 lon: number;
                 lat: number;
                 street: string;
+                unit?: string | null;
                 suburb: string;
                 state: string;
                 postcode?: string | null;
@@ -230,6 +246,8 @@ export class CustomersService {
                         email: person.email ?? undefined,
                         address: {
                             line1: person.address.street,
+                            line2:
+                                normalizeUnit(person.address.unit) ?? undefined,
                             city: person.address.suburb,
                             state: person.address.state,
                             postal_code: person.address.postcode ?? undefined,
@@ -276,6 +294,7 @@ export class CustomersService {
                 lon: number;
                 lat: number;
                 street: string;
+                unit?: string | null;
                 suburb: string;
                 state: string;
                 postcode?: string | null;
@@ -407,6 +426,12 @@ export class CustomersService {
      * Shopify callers never pass them. On conflict they're preserved via
      * COALESCE rather than overwritten, so a later booking/Shopify touch
      * can't blank out an existing row's geocode provenance.
+     *
+     * customer_unit instead overwrites like customer_address: the address
+     * block is replaced wholesale, and a stale unit must not survive a move
+     * to a different building. "No unit supplied" is NULL (never ''), so an
+     * absent unit clears the column rather than filling it with an empty
+     * string.
      */
     private async upsertCustomerRow(
         organisationId: string | null,
@@ -418,6 +443,7 @@ export class CustomersService {
                 lon: number;
                 lat: number;
                 street: string;
+                unit?: string | null;
                 suburb: string;
                 state: string;
                 postcode?: string | null;
@@ -438,21 +464,22 @@ export class CustomersService {
             `INSERT INTO public.customer (
                 id, organisation_id,
                 customer_name, customer_phone, customer_email,
-                customer_address, customer_suburb, customer_state, customer_postcode, customer_country,
+                customer_address, customer_unit, customer_suburb, customer_state, customer_postcode, customer_country,
                 geocode_confidence, pelias_gid, pelias_raw,
                 customer_location
              ) VALUES (
                 $1, $2,
                 $3, $4, $5,
-                $6, $7, $8, $9, $10,
-                $11, $12, $13::jsonb,
-                ST_SetSRID(ST_Point($14, $15), 4326)
+                $6, $7, $8, $9, $10, $11,
+                $12, $13, $14::jsonb,
+                ST_SetSRID(ST_Point($15, $16), 4326)
              )
              ${conflictClause}
              DO UPDATE SET
                 customer_name = EXCLUDED.customer_name,
                 customer_email = EXCLUDED.customer_email,
                 customer_address = EXCLUDED.customer_address,
+                customer_unit = EXCLUDED.customer_unit,
                 customer_suburb = EXCLUDED.customer_suburb,
                 customer_state = EXCLUDED.customer_state,
                 customer_postcode = EXCLUDED.customer_postcode,
@@ -469,6 +496,7 @@ export class CustomersService {
                 person.phone,
                 person.email ?? null,
                 person.address.street,
+                normalizeUnit(person.address.unit),
                 person.address.suburb,
                 person.address.state,
                 person.address.postcode ?? null,
@@ -499,6 +527,7 @@ export class CustomersService {
             customer_phone: row.customer_phone ?? '',
             customer_email: row.customer_email ?? '',
             customer_address: row.customer_address ?? '',
+            customer_unit: row.customer_unit ?? '',
             customer_suburb: row.customer_suburb ?? '',
             customer_state: row.customer_state ?? '',
             customer_postcode: row.customer_postcode ?? '',
@@ -525,6 +554,7 @@ export class CustomersService {
                     email: dto.email ?? undefined,
                     address: {
                         line1: dto.address.street,
+                        line2: normalizeUnit(dto.address.unit) ?? undefined,
                         city: dto.address.suburb,
                         state: dto.address.state,
                         postal_code: dto.address.postcode,
@@ -555,6 +585,7 @@ export class CustomersService {
             email: dto.email ?? undefined,
             address: {
                 line1: dto.address.street,
+                line2: normalizeUnit(dto.address.unit) ?? undefined,
                 city: dto.address.suburb,
                 state: dto.address.state,
                 postal_code: dto.address.postcode,

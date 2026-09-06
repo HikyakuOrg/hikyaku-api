@@ -118,6 +118,61 @@ describe('CustomersService', () => {
                 expect(sql).not.toContain('shopify_customer_id');
             }
         });
+
+        it('threads a supplied unit into the upsert and Stripe line2, with overwrite (not COALESCE) semantics', async () => {
+            dataSource.query
+                .mockResolvedValueOnce([{ id: 'cust-10' }])
+                .mockResolvedValueOnce([]);
+            stripe.customers.create.mockResolvedValue({ id: 'stripe-cust-10' });
+
+            await service.upsertFromBooking(
+                {
+                    name: 'Jane Doe',
+                    phone: '+61400000000',
+                    address: { ...address, unit: 'Unit 5' },
+                },
+                'acct_1',
+                'org-1',
+                'idem-key-10',
+            );
+
+            const [insertSql, insertParams] = dataSource.query.mock.calls[0];
+            expect(insertSql).toContain(
+                'customer_unit = EXCLUDED.customer_unit',
+            );
+            expect(insertSql).not.toContain('customer_unit = COALESCE');
+            expect(insertParams[6]).toBe('Unit 5');
+            expect(stripe.customers.create).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    address: {
+                        line1: '123 Example St',
+                        line2: 'Unit 5',
+                        city: 'Melbourne',
+                        state: 'VIC',
+                        postal_code: '3000',
+                        country: 'AU',
+                    },
+                }),
+                { stripeAccount: 'acct_1', idempotencyKey: 'idem-key-10' },
+            );
+        });
+
+        it('normalizes an empty-string unit to null, never persisting a blank', async () => {
+            dataSource.query.mockResolvedValueOnce([{ id: 'cust-11' }]);
+
+            await service.upsertFromBooking(
+                {
+                    name: 'Jane Doe',
+                    phone: '+61400000000',
+                    address: { ...address, unit: '   ' },
+                },
+                null,
+                'org-1',
+                'idem-key-11',
+            );
+
+            expect(dataSource.query.mock.calls[0][1][6]).toBeNull();
+        });
     });
 
     describe('upsertFromShopifyOrder', () => {
@@ -248,6 +303,95 @@ describe('CustomersService', () => {
                     JSON.stringify({ source: 'pelias' }),
                 ]),
             );
+        });
+
+        it('persists a Shopify unit when supplied (line2/company fold-in)', async () => {
+            dataSource.query.mockResolvedValueOnce([{ id: 'cust-12' }]);
+
+            await service.upsertFromShopifyOrder(
+                'org-1',
+                {
+                    name: 'Jane Doe',
+                    phone: '+61400000000',
+                    address: { ...address, unit: 'Suite 12, Acme Tower' },
+                },
+                null,
+            );
+
+            const [sql, params] = dataSource.query.mock.calls[0];
+            expect(sql).toContain('customer_unit = EXCLUDED.customer_unit');
+            expect(params[6]).toBe('Suite 12, Acme Tower');
+        });
+    });
+
+    describe('createCustomer / updateCustomer', () => {
+        const dbRow = {
+            id: 'cust-13',
+            organisation_id: 'org-1',
+            stripe_customer_id: null,
+            shopify_customer_id: null,
+            customer_name: 'Jane Doe',
+            customer_phone: '+61400000000',
+            customer_email: 'jane@example.com',
+            customer_address: '123 Example St',
+            customer_unit: 'Unit 5',
+            customer_suburb: 'Melbourne',
+            customer_state: 'VIC',
+            customer_postcode: '3000',
+            customer_country: 'AU',
+            geocode_confidence: null,
+            pelias_gid: null,
+            pelias_raw: null,
+            customer_location: null,
+            created_at: '2026-09-06T00:00:00Z',
+        };
+
+        const dto = {
+            name: 'Jane Doe',
+            phone: '+61400000000',
+            email: 'jane@example.com',
+            address: {
+                street: '123 Example St',
+                unit: 'Unit 5',
+                suburb: 'Melbourne',
+                state: 'VIC',
+                postcode: '3000',
+                country: 'AU',
+            },
+            lat: -37.8,
+            lon: 144.9,
+        };
+
+        it('inserts and returns a supplied unit (POST /customers)', async () => {
+            dataSource.query.mockResolvedValueOnce([dbRow]);
+            orgs.getStripeAccount.mockResolvedValue(null);
+
+            const result = await service.createCustomer('org-1', dto);
+
+            const [insertSql, insertParams] = dataSource.query.mock.calls[0];
+            expect(insertSql).toContain('customer_unit');
+            expect(insertParams[6]).toBe('Unit 5');
+            expect(result.customer_unit).toBe('Unit 5');
+        });
+
+        it('clears the unit when the replacement body omits it (PUT /customers)', async () => {
+            dataSource.query
+                .mockResolvedValueOnce([{ stripe_customer_id: null }])
+                .mockResolvedValueOnce([])
+                .mockResolvedValueOnce([{ ...dbRow, customer_unit: null }]);
+            orgs.getStripeAccount.mockResolvedValue(null);
+
+            const result = await service.updateCustomer('org-1', 'cust-13', {
+                ...dto,
+                address: { ...dto.address, unit: undefined },
+            });
+
+            const [updateSql, updateParams] = dataSource.query.mock.calls[1];
+            expect(updateSql).toContain('customer_unit = $5');
+            // Omitted unit is a full replacement: the column is cleared to
+            // NULL, never filled with ''.
+            expect(updateParams[4]).toBeNull();
+            expect(result.customer_unit).toBe('');
         });
     });
 });

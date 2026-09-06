@@ -18,6 +18,16 @@ export class CustomerAddressDto {
     @IsNotEmpty()
     street: string;
 
+    @ApiPropertyOptional({
+        description:
+            'Subpremise line — unit, suite or business name for a building ' +
+            'delivery. Last-metre instruction only: never part of the geocoded ' +
+            'street line. Whitespace-only values are stored as unset.',
+    })
+    @IsOptional()
+    @IsString()
+    unit?: string;
+
     @ApiProperty()
     @IsString()
     @IsNotEmpty()
