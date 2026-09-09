@@ -28,10 +28,15 @@ function safeZone(timeZone: string | null | undefined): string {
 }
 
 /** The local calendar date at `timeZone`, as YYYY-MM-DD. */
-export function localShiftDate(at: Date, timeZone: string | null | undefined): string {
+export function localShiftDate(
+    at: Date,
+    timeZone: string | null | undefined,
+): string {
     // en-CA formats as YYYY-MM-DD, which is also what a Postgres ::date cast
     // wants.
-    return new Intl.DateTimeFormat('en-CA', { timeZone: safeZone(timeZone) }).format(at);
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: safeZone(timeZone),
+    }).format(at);
 }
 
 /**
@@ -39,7 +44,10 @@ export function localShiftDate(at: Date, timeZone: string | null | undefined): s
  * string can be parsed with. Resolved at the instant given, so DST is handled by
  * asking rather than by arithmetic.
  */
-export function utcOffsetSuffix(at: Date, timeZone: string | null | undefined): string {
+export function utcOffsetSuffix(
+    at: Date,
+    timeZone: string | null | undefined,
+): string {
     const parts = new Intl.DateTimeFormat('en-US', {
         timeZone: safeZone(timeZone),
         timeZoneName: 'longOffset',
@@ -58,7 +66,10 @@ export function utcOffsetSuffix(at: Date, timeZone: string | null | undefined): 
  * route. A package promised for tomorrow is not late if it rides tomorrow — and
  * that is exactly what makes it a legitimate eviction candidate today.
  */
-export function endOfLocalDayMs(at: Date, timeZone: string | null | undefined): number {
+export function endOfLocalDayMs(
+    at: Date,
+    timeZone: string | null | undefined,
+): number {
     const date = localShiftDate(at, timeZone);
     const offset = utcOffsetSuffix(at, timeZone);
     return Date.parse(`${date}T23:59:59.999${offset}`);

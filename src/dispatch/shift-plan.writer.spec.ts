@@ -59,19 +59,26 @@ describe('ShiftPlanWriter', () => {
             const result = await writer.ensureRoute(runner, 'shift-1');
 
             expect(result).toEqual({ routeId: 'route-1', solutionId: 'sol-1' });
-            expect(log.some((q) => q.sql.includes('INSERT INTO vrp_solution'))).toBe(false);
+            expect(
+                log.some((q) => q.sql.includes('INSERT INTO vrp_solution')),
+            ).toBe(false);
         });
 
         it('creates an empty pair for a shift that has none yet', async () => {
             // A shift opened with no packages still needs somewhere to write steps.
             const { runner } = makeRunner((sql) => {
-                if (sql.includes('INSERT INTO vrp_solution')) return [{ id: 'sol-new' }];
-                if (sql.includes('INSERT INTO vrp_route ')) return [{ id: 'route-new' }];
+                if (sql.includes('INSERT INTO vrp_solution'))
+                    return [{ id: 'sol-new' }];
+                if (sql.includes('INSERT INTO vrp_route '))
+                    return [{ id: 'route-new' }];
                 return [];
             });
 
             const result = await writer.ensureRoute(runner, 'shift-1');
-            expect(result).toEqual({ routeId: 'route-new', solutionId: 'sol-new' });
+            expect(result).toEqual({
+                routeId: 'route-new',
+                solutionId: 'sol-new',
+            });
         });
     });
 
@@ -80,8 +87,12 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner();
             await writer.writePlan(runner, plan());
 
-            const del = log.findIndex((q) => q.sql.includes('DELETE FROM vrp_route_step'));
-            const ins = log.findIndex((q) => q.sql.includes('INSERT INTO vrp_route_step'));
+            const del = log.findIndex((q) =>
+                q.sql.includes('DELETE FROM vrp_route_step'),
+            );
+            const ins = log.findIndex((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
             expect(del).toBeGreaterThan(-1);
             expect(ins).toBeGreaterThan(del);
         });
@@ -94,7 +105,9 @@ describe('ShiftPlanWriter', () => {
             const assignments = log.findIndex((q) =>
                 q.sql.includes('INSERT INTO package_assignment'),
             );
-            const steps = log.findIndex((q) => q.sql.includes('INSERT INTO vrp_route_step'));
+            const steps = log.findIndex((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
             expect(assignments).toBeGreaterThan(-1);
             expect(steps).toBeGreaterThan(assignments);
         });
@@ -103,7 +116,9 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner();
             await writer.writePlan(runner, plan());
 
-            const steps = log.find((q) => q.sql.includes('INSERT INTO vrp_route_step'));
+            const steps = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
             const params = steps?.params ?? [];
             // Four rows of eight params: start, two jobs, end.
             expect(params).toHaveLength(32);
@@ -116,7 +131,9 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner();
             await writer.writePlan(runner, plan());
 
-            const steps = log.find((q) => q.sql.includes('INSERT INTO vrp_route_step'));
+            const steps = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
             const params = steps?.params ?? [];
             expect(params[6]).toBe(0); // start
             expect(params[14]).toBe(600); // first job, ten minutes out
@@ -127,7 +144,9 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner();
             await writer.writePlan(runner, plan());
 
-            const steps = log.find((q) => q.sql.includes('INSERT INTO vrp_route_step'));
+            const steps = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
             const params = steps?.params ?? [];
             expect(params[7]).toEqual([0]);
             expect(params[15]).toEqual([2_000]);
@@ -138,13 +157,19 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner();
             await writer.writePlan(runner, plan({ stops: [] }));
 
-            const steps = log.find((q) => q.sql.includes('INSERT INTO vrp_route_step'));
-            expect(steps?.params).toHaveLength(16);
-            expect(log.some((q) => q.sql.includes('INSERT INTO package_assignment'))).toBe(
-                false,
+            const steps = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
             );
+            expect(steps?.params).toHaveLength(16);
             expect(
-                log.some((q) => q.sql.includes('INSERT INTO package_delivery_window')),
+                log.some((q) =>
+                    q.sql.includes('INSERT INTO package_assignment'),
+                ),
+            ).toBe(false);
+            expect(
+                log.some((q) =>
+                    q.sql.includes('INSERT INTO package_delivery_window'),
+                ),
             ).toBe(false);
         });
 
@@ -152,7 +177,9 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner();
             await writer.writePlan(runner, plan());
 
-            const touch = log.find((q) => q.sql.includes('UPDATE vrp_optimization'));
+            const touch = log.find((q) =>
+                q.sql.includes('UPDATE vrp_optimization'),
+            );
             expect(touch).toBeDefined();
             expect(touch?.params[0]).toBe('shift-1');
         });
@@ -161,8 +188,106 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner();
             await writer.writePlan(runner, plan());
             expect(
-                log.filter((q) => /INSERT INTO vrp_optimization\b/i.test(q.sql)),
+                log.filter((q) =>
+                    /INSERT INTO vrp_optimization\b/i.test(q.sql),
+                ),
             ).toHaveLength(0);
+        });
+    });
+
+    describe('the coverage outcome', () => {
+        /** The assignment upsert's parameters, four per stop. */
+        const upsertParams = (
+            log: { sql: string; params: unknown[] }[],
+        ): unknown[] =>
+            log.find((q) => q.sql.includes('INSERT INTO package_assignment'))
+                ?.params ?? [];
+
+        it('rides on the row that was being written anyway', async () => {
+            // One statement, four columns. A second write to record the
+            // outcome would be paid inside the per-warehouse advisory lock by
+            // every package at the depot, not just the one being placed.
+            const { runner, log } = makeRunner();
+            await writer.writePlan(
+                runner,
+                plan({
+                    stops: [
+                        {
+                            packageId: 'pkg-a',
+                            lon: 0.01,
+                            lat: 0,
+                            arrivalMs: DEPARTURE + 600_000,
+                            weightG: 2_000,
+                            coverageOutcome: 'covered',
+                        },
+                    ],
+                }),
+            );
+
+            expect(
+                log.filter((q) =>
+                    q.sql.includes('INSERT INTO package_assignment'),
+                ),
+            ).toHaveLength(1);
+            expect(upsertParams(log)).toEqual([
+                'pkg-a',
+                'driver-1',
+                'vehicle-1',
+                'covered',
+            ]);
+        });
+
+        it('stamps only the stop it was given, never the rest of the van', async () => {
+            // writePlan rewrites every stop on the route. If the outcome went
+            // onto all of them, one package joining a van would restamp the
+            // whole manifest with a decision nobody took about them.
+            const { runner, log } = makeRunner();
+            const [first, second] = plan().stops;
+            await writer.writePlan(
+                runner,
+                plan({
+                    stops: [{ ...first, coverageOutcome: 'floater' }, second],
+                }),
+            );
+
+            expect(upsertParams(log)).toEqual([
+                'pkg-a',
+                'driver-1',
+                'vehicle-1',
+                'floater',
+                'pkg-b',
+                'driver-1',
+                'vehicle-1',
+                null,
+            ]);
+        });
+
+        it('coalesces on conflict, so a replan cannot erase one', async () => {
+            // The replan worker and both hand-edit paths rewrite routes they
+            // did not choose the packages for and pass no outcome. An
+            // unqualified EXCLUDED assignment would blank the only record of a
+            // decision that cannot be recomputed afterwards.
+            const { runner, log } = makeRunner();
+            await writer.writePlan(runner, plan());
+
+            const upsert = log.find((q) =>
+                q.sql.includes('INSERT INTO package_assignment'),
+            );
+            expect(upsert?.sql).toContain(
+                'coverage_outcome = COALESCE(\n' +
+                    '                               EXCLUDED.coverage_outcome,\n' +
+                    '                               package_assignment.coverage_outcome)',
+            );
+            expect(upsertParams(log)).toEqual([
+                'pkg-a',
+                'driver-1',
+                'vehicle-1',
+                null,
+                'pkg-b',
+                'driver-1',
+                'vehicle-1',
+                null,
+            ]);
         });
     });
 
@@ -191,7 +316,9 @@ describe('ShiftPlanWriter', () => {
 
         it('does not count one when a dispatcher moved it by hand', async () => {
             const { runner, log } = makeRunner();
-            await writer.detach(runner, ['pkg-a'], { incrementEviction: false });
+            await writer.detach(runner, ['pkg-a'], {
+                incrementEviction: false,
+            });
 
             const update = log.find((q) => q.sql.includes('UPDATE packages'));
             expect(update?.params[1]).toBe(0);
@@ -203,7 +330,9 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner();
             await writer.detach(runner, ['pkg-a'], { incrementEviction: true });
 
-            const status = log.find((q) => q.sql.includes('insert_package_timeline'));
+            const status = log.find((q) =>
+                q.sql.includes('insert_package_timeline'),
+            );
             expect(status?.params).toEqual([['pkg-a'], 'PENDING']);
         });
     });
@@ -219,7 +348,9 @@ describe('ShiftPlanWriter', () => {
             const { runner, log } = makeRunner(() => [{ id: 'pkg-a' }]);
             await writer.claimPackages(runner, 'shift-1', ['pkg-a']);
 
-            const status = log.find((q) => q.sql.includes('insert_package_timeline'));
+            const status = log.find((q) =>
+                q.sql.includes('insert_package_timeline'),
+            );
             expect(status?.params).toEqual([['pkg-a'], 'ASSIGNED']);
         });
 

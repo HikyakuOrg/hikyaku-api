@@ -35,11 +35,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * blocked, since a future retrying-payment customer should not be locked out
  * mid-retry.
  */
-const BLOCKING_STATUSES = new Set([
-    'canceled',
-    'incomplete_expired',
-    'unpaid',
-]);
+const BLOCKING_STATUSES = new Set(['canceled', 'incomplete_expired', 'unpaid']);
 
 /**
  * Resolve a cached subscription status (+ trial deadline) to a state.

@@ -37,7 +37,7 @@ export interface ReplanPayload {
 export class QueueService {
     private readonly logger = new Logger(QueueService.name);
 
-    constructor(@InjectDataSource() private readonly dataSource: DataSource) { }
+    constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
 
     /**
      * Creates the pgmq queue only if it does not already exist.
@@ -65,10 +65,10 @@ export class QueueService {
      * `{ kind: 'replan', ... }`.
      */
     async enqueuePayload(payload: Record<string, unknown>): Promise<void> {
-        await this.dataSource.query(
-            `SELECT pgmq.send($1, $2::jsonb)`,
-            [QUEUE_NAME, JSON.stringify(payload)],
-        );
+        await this.dataSource.query(`SELECT pgmq.send($1, $2::jsonb)`, [
+            QUEUE_NAME,
+            JSON.stringify(payload),
+        ]);
     }
 
     /**
@@ -80,7 +80,10 @@ export class QueueService {
      * never be missed because the send landed after the commit and the process
      * died in between. Postgres holds NOTIFY until COMMIT for the same reason.
      */
-    async enqueueReplan(runner: QueryRunner, payload: ReplanPayload): Promise<void> {
+    async enqueueReplan(
+        runner: QueryRunner,
+        payload: ReplanPayload,
+    ): Promise<void> {
         await runner.query(`SELECT pgmq.send($1, $2::jsonb)`, [
             QUEUE_NAME,
             JSON.stringify(payload),
@@ -110,10 +113,11 @@ export class QueueService {
      * round-trip at a time would cost more than the solves.
      */
     async readBatch(vtSeconds: number, limit: number): Promise<PgmqMessage[]> {
-        return this.dataSource.query(
-            `SELECT * FROM pgmq.read($1, $2, $3)`,
-            [QUEUE_NAME, vtSeconds, limit],
-        );
+        return this.dataSource.query(`SELECT * FROM pgmq.read($1, $2, $3)`, [
+            QUEUE_NAME,
+            vtSeconds,
+            limit,
+        ]);
     }
 
     /**
@@ -121,7 +125,10 @@ export class QueueService {
      * long-term retention. Prefer this over delete() for audit purposes.
      */
     async archive(msgId: bigint): Promise<void> {
-        await this.dataSource.query(`SELECT pgmq.archive($1::text, $2::bigint)`, [QUEUE_NAME, msgId]);
+        await this.dataSource.query(
+            `SELECT pgmq.archive($1::text, $2::bigint)`,
+            [QUEUE_NAME, msgId],
+        );
     }
 
     /**
@@ -129,6 +136,9 @@ export class QueueService {
      * prevent a poison-pill message from cycling indefinitely.
      */
     async deleteMsg(msgId: bigint): Promise<void> {
-        await this.dataSource.query(`SELECT pgmq.delete($1::text, $2::bigint)`, [QUEUE_NAME, msgId]);
+        await this.dataSource.query(
+            `SELECT pgmq.delete($1::text, $2::bigint)`,
+            [QUEUE_NAME, msgId],
+        );
     }
 }

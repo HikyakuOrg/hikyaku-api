@@ -23,7 +23,9 @@ export class CreateServiceDto {
     @MaxLength(200)
     name: string;
 
-    @ApiProperty({ description: 'Per-unit rate in major units (e.g. dollars).' })
+    @ApiProperty({
+        description: 'Per-unit rate in major units (e.g. dollars).',
+    })
     @IsNumber()
     @Min(0)
     amountMajor: number;
@@ -32,7 +34,9 @@ export class CreateServiceDto {
     @IsIn(PRICING_UNITS)
     pricingUnit: PricingUnit;
 
-    @ApiPropertyOptional({ description: 'ISO currency code; defaults to the account default.' })
+    @ApiPropertyOptional({
+        description: 'ISO currency code; defaults to the account default.',
+    })
     @IsOptional()
     @IsString()
     currency?: string;

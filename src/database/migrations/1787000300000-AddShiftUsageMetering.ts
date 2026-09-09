@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class AddShiftUsageMetering1787000300000 implements MigrationInterface {
     name = 'AddShiftUsageMetering1787000300000';
 

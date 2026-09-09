@@ -3,17 +3,29 @@ import { GeocodeService } from './geocode.service';
 
 describe('GeocodeService', () => {
     let service: GeocodeService;
-    let mockFetch: jest.Mock;
+    let mockFetch: jest.Mock<
+        Promise<{ ok: boolean; json: () => Promise<unknown> }>,
+        [string, RequestInit?]
+    >;
     const originalFetch = global.fetch;
     const originalBaseUrl = process.env.PHOTON_URL;
 
     beforeEach(() => {
         service = new GeocodeService();
-        mockFetch = jest.fn().mockResolvedValue({
-            ok: true,
-            json: () => Promise.resolve({ type: 'FeatureCollection', features: [] }),
-        });
-        global.fetch = mockFetch as unknown as typeof fetch;
+        mockFetch = jest
+            .fn<
+                Promise<{ ok: boolean; json: () => Promise<unknown> }>,
+                [string, RequestInit?]
+            >()
+            .mockResolvedValue({
+                ok: true,
+                json: () =>
+                    Promise.resolve({
+                        type: 'FeatureCollection',
+                        features: [],
+                    }),
+            });
+        global.fetch = mockFetch;
         process.env.PHOTON_URL = 'http://photon.test';
     });
 
@@ -26,7 +38,7 @@ describe('GeocodeService', () => {
     it('builds an absolute Photon URL and adds no api_key', async () => {
         await service.get('/api', { q: 'sydney' });
 
-        const url = mockFetch.mock.calls[0][0] as string;
+        const url = mockFetch.mock.calls[0][0];
         expect(url).toContain('http://photon.test/api?');
         expect(url).toContain('q=sydney');
         expect(url).not.toContain('api_key');
@@ -39,7 +51,7 @@ describe('GeocodeService', () => {
             missing: undefined,
         });
 
-        const url = mockFetch.mock.calls[0][0] as string;
+        const url = mockFetch.mock.calls[0][0];
         expect(url).toContain('layer=house');
         expect(url).toContain('layer=street');
         expect(url).not.toContain('missing');
@@ -50,7 +62,9 @@ describe('GeocodeService', () => {
 
         const promise = service.get('/api', { q: 'x' });
         await expect(promise).rejects.toBeInstanceOf(HttpException);
-        await promise.catch((err: HttpException) => expect(err.getStatus()).toBe(500));
+        await promise.catch((err: HttpException) =>
+            expect(err.getStatus()).toBe(500),
+        );
         expect(mockFetch).not.toHaveBeenCalled();
     });
 

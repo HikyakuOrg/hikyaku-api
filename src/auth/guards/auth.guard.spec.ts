@@ -27,7 +27,10 @@ describe('AuthGuard', () => {
         ctx: ExecutionContext;
         req: { headers: Record<string, string | undefined>; user?: unknown };
     } {
-        const req: { headers: Record<string, string | undefined>; user?: unknown } = {
+        const req: {
+            headers: Record<string, string | undefined>;
+            user?: unknown;
+        } = {
             headers: { authorization: authHeader },
         };
         const ctx = {

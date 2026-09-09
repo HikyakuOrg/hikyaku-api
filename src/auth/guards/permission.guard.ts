@@ -15,7 +15,9 @@ import { NEEDS_FULL_USER_KEY } from 'src/auth/decorators/needs-full-user.decorat
 import { PERMISSION_KEY } from 'src/auth/decorators/required-permission.decorator';
 import { SKIP_ORG_CONTEXT_KEY } from 'src/auth/decorators/skip-org-context.decorator';
 import { TokenVerifier } from 'src/auth/token-verifier.service';
+import type { AuthedRequest } from 'src/auth/authed-user';
 import { isTrialExpired } from 'src/common/trial';
+import { headerValue } from 'src/common/http';
 import { SUPABASE_CLIENT } from 'src/supabase/supabase.provider';
 
 /**
@@ -50,7 +52,7 @@ export class PermissionGuard implements CanActivate {
         private readonly supabase: SupabaseClient,
         private readonly tokenVerifier: TokenVerifier,
         private readonly reflector: Reflector,
-    ) { }
+    ) {}
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
         const requiredPermission = this.reflector.get<string>(
@@ -68,12 +70,13 @@ export class PermissionGuard implements CanActivate {
                 context.getHandler(),
             ) === true;
 
-        const request = context.switchToHttp().getRequest();
-        const authHeader: string | undefined = request.headers['authorization'];
+        const request = context.switchToHttp().getRequest<AuthedRequest>();
+        const authHeader = headerValue(request.headers['authorization']);
 
-        request.user = needsFullUser
+        const user = needsFullUser
             ? await this.tokenVerifier.verifyFull(authHeader)
             : await this.tokenVerifier.verify(authHeader);
+        request.user = user;
 
         // Endpoints that run before a tenant is chosen (e.g. /organisations/me)
         // only need authentication.
@@ -82,20 +85,20 @@ export class PermissionGuard implements CanActivate {
         }
 
         // Resolve + authorise the active organisation.
-        const slug: string | undefined =
-            request.headers['x-organisation-slug'];
+        const slug = headerValue(request.headers['x-organisation-slug']);
         if (!slug) {
             throw new BadRequestException('Missing X-Organisation-Slug header');
         }
 
-        const userId: string = request.user.id;
+        const userId = user.id;
 
         // One round trip for everything the rest of this guard needs:
         // trial_ends_at/subscription_status ride along on the org lookup,
         // team_members answers membership, and (when a permission is
         // required) user_permission answers that too — see OrgGuardRow for
         // why both embeds are left joins.
-        const baseSelect = 'id, trial_ends_at, subscription_status, team_members(id)';
+        const baseSelect =
+            'id, trial_ends_at, subscription_status, team_members(id)';
         const select = requiredPermission
             ? `${baseSelect}, user_permission(app_permission!inner(permission))`
             : baseSelect;
@@ -107,7 +110,10 @@ export class PermissionGuard implements CanActivate {
             .eq('team_members.id', userId);
         if (requiredPermission) {
             query.eq('user_permission.user_id', userId);
-            query.eq('user_permission.app_permission.permission', requiredPermission);
+            query.eq(
+                'user_permission.app_permission.permission',
+                requiredPermission,
+            );
         }
 
         const { data } = await query.maybeSingle();

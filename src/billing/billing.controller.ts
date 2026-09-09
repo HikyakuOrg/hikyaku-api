@@ -1,5 +1,10 @@
 import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+    ApiBearerAuth,
+    ApiOkResponse,
+    ApiOperation,
+    ApiTags,
+} from '@nestjs/swagger';
 import { ApiGuardErrors } from 'src/common/swagger/api-errors.decorator';
 import { ApiOrganisationSlugHeader } from 'src/common/swagger/tenant-header.decorator';
 import { AllowExpiredTrial } from 'src/auth/decorators/allow-expired-trial.decorator';
@@ -88,7 +93,8 @@ export class BillingController {
     @Post('portal')
     @AllowExpiredTrial()
     @ApiOperation({
-        summary: "Create a Stripe Billing Portal session for the active organisation.",
+        summary:
+            'Create a Stripe Billing Portal session for the active organisation.',
         description:
             'Used by the "Add payment method" action once an org has exhausted its ' +
             'free shift allowance. Exempt from the expired-trial block: adding a ' +

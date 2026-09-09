@@ -1,4 +1,9 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import {
+    Column,
+    CreateDateColumn,
+    Entity,
+    PrimaryGeneratedColumn,
+} from 'typeorm';
 
 /**
  * One row per on-demand optimisation trigger. Backs both the per-org 5-minute
@@ -7,11 +12,7 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeor
  * SELECTs (RLS: shifts.view).
  */
 export type OptimisationRunStatus =
-    | 'queued'
-    | 'running'
-    | 'completed'
-    | 'failed'
-    | 'skipped';
+    'queued' | 'running' | 'completed' | 'failed' | 'skipped';
 
 @Entity('optimisation_run')
 export class OptimisationRun {

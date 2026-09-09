@@ -9,6 +9,8 @@ import {
     isEvictable,
     isGreyBand,
     legKey,
+    LOAD_SPREAD_SECONDS_PER_STOP,
+    loadPenaltySeconds,
     MAX_EVICTIONS,
     MAX_STOPS,
     pickVictims,
@@ -19,6 +21,7 @@ import {
     type CandidateShift,
     type IncomingPackage,
     type InsertionContext,
+    type InsertionResult,
     type InsertionSuccess,
     type RouteStop,
 } from './insertion';
@@ -62,7 +65,9 @@ function ctx(overrides: Partial<InsertionContext> = {}): InsertionContext {
     };
 }
 
-function stop(overrides: Partial<RouteStop> & { packageId: string }): RouteStop {
+function stop(
+    overrides: Partial<RouteStop> & { packageId: string },
+): RouteStop {
     return {
         lon: 0,
         lat: 0,
@@ -102,9 +107,13 @@ function pkg(overrides: Partial<IncomingPackage> = {}): IncomingPackage {
     };
 }
 
-function expectFeasible(result: ReturnType<typeof tryInsert>): InsertionSuccess {
+function expectFeasible(
+    result: ReturnType<typeof tryInsert>,
+): InsertionSuccess {
     if (!result.feasible) {
-        throw new Error(`expected a feasible insertion, got "${result.reason}"`);
+        throw new Error(
+            `expected a feasible insertion, got "${result.reason}"`,
+        );
     }
     return result;
 }
@@ -115,7 +124,10 @@ describe('haversineMeters', () => {
     });
 
     it('measures a degree of longitude at the equator', () => {
-        expect(haversineMeters(DEPOT, { lon: 1, lat: 0 })).toBeCloseTo(111_195, -2);
+        expect(haversineMeters(DEPOT, { lon: 1, lat: 0 })).toBeCloseTo(
+            111_195,
+            -2,
+        );
     });
 
     it('is symmetric', () => {
@@ -130,7 +142,7 @@ describe('estimateLeg', () => {
         const metres = haversineMeters(DEPOT, east(10));
         // 1.35 detour, 11.1 m/s, 1.2 safety.
         expect(estimateLeg(DEPOT, east(10))).toBeCloseTo(
-            (metres * 1.35) / 11.1 * 1.2,
+            ((metres * 1.35) / 11.1) * 1.2,
             6,
         );
     });
@@ -166,16 +178,26 @@ describe('effectiveDeadline', () => {
 describe('tryInsert gates', () => {
     it('rejects on mass before doing any timing work', () => {
         const result = tryInsert(
-            shift({ capacityG: 5_000, stops: [stop({ packageId: 'a', weightG: 4_000 })] }),
+            shift({
+                capacityG: 5_000,
+                stops: [stop({ packageId: 'a', weightG: 4_000 })],
+            }),
             pkg({ weightG: 2_000 }),
             ctx(),
         );
-        expect(result).toEqual({ feasible: false, shiftId: 'shift-a', reason: 'weight' });
+        expect(result).toEqual({
+            feasible: false,
+            shiftId: 'shift-a',
+            reason: 'weight',
+        });
     });
 
     it('accepts a package that exactly fills the remaining capacity', () => {
         const result = tryInsert(
-            shift({ capacityG: 6_000, stops: [stop({ packageId: 'a', weightG: 4_000 })] }),
+            shift({
+                capacityG: 6_000,
+                stops: [stop({ packageId: 'a', weightG: 4_000 })],
+            }),
             pkg({ weightG: 2_000 }),
             ctx(),
         );
@@ -219,7 +241,9 @@ describe('tryInsert gates', () => {
 
     it('is capacity-feasible but time-infeasible when only the window binds', () => {
         const far = shift({ capacityG: 10_000_000 });
-        expect(tryInsert(far, pkg({ lon: east(200).lon, weightG: 1 }), ctx())).toEqual({
+        expect(
+            tryInsert(far, pkg({ lon: east(200).lon, weightG: 1 }), ctx()),
+        ).toEqual({
             feasible: false,
             shiftId: 'shift-a',
             reason: 'window',
@@ -262,7 +286,9 @@ describe('cheapestPosition', () => {
 
     it('prices the detour, not the whole route', () => {
         // A stop exactly on top of an existing one is free to serve.
-        const existing = shift({ stops: [stop({ packageId: 'near', ...east(5) })] });
+        const existing = shift({
+            stops: [stop({ packageId: 'near', ...east(5) })],
+        });
         const result = expectFeasible(
             cheapestPosition(existing, pkg({ lon: east(5).lon }), ctx()),
         );
@@ -276,7 +302,13 @@ describe('cheapestPosition', () => {
         // exactly where it was.
         const farDeadline = DEPARTURE + (driveSeconds(10) + 60) * 1000;
         const existing = shift({
-            stops: [stop({ packageId: 'far', ...east(10), deadlineMs: farDeadline })],
+            stops: [
+                stop({
+                    packageId: 'far',
+                    ...east(10),
+                    deadlineMs: farDeadline,
+                }),
+            ],
         });
 
         const result = expectFeasible(
@@ -309,7 +341,9 @@ describe('cheapestPosition', () => {
     it('ignores a deadline that falls beyond the service day', () => {
         const tomorrow = DAY_END + 3_600_000;
         const existing = shift({
-            stops: [stop({ packageId: 'far', ...east(10), deadlineMs: tomorrow })],
+            stops: [
+                stop({ packageId: 'far', ...east(10), deadlineMs: tomorrow }),
+            ],
         });
         // Inserting in front of "far" would breach `tomorrow` if it were binding.
         const result = expectFeasible(
@@ -372,9 +406,9 @@ describe('grey band', () => {
     });
 
     it('never flags a rejection', () => {
-        expect(isGreyBand({ feasible: false, shiftId: 'x', reason: 'weight' })).toBe(
-            false,
-        );
+        expect(
+            isGreyBand({ feasible: false, shiftId: 'x', reason: 'weight' }),
+        ).toBe(false);
     });
 
     it('lets a measured leg rescue an estimate that just missed', () => {
@@ -390,9 +424,10 @@ describe('grey band', () => {
             [legKey(DEPOT, east(5))]: 300,
             [legKey(east(5), DEPOT)]: 300,
         };
-        expect(tryInsert(candidate, target, ctx({ measuredLegs: measured })).feasible).toBe(
-            true,
-        );
+        expect(
+            tryInsert(candidate, target, ctx({ measuredLegs: measured }))
+                .feasible,
+        ).toBe(true);
     });
 });
 
@@ -412,28 +447,138 @@ describe('chooseBest', () => {
 
     it('returns null when nothing is feasible', () => {
         expect(
-            chooseBest([{ feasible: false, shiftId: 'a', reason: 'weight' }], {}),
+            chooseBest(
+                [{ feasible: false, shiftId: 'a', reason: 'weight' }],
+                {},
+            ),
         ).toBeNull();
     });
 
     it('prefers the cheapest detour', () => {
-        const best = chooseBest([success('a', 900), success('b', 120)], { a: 1, b: 1 });
+        const best = chooseBest([success('a', 900), success('b', 120)], {
+            a: 1,
+            b: 1,
+        });
         expect(best?.shiftId).toBe('b');
     });
 
-    it('breaks a cost tie towards the fuller shift, to keep shift count down', () => {
-        const best = chooseBest([success('a', 300), success('b', 300)], { a: 2, b: 9 });
-        expect(best?.shiftId).toBe('b');
-    });
-
-    it('breaks a full tie on id, so the choice is reproducible', () => {
-        const best = chooseBest([success('b', 300), success('a', 300)], { a: 4, b: 4 });
+    // This case used to assert the bug itself: on an equal detour the FULLER
+    // shift won, which is how one van ends up with the whole metro. Same
+    // inputs, opposite expectation, and it is now the penalty rather than the
+    // tie-break that decides it (300 + 480 against 300 + 2160).
+    it('sends an equal-cost package to the emptier shift', () => {
+        const best = chooseBest([success('a', 300), success('b', 300)], {
+            a: 2,
+            b: 9,
+        });
         expect(best?.shiftId).toBe('a');
     });
 
+    // The headline case: an otherwise-tied insertion should prefer whichever
+    // shift has fewer stops.
+    it('prefers a 2-stop shift over a 15-stop one at equal detour cost', () => {
+        const best = chooseBest([success('full', 600), success('light', 600)], {
+            full: 15,
+            light: 2,
+        });
+        expect(best?.shiftId).toBe('light');
+    });
+
+    it('still picks the fuller shift when it is genuinely much closer', () => {
+        // 20 stops and a 100 s detour (4900 s all in) against an empty van that
+        // would drive 5000 s to serve it. The penalty is a preference, not a
+        // rule: sending a van across town to keep the counts level is worse for
+        // everybody.
+        const best = chooseBest(
+            [success('full', 100), success('empty', 5_000)],
+            {
+                full: 20,
+                empty: 0,
+            },
+        );
+        expect(best?.shiftId).toBe('full');
+    });
+
+    it('breaks a full tie on id, so the choice is reproducible', () => {
+        const best = chooseBest([success('b', 300), success('a', 300)], {
+            a: 4,
+            b: 4,
+        });
+        expect(best?.shiftId).toBe('a');
+    });
+
+    // The requirement being asserted is that a missing key counts as an empty
+    // shift, and that is preserved. Only the winner flips, for the same reason
+    // as the case above: 'a' is the one with no stops.
     it('treats a shift with no recorded stop count as empty', () => {
-        const best = chooseBest([success('a', 300), success('b', 300)], { b: 1 });
-        expect(best?.shiftId).toBe('b');
+        const best = chooseBest([success('a', 300), success('b', 300)], {
+            b: 1,
+        });
+        expect(best?.shiftId).toBe('a');
+    });
+
+    describe('with load spreading switched off', () => {
+        it('goes back to comparing raw detour seconds', () => {
+            // The kill switch AssignmentService.loadSpread feeds. A 9-stop shift
+            // 60 s closer wins again, which is what LOAD_SPREAD_ENABLED=false
+            // exists to restore.
+            const best = chooseBest(
+                [success('a', 300), success('b', 240)],
+                { a: 0, b: 9 },
+                {
+                    spreadLoad: false,
+                },
+            );
+            expect(best?.shiftId).toBe('b');
+        });
+
+        it('still breaks an exact tie towards the emptier shift', () => {
+            // The tie-break flip is not gated. It fires only on exact equality of
+            // detour seconds and can never open a shift, so it carries none of
+            // the billing risk the penalty does.
+            const best = chooseBest(
+                [success('a', 300), success('b', 300)],
+                { a: 2, b: 9 },
+                {
+                    spreadLoad: false,
+                },
+            );
+            expect(best?.shiftId).toBe('a');
+        });
+    });
+});
+
+describe('loadPenaltySeconds', () => {
+    it('charges an empty shift nothing', () => {
+        expect(loadPenaltySeconds(0)).toBe(0);
+    });
+
+    it('grows smoothly and without a cliff, one step per stop', () => {
+        const steps = Array.from({ length: MAX_STOPS + 1 }, (_, i) =>
+            loadPenaltySeconds(i),
+        );
+        for (let i = 1; i < steps.length; i++) {
+            expect(steps[i] - steps[i - 1]).toBe(LOAD_SPREAD_SECONDS_PER_STOP);
+        }
+    });
+
+    it('only ever compares as a difference, so level vans cancel out', () => {
+        expect(loadPenaltySeconds(12) - loadPenaltySeconds(12)).toBe(0);
+        expect(loadPenaltySeconds(12) - loadPenaltySeconds(9)).toBe(
+            3 * LOAD_SPREAD_SECONDS_PER_STOP,
+        );
+    });
+
+    it('is worth a quarter of the driving window once a van is saturated', () => {
+        // Which is more than any single detour a 12h day can hold, so a full van
+        // is only ever chosen when it is the only feasible one.
+        expect(loadPenaltySeconds(MAX_STOPS)).toBeGreaterThanOrEqual(
+            SHIFT_WINDOW_SECONDS / 4,
+        );
+    });
+
+    it('treats a negative count as empty rather than paying a bonus', () => {
+        expect(loadPenaltySeconds(-3)).toBe(0);
     });
 });
 
@@ -455,12 +600,17 @@ describe('isEvictable', () => {
 
     it('refuses a package with a deadline binding today', () => {
         expect(
-            isEvictable(stop({ ...base, deadlineMs: DEPARTURE + 3_600_000 }), ctx()),
+            isEvictable(
+                stop({ ...base, deadlineMs: DEPARTURE + 3_600_000 }),
+                ctx(),
+            ),
         ).toBe(false);
     });
 
     it('allows a package whose deadline is beyond the service day', () => {
-        expect(isEvictable(stop({ ...base, deadlineMs: DAY_END + 1 }), ctx())).toBe(true);
+        expect(
+            isEvictable(stop({ ...base, deadlineMs: DAY_END + 1 }), ctx()),
+        ).toBe(true);
     });
 
     it('pins a package that has already been bumped MAX_EVICTIONS times', () => {
@@ -468,19 +618,28 @@ describe('isEvictable', () => {
             isEvictable(stop({ ...base, evictionCount: MAX_EVICTIONS }), ctx()),
         ).toBe(false);
         expect(
-            isEvictable(stop({ ...base, evictionCount: MAX_EVICTIONS - 1 }), ctx()),
+            isEvictable(
+                stop({ ...base, evictionCount: MAX_EVICTIONS - 1 }),
+                ctx(),
+            ),
         ).toBe(true);
     });
 
     it('pins a package that has already waited AGING_HOURS', () => {
         const old = DEPARTURE - AGING_HOURS * 3_600_000 - 1;
-        expect(isEvictable(stop({ ...base, createdAtMs: old }), ctx())).toBe(false);
+        expect(isEvictable(stop({ ...base, createdAtMs: old }), ctx())).toBe(
+            false,
+        );
     });
 });
 
 describe('pickVictims', () => {
     const incoming = () =>
-        pkg({ lon: east(5).lon, deadlineMs: DEPARTURE + 6 * 3_600_000, weightG: 5_000 });
+        pkg({
+            lon: east(5).lon,
+            deadlineMs: DEPARTURE + 6 * 3_600_000,
+            weightG: 5_000,
+        });
 
     it('refuses to evict for a package with no promise of its own', () => {
         const full = shift({
@@ -577,12 +736,31 @@ describe('pickVictims', () => {
         const full = shift({
             capacityG: 12_000,
             stops: [
-                stop({ packageId: 'a', ...east(4), weightG: 4_000, createdAtMs: DEPARTURE - 1 }),
-                stop({ packageId: 'b', ...east(5), weightG: 4_000, createdAtMs: DEPARTURE - 2 }),
-                stop({ packageId: 'c', ...east(6), weightG: 4_000, createdAtMs: DEPARTURE - 3 }),
+                stop({
+                    packageId: 'a',
+                    ...east(4),
+                    weightG: 4_000,
+                    createdAtMs: DEPARTURE - 1,
+                }),
+                stop({
+                    packageId: 'b',
+                    ...east(5),
+                    weightG: 4_000,
+                    createdAtMs: DEPARTURE - 2,
+                }),
+                stop({
+                    packageId: 'c',
+                    ...east(6),
+                    weightG: 4_000,
+                    createdAtMs: DEPARTURE - 3,
+                }),
             ],
         });
-        const plan = pickVictims(full, pkg({ weightG: 8_000, deadlineMs: DEPARTURE + 6 * 3_600_000 }), ctx());
+        const plan = pickVictims(
+            full,
+            pkg({ weightG: 8_000, deadlineMs: DEPARTURE + 6 * 3_600_000 }),
+            ctx(),
+        );
         expect(plan?.victimIds).toEqual(['a', 'b']);
     });
 
@@ -599,7 +777,11 @@ describe('pickVictims', () => {
     });
 
     it('is deterministic when two candidates are identical but for their id', () => {
-        const common = { weightG: 4_000, createdAtMs: DEPARTURE, evictionCount: 0 };
+        const common = {
+            weightG: 4_000,
+            createdAtMs: DEPARTURE,
+            evictionCount: 0,
+        };
         const full = shift({
             capacityG: 10_000,
             stops: [
@@ -607,7 +789,9 @@ describe('pickVictims', () => {
                 stop({ packageId: 'aaa', ...east(6), ...common }),
             ],
         });
-        expect(pickVictims(full, incoming(), ctx())?.victimIds).toEqual(['aaa']);
+        expect(pickVictims(full, incoming(), ctx())?.victimIds).toEqual([
+            'aaa',
+        ]);
     });
 });
 
@@ -646,7 +830,199 @@ describe('scheduleArrivals', () => {
 
     it('honours measured legs, so a rewrite after a removal uses real numbers when it has them', () => {
         const measured = { [legKey(DEPOT, east(4))]: 120 };
-        const arrivals = scheduleArrivals(DEPOT, DEPARTURE, [east(4)], measured);
+        const arrivals = scheduleArrivals(
+            DEPOT,
+            DEPARTURE,
+            [east(4)],
+            measured,
+        );
         expect(arrivals[0]).toBe(DEPARTURE + 120_000);
+    });
+});
+
+/**
+ * One synthetic day, end to end: a warehouse, 30 packages scattered over a
+ * metro, three vans, and nothing but the comparator deciding where each parcel
+ * lands. This is the scenario the load-spreading penalty exists for, and the
+ * source of the before/after numbers quoted on LOAD_SPREAD_SECONDS_PER_STOP.
+ *
+ * Synthetic on purpose: there is no historical delivery data to replay, so the
+ * geography is a deterministic pseudo-random scatter rather than real traffic.
+ * A 10 km metro around a shared depot is the shape the reported symptom came
+ * from, a town dense enough that every van could plausibly serve every package,
+ * which is exactly when a bin-packer has nothing to stop it loading the first
+ * one until it is full.
+ *
+ * Measured here, on this fixture:
+ *
+ *   comparator                       stops per van   straight-line km
+ *   before (fuller shift wins)       30 / 0 / 0      97.0
+ *   tie-break flipped, no penalty    30 / 0 / 0      97.0
+ *   after (penalty at 240 s/stop)    11 / 11 / 8    114.1
+ *
+ * The middle row is the point of the second test below: flipping the tie-break
+ * changes nothing on its own, because it needs an exact equality of float
+ * detour seconds to fire and that essentially never happens.
+ */
+describe('a synthetic metro day', () => {
+    const PACKAGE_COUNT = 30;
+    const SHIFT_COUNT = 3;
+    const METRO_RADIUS_KM = 10;
+    const SEED = 7;
+
+    /**
+     * A fixed linear congruential generator. The scenario has to be the same
+     * scenario every run for the numbers above to mean anything, so this is
+     * seeded rather than fuzzed.
+     */
+    function scatter(seed: number): IncomingPackage[] {
+        let state = seed >>> 0;
+        const next = (): number => {
+            state = (state * 1664525 + 1013904223) >>> 0;
+            return state / 4294967296;
+        };
+        return Array.from({ length: PACKAGE_COUNT }, (_, i) => {
+            const x = (next() * 2 - 1) * METRO_RADIUS_KM;
+            const y = (next() * 2 - 1) * METRO_RADIUS_KM;
+            return pkg({
+                id: `pkg-${String(i).padStart(2, '0')}`,
+                lon: x * DEG_PER_KM,
+                lat: y * DEG_PER_KM,
+                weightG: 2_000,
+            });
+        });
+    }
+
+    type Comparator = (
+        results: readonly InsertionResult[],
+        stopCounts: Readonly<Record<string, number>>,
+    ) => InsertionSuccess | null;
+
+    /**
+     * The comparator exactly as it stood before the load-spreading change:
+     * cheapest detour, then the FULLER shift, then the id. It lives here and
+     * nowhere else, purely to produce the "before" half of the table above.
+     */
+    const legacy: Comparator = (results, stopCounts) => {
+        const feasible = results.filter(
+            (r): r is InsertionSuccess => r.feasible,
+        );
+        if (feasible.length === 0) return null;
+        return feasible.reduce((best, candidate) => {
+            if (candidate.deltaSeconds !== best.deltaSeconds) {
+                return candidate.deltaSeconds < best.deltaSeconds
+                    ? candidate
+                    : best;
+            }
+            const candidateStops = stopCounts[candidate.shiftId] ?? 0;
+            const bestStops = stopCounts[best.shiftId] ?? 0;
+            if (candidateStops !== bestStops) {
+                return candidateStops > bestStops ? candidate : best;
+            }
+            return candidate.shiftId < best.shiftId ? candidate : best;
+        });
+    };
+
+    const spreading: Comparator = (results, counts) =>
+        chooseBest(results, counts, { spreadLoad: true });
+    const penaltyOff: Comparator = (results, counts) =>
+        chooseBest(results, counts, { spreadLoad: false });
+
+    /** Straight-line depot-out-and-back length of a route, in km. */
+    function routeKm(candidate: CandidateShift): number {
+        let metres = 0;
+        let previous = candidate.depot;
+        for (const s of candidate.stops) {
+            metres += haversineMeters(previous, { lon: s.lon, lat: s.lat });
+            previous = { lon: s.lon, lat: s.lat };
+        }
+        return (metres + haversineMeters(previous, candidate.depot)) / 1000;
+    }
+
+    /**
+     * Places the day's packages one at a time against the shifts as they stand,
+     * which is what AssignmentService.assignMany does. Placing them all at once
+     * against the empty fleet would hide the whole effect.
+     */
+    function runDay(choose: Comparator): { counts: number[]; km: number } {
+        const shifts = Array.from({ length: SHIFT_COUNT }, (_, i) =>
+            shift({
+                id: `shift-${String.fromCharCode(97 + i)}`,
+                driverId: `driver-${i}`,
+                vehicleId: `vehicle-${i}`,
+                stops: [],
+            }),
+        );
+
+        for (const parcel of scatter(SEED)) {
+            const stopCounts: Record<string, number> = {};
+            for (const s of shifts) stopCounts[s.id] = s.stops.length;
+
+            const chosen = choose(
+                shifts.map((s) => tryInsert(s, parcel, ctx())),
+                stopCounts,
+            );
+            if (!chosen)
+                throw new Error(`${parcel.id} fitted on no shift at all`);
+
+            const target = shifts.find((s) => s.id === chosen.shiftId);
+            if (!target)
+                throw new Error(`chose an unknown shift ${chosen.shiftId}`);
+            target.stops.splice(
+                chosen.index,
+                0,
+                stop({
+                    packageId: parcel.id,
+                    lon: parcel.lon,
+                    lat: parcel.lat,
+                    weightG: parcel.weightG,
+                }),
+            );
+        }
+
+        return {
+            counts: shifts.map((s) => s.stops.length),
+            km: shifts.reduce((sum, s) => sum + routeKm(s), 0),
+        };
+    }
+
+    it('used to hand one driver the whole metro and leave two vans empty', () => {
+        // The reported symptom, reproduced. Nothing here is infeasible for the
+        // other two vans; the comparator simply never chose them.
+        expect(runDay(legacy).counts).toEqual([30, 0, 0]);
+    });
+
+    it('is not fixed by the flipped tie-break alone', () => {
+        // Necessary but not sufficient: an exact tie on float detour seconds is
+        // rare enough that the tie-break never gets a turn.
+        expect(runDay(penaltyOff).counts).toEqual([30, 0, 0]);
+    });
+
+    it('spreads the same day across all three vans', () => {
+        const { counts } = runDay(spreading);
+
+        expect(counts.reduce((a, b) => a + b, 0)).toBe(PACKAGE_COUNT);
+        // Measured: 11 / 11 / 8. Asserted as a bound rather than an exact
+        // triple so that retuning the estimator does not fail this on a stop
+        // moving between two already-balanced vans.
+        expect(Math.min(...counts)).toBeGreaterThan(0);
+        expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(
+            4,
+        );
+        // The before/after that matters: 30 was one van's whole day.
+        expect(Math.max(...counts)).toBeLessThan(15);
+    });
+
+    it('pays for that balance in total driving distance, and says how much', () => {
+        const before = runDay(legacy);
+        const after = runDay(spreading);
+
+        // Measured: 97.0 km becomes 114.1 km, about 18% further. Three vans
+        // leaving the same depot cover more ground than one, and at this load
+        // that is the honest cost of the change. It is not a fixed ratio: the
+        // same comparator DRIVES LESS at high load, where the bin-packer's one
+        // enormous route wastes more than the extra depot legs cost.
+        expect(after.km).toBeGreaterThan(before.km);
+        expect(after.km / before.km).toBeLessThan(1.3);
     });
 });

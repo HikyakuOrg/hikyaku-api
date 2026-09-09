@@ -82,7 +82,9 @@ export class ConnectController {
     @ApiOrganisationSlugHeader()
     @ApiGuardErrors()
     @ApiOkResponse({ type: ConnectStatusDto })
-    getStatus(@Req() req: Request & { organisationId: string }): Promise<ConnectStatusDto> {
+    getStatus(
+        @Req() req: Request & { organisationId: string },
+    ): Promise<ConnectStatusDto> {
         return this.connect.getStatus(req.organisationId);
     }
 

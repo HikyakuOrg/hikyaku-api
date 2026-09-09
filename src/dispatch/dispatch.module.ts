@@ -5,6 +5,9 @@ import { DatabaseModule } from 'src/database/database.module';
 import { ValhallaModule } from 'src/valhalla/valhalla.module';
 import { VroomModule } from 'src/vroom/vroom.module';
 import { AssignmentService } from './assignment.service';
+import { CoverageController } from './coverage.controller';
+import { CoverageDiagnosticsService } from './coverage-diagnostics.service';
+import { CoverageMetricsService } from './coverage-metrics.service';
 import { PgNotifyService } from './pg-notify.service';
 import { QueueService } from './queue.service';
 import { ReplanWorker } from './replan.worker';
@@ -34,13 +37,24 @@ import { ShiftPlanWriter } from './shift-plan.writer';
         ValhallaModule,
         VroomModule,
     ],
+    // The one HTTP surface dispatch owns: a read-only explanation of a coverage
+    // decision, answered by the same code the engine decides with. Everything
+    // else in this module is driven by package creation or by a NOTIFY.
+    controllers: [CoverageController],
     providers: [
         QueueService,
         PgNotifyService,
         ShiftPlanWriter,
         AssignmentService,
+        CoverageDiagnosticsService,
+        CoverageMetricsService,
         ReplanWorker,
     ],
-    exports: [QueueService, AssignmentService, ShiftPlanWriter, PgNotifyService],
+    exports: [
+        QueueService,
+        AssignmentService,
+        ShiftPlanWriter,
+        PgNotifyService,
+    ],
 })
-export class DispatchModule { }
+export class DispatchModule {}

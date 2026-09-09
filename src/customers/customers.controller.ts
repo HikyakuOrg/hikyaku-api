@@ -31,7 +31,10 @@ import { PermissionGuard } from 'src/auth/guards/permission.guard';
 import { RequirePermission } from 'src/auth/decorators/required-permission.decorator';
 import { CustomersService } from './customers.service';
 import { UpsertCustomerDto } from './dto/upsert-customer.dto';
-import { BatchByDbIdsDto, BatchByStripeIdsDto } from './dto/batch-customers.dto';
+import {
+    BatchByDbIdsDto,
+    BatchByStripeIdsDto,
+} from './dto/batch-customers.dto';
 import { CustomerDto, PaginatedCustomersDto } from './dto/customer.dto';
 
 @ApiTags('customers')
@@ -113,7 +116,11 @@ export class CustomersController {
         @Query('pageSize') pageSize = '10',
         @Req() req: Request & { organisationId: string },
     ): Promise<PaginatedCustomersDto> {
-        return this.customers.listCustomers(req.organisationId, Number(page), Number(pageSize));
+        return this.customers.listCustomers(
+            req.organisationId,
+            Number(page),
+            Number(pageSize),
+        );
     }
 
     @Get('search')
@@ -129,7 +136,8 @@ export class CustomersController {
         name: 'q',
         required: true,
         type: String,
-        description: 'Search term. Needs at least two characters to match anything.',
+        description:
+            'Search term. Needs at least two characters to match anything.',
     })
     @ApiOkResponse({ type: [CustomerDto] })
     search(
@@ -186,6 +194,9 @@ export class CustomersController {
         @Body() dto: BatchByStripeIdsDto,
         @Req() req: Request & { organisationId: string },
     ): Promise<CustomerDto[]> {
-        return this.customers.getCustomersByStripeIds(req.organisationId, dto.stripeIds);
+        return this.customers.getCustomersByStripeIds(
+            req.organisationId,
+            dto.stripeIds,
+        );
     }
 }

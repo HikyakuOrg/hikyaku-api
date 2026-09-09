@@ -3,6 +3,7 @@ import {
     Injectable,
     Logger,
     NotFoundException,
+    Optional,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, QueryRunner } from 'typeorm';
@@ -15,6 +16,7 @@ import {
     DISPATCH_LEAD_S,
     isGreyBand,
     legKey,
+    loadPenaltySeconds,
     pickVictims,
     scheduleArrivals,
     tryInsert,
@@ -26,7 +28,24 @@ import {
     type InsertionSuccess,
     type RouteStop,
 } from './insertion';
-import { endOfLocalDayMs, localHourMs, localShiftDate } from './warehouse-clock';
+import {
+    allDriversAsFloaters,
+    allDriversAsFloatersForPoint,
+    coverageOutcomeFor,
+    coveringDriversForPoint,
+    coveringDriversForPoints,
+    isPlausibleLonLat,
+    serviceAreaMatchingEnabled,
+    type CoverageOutcome,
+    type CoveragePoint,
+    type PointCoverage,
+} from './coverage';
+import { CoverageMetricsService } from './coverage-metrics.service';
+import {
+    endOfLocalDayMs,
+    localHourMs,
+    localShiftDate,
+} from './warehouse-clock';
 
 /** Local hour a shift is assumed to set off when scheduled_start is unset. */
 const DEFAULT_DEPARTURE_HOUR = 8;
@@ -34,11 +53,11 @@ const DEFAULT_DEPARTURE_HOUR = 8;
 /** How many times Phase B may lose the revision race before giving up. */
 const MAX_REVISION_RETRIES = 2;
 
+/** What a dispatcher is told when they pin a package outside a driver's patch. */
+const OUT_OF_AREA_WARNING = "outside this driver's service area";
+
 export type AssignmentOutcomeKind =
-    | 'assigned'
-    | 'assigned_new_shift'
-    | 'deferred'
-    | 'skipped';
+    'assigned' | 'assigned_new_shift' | 'deferred' | 'skipped';
 
 export interface AssignedShiftResult {
     id: string;
@@ -112,6 +131,22 @@ interface StopRow {
     status: string | null;
 }
 
+/** An idle driver/vehicle pair a new shift could be opened for. */
+interface IdlePairRow {
+    driver_id: string;
+    vehicle_id: string;
+    vehicle_gross_limits: string | number | null;
+    ors_vehicle_type: string | null;
+}
+
+/** Just enough of a package to ask who covers where it is going. */
+interface PackagePointRow {
+    id: string;
+    warehouse_id: string | null;
+    lon: number | null;
+    lat: number | null;
+}
+
 /** A loaded candidate plus the bits only the I/O layer needs. */
 interface Candidate {
     shift: CandidateShift;
@@ -120,6 +155,99 @@ interface Candidate {
     solutionId: string | null;
     shiftDate: string;
     scheduledStart: string | null;
+}
+
+/**
+ * A shift that can take the package, and where on its route the package goes.
+ *
+ * The two are kept together because `chooseBest` only hands back an insertion,
+ * and Phase B needs the `Candidate` it came from to write the plan. Phase A now
+ * carries two of these at once (the covering answer and the non-covering
+ * fallback), so "look the shift back up from the winning shiftId" is no longer
+ * something the caller can do without also knowing which subset it came from.
+ */
+interface PlacedInsertion {
+    candidate: Candidate;
+    insertion: InsertionSuccess;
+}
+
+/**
+ * Phase A's answer.
+ *
+ * Either a driver whose service area covers the delivery point has room (step 1
+ * of the fallback order in the class comment), or Phase A hands Phase B what it
+ * needs to work down steps 2 to 5 without going back to the network:
+ *
+ *   - `coveringDriverIds` is every driver whose territory contains the point,
+ *     shift or no shift, which is the allowlist step 2 opens a new shift from.
+ *     Empty means literally nobody covers this address.
+ *   - `nonCovering` is step 3, priced in Phase A so that committing it under the
+ *     lock costs no more than committing a covering insert would have.
+ */
+type AssignmentDecision =
+    | { kind: 'covering_insert'; placement: PlacedInsertion }
+    | {
+          kind: 'fallback';
+          coveringDriverIds: string[];
+          nonCovering: PlacedInsertion | null;
+      };
+
+/**
+ * Everything about one assignment that does not change between revision
+ * retries. Bundled rather than passed as nine positional arguments, because
+ * four of them are strings and a transposed pair would be a silent bug.
+ */
+interface AssignmentPlan {
+    organisationId: string;
+    warehouse: WarehouseRow;
+    shiftDate: string;
+    depot: GeoPoint;
+    pkg: IncomingPackage;
+    ctx: InsertionContext;
+    allowEviction: boolean;
+    /**
+     * Who covers this package's delivery point. Carried here rather than only
+     * inside the `AssignmentDecision` because Phase B has to classify the
+     * driver it actually lands on, at every one of the five steps, and
+     * `explicitDriverIds` versus `floaterDriverIds` is exactly the distinction
+     * `decide()` throws away once it has picked a candidate.
+     */
+    coverage: PointCoverage;
+    /**
+     * What SERVICE_AREA_MATCHING said when `coverage` was resolved.
+     *
+     * Read once per assignment and carried, rather than re-read at write time,
+     * so a flag flipped mid-assignment cannot label a package `disabled` when
+     * a real coverage query decided it, or the reverse.
+     */
+    serviceAreaMatching: boolean;
+}
+
+/**
+ * The scratch state one `decide()` call shares between its two subsets.
+ *
+ * `results` is keyed by shift id and holds the insertion attempt for EVERY
+ * candidate, covering or not, so the two `chooseBest` passes read the same
+ * costings rather than each recomputing its own.
+ */
+interface Costing {
+    results: Map<string, InsertionResult>;
+    stopCounts: Record<string, number>;
+    byId: Map<string, Candidate>;
+    spreadLoad: boolean;
+    /**
+     * How many grey-band routing calls this decision may still make.
+     *
+     * Phase A is allowed at most one Valhalla round trip, and splitting the
+     * candidates into two subsets does not buy a second one: the covering
+     * subset is costed first and spends the budget if its winner lands in the
+     * grey band. A non-covering fallback that then has to be priced keeps the
+     * haversine estimate, which is deliberately pessimistic, so the worst it
+     * can do is decline an insertion that would in fact have fitted. That is
+     * the same degradation an unreachable router already produces, and it is
+     * the safe direction.
+     */
+    greyBandCallsLeft: number;
 }
 
 const deferred = (reason: string): AssignmentOutcome => ({
@@ -151,7 +279,45 @@ const skipped = (reason: string): AssignmentOutcome => ({
  *   shift has not moved since Phase A read it, writes, and commits. It is ~50 ms
  *   and CONTAINS NO NETWORK I/O. That constraint is not stylistic: one Valhalla
  *   call inside the lock turns a 150 ms hold into ~2 s and caps the warehouse at
- *   roughly half a package per second.
+ *   roughly half a package per second. Local queries on the connection it
+ *   already holds are fine and several already happen there.
+ *
+ * ── WHERE A PACKAGE GOES, IN ORDER ──────────────────────────────────────────
+ *
+ * Service areas make this a preference order rather than a single search. A
+ * driver "covers" a point when one of their territories contains it, or when
+ * they have no territories at all and are therefore a floater (see coverage.ts,
+ * which owns that predicate and is the ONLY place it is written down):
+ *
+ *   1. An existing shift whose driver covers the point.          (Phase A)
+ *   2. A NEW shift for an idle driver who covers the point.      (Phase B)
+ *   3. An existing shift whose driver does NOT cover the point.  (priced in A)
+ *   4. A NEW shift for any idle driver.                          (Phase B)
+ *   5. Eviction, then defer.                                     (Phase B)
+ *
+ * Step 2 before step 3 is the expensive choice and it is deliberate: an extra
+ * shift is billed, and it was still judged the better answer than sending a
+ * package to a driver who does not work that area. That is also why step 2
+ * falling through on `allowance_exhausted` matters. Before service areas, an
+ * exhausted allowance deferred the package immediately; now it only means step 2
+ * could not be taken, and steps 3 and 4 still get their turn.
+ *
+ * Steps 3 and 4 are COVERAGE FALLBACKS and each one is logged as such. A package
+ * quietly landing on a driver who does not work its area is exactly the failure
+ * this ordering exists to prevent, so when it happens anyway it must not be
+ * silent. Tier 2 cannot repair it either: the replan worker re-solves one
+ * vehicle's route and can never move a package between drivers.
+ *
+ * Whichever step wins, the answer is recorded on the package's
+ * package_assignment row as a `coverage_outcome` (see `CoverageOutcome`). None
+ * of the inputs to this decision are versioned, so the reason a package went
+ * where it went survives a dispatcher redrawing a territory only because it was
+ * written down at the time.
+ *
+ * ALL OF THIS IS BEHIND SERVICE_AREA_MATCHING, WHICH IS OFF BY DEFAULT. See the
+ * `serviceAreaMatching` getter: off, the territory tables are not read at all
+ * and the order above collapses back into "step 1 for whichever shift is
+ * cheapest", the engine as it behaved before service areas existed.
  *
  * Everything here can decline. A package that reaches no shift is `deferred`,
  * never an error — creation already committed in its own transaction, and a
@@ -166,7 +332,12 @@ export class AssignmentService {
         private readonly valhalla: ValhallaService,
         private readonly queue: QueueService,
         private readonly planWriter: ShiftPlanWriter,
-    ) { }
+        // Optional because telemetry must never be the reason an assignment
+        // cannot run. DispatchModule always provides it; a caller constructing
+        // this service directly (a test, a script) gets an engine that decides
+        // identically and simply counts nothing.
+        @Optional() private readonly metrics?: CoverageMetricsService,
+    ) {}
 
     /**
      * `instant` is now the default, and effectively the only mode.
@@ -181,17 +352,76 @@ export class AssignmentService {
      * PENDING until a dispatcher assigns them by hand.
      */
     get mode(): 'nightly' | 'instant' {
-        return process.env.ASSIGNMENT_MODE === 'nightly' ? 'nightly' : 'instant';
+        return process.env.ASSIGNMENT_MODE === 'nightly'
+            ? 'nightly'
+            : 'instant';
+    }
+
+    /**
+     * Whether chooseBest charges a shift for the stops it already carries.
+     *
+     * Read per call, like `mode`, so it can be flipped without a deploy. On by
+     * default: spreading is the fix for one driver carrying the whole metro
+     * while a colleague's van sits empty. LOAD_SPREAD_ENABLED=false (or 0)
+     * restores the old bin-packer, and that is the lever to pull if an
+     * organisation's shift billing or its total driving distance moves the
+     * wrong way once this is live. Anything else, unset included, means on.
+     *
+     * The penalty itself, and what it costs in both directions, is
+     * LOAD_SPREAD_SECONDS_PER_STOP in insertion.ts.
+     */
+    get loadSpread(): boolean {
+        const flag = process.env.LOAD_SPREAD_ENABLED;
+        return flag !== 'false' && flag !== '0';
+    }
+
+    /**
+     * Whether a package prefers a driver whose territory covers its address.
+     *
+     * OFF BY DEFAULT, unlike `loadSpread`, and that asymmetry is the whole
+     * point. Load spreading changes which of several correct answers is picked;
+     * service area matching changes which drivers are eligible at all, on data
+     * (`service_areas`, `driver_service_area`) that no organisation has
+     * finished drawing yet. Shipping it on would apply a half-drawn map to real
+     * traffic the moment the deploy landed, in every tenant at once. So the
+     * code ships inert and somebody turns it on deliberately, which is the same
+     * two-step `ASSIGNMENT_MODE` was built for and is worth repeating rather
+     * than a pattern to be embarrassed about.
+     *
+     * Read per call, like the other two, so it flips without a deploy.
+     * SERVICE_AREA_MATCHING=on (or `true`, or `1`) turns it on; anything else,
+     * unset included, means off. The spellings are generous in the on direction
+     * only, because the failure mode of a typo is then "the feature stayed
+     * off", which is the safe one.
+     *
+     * OFF MEANS THE TERRITORY TABLES ARE NOT READ, not that their answer is
+     * ignored: see `coverageForPoints`, and `allDriversAsFloaters` in
+     * coverage.ts for why the synthesized answer is "everyone is a floater"
+     * rather than "nobody covers anything".
+     *
+     * PROCESS-WIDE, NOT PER ORGANISATION. Turning it on turns it on for every
+     * tenant this process serves. That is a real limitation of a pilot rollout
+     * and it is a deliberate, documented choice rather than an oversight; see
+     * docs/service-area-rollout.md, which sets out what a genuine per-org flag
+     * would take and why it is a separate change.
+     */
+    get serviceAreaMatching(): boolean {
+        return serviceAreaMatchingEnabled();
     }
 
     /**
      * Assigns one package. Never throws for an ordinary "did not fit" — see the
      * class comment.
+     *
+     * `opts.coverage` lets a caller that has already resolved who covers this
+     * package's delivery point hand the answer in, so a batch does not run one
+     * coverage query per package. Left out, this method resolves its own, which
+     * is what every caller outside `assignMany` does.
      */
     async assign(
         organisationId: string,
         packageId: string,
-        opts: { allowEviction?: boolean } = {},
+        opts: { allowEviction?: boolean; coverage?: PointCoverage } = {},
     ): Promise<AssignmentOutcome> {
         if (this.mode !== 'instant') {
             return skipped('auto_assign_disabled');
@@ -218,16 +448,156 @@ export class AssignmentService {
      * from all choosing the same "cheapest" shift and overflowing it. The saving
      * over N separate HTTP calls is real regardless: one request, one connection,
      * and the replan notification coalesces into a single solve.
+     *
+     * Coverage is the one thing NOT resolved per package here. Territories do
+     * not move while a batch is being placed (only a dispatcher editing them
+     * does that), so the whole batch's points are answered up front and each
+     * `assign` is handed its own slice. Sequential placement plus a per-package
+     * lookup would have turned a batch of 500 into 500 extra queries.
      */
     async assignMany(
         organisationId: string,
         packageIds: string[],
     ): Promise<Map<string, AssignmentOutcome>> {
+        // Inert means inert: the emergency stop is checked before the batch
+        // lookup, not just inside each assign(), so switching Tier 1 off reads
+        // nothing at all.
+        const coverage =
+            this.mode === 'instant'
+                ? await this.batchCoverage(organisationId, packageIds)
+                : new Map<string, PointCoverage>();
+
         const results = new Map<string, AssignmentOutcome>();
         for (const packageId of packageIds) {
-            results.set(packageId, await this.assign(organisationId, packageId));
+            results.set(
+                packageId,
+                await this.assign(organisationId, packageId, {
+                    coverage: coverage.get(packageId),
+                }),
+            );
         }
         return results;
+    }
+
+    /**
+     * Who covers each package in a batch, in one query per warehouse.
+     *
+     * The points are not loaded anywhere else at this level: `assign()` loads
+     * each package for itself, one at a time, and by then it is too late to
+     * batch anything, so this fetches the minimum needed to ask the question.
+     *
+     * Degrades to an empty map on any failure, which simply puts each package
+     * back on resolving its own coverage inside `assign()`: slower, never wrong.
+     * Rows that could not be part of a batch lookup at all (no warehouse, no
+     * geocode, or a coordinate `coveringDriversForPoints` would rightly throw
+     * on) are left out for the same reason. One unusable row must not cost the
+     * other 499 their answer, and `assign()` will still deal with it, loudly and
+     * on its own, when its turn comes.
+     */
+    private async batchCoverage(
+        organisationId: string,
+        packageIds: string[],
+    ): Promise<Map<string, PointCoverage>> {
+        const byPackage = new Map<string, PointCoverage>();
+        if (packageIds.length === 0) return byPackage;
+
+        try {
+            const rows: PackagePointRow[] = await this.dataSource.query(
+                `SELECT p.id,
+                        p.warehouse_id,
+                        ST_X(c.customer_location::geometry) AS lon,
+                        ST_Y(c.customer_location::geometry) AS lat
+                   FROM packages p
+                   LEFT JOIN customer c ON c.id = p.to_customer
+                  WHERE p.id = ANY($1::uuid[]) AND p.organisation_id = $2`,
+                [packageIds, organisationId],
+            );
+
+            const byWarehouse = new Map<
+                string,
+                { id: string; lon: number; lat: number }[]
+            >();
+            for (const row of rows) {
+                if (!row.warehouse_id) continue;
+                if (row.lon == null || row.lat == null) continue;
+                const lon = Number(row.lon);
+                const lat = Number(row.lat);
+                if (!isPlausibleLonLat(lon, lat)) continue;
+                const forWarehouse = byWarehouse.get(row.warehouse_id) ?? [];
+                forWarehouse.push({ id: row.id, lon, lat });
+                byWarehouse.set(row.warehouse_id, forWarehouse);
+            }
+
+            // Grouped rather than assumed: the doc comment says a batch shares a
+            // warehouse, but drivers are scoped per warehouse, so a batch that
+            // does not would otherwise get one warehouse's drivers applied to
+            // another's addresses.
+            for (const [warehouseId, points] of byWarehouse) {
+                const coverage = await this.coverageForPoints(
+                    organisationId,
+                    warehouseId,
+                    points,
+                );
+                coverage.forEach((entry, index) => {
+                    const point = points[index];
+                    if (point) byPackage.set(point.id, entry);
+                });
+            }
+        } catch (err: unknown) {
+            this.logger.warn(
+                `Batch coverage lookup failed, resolving it per package: ${String(err)}`,
+            );
+            return new Map();
+        }
+
+        return byPackage;
+    }
+
+    // ── The kill switch ──────────────────────────────────────────────────────
+
+    /**
+     * Who covers these points, or the synthesized answer when matching is off.
+     *
+     * EVERY coverage lookup the assignment engine makes goes through this
+     * method or its single-point twin, and there are no direct calls to
+     * `coveringDriversForPoints` left in this file. That is what makes the kill
+     * switch a claim anyone can check by grepping rather than a promise: with
+     * SERVICE_AREA_MATCHING off there is no code path from an assignment to
+     * `service_areas` or `driver_service_area` at all.
+     *
+     * The off branch still reads the drivers table, because the synthesized
+     * answer has to name the same drivers the real one would have considered
+     * (step 2 opens a new shift from that list, so an empty one would send
+     * every package that needs a fresh van down the step 4 fallback and log it
+     * as a coverage failure). What it does not do is ask a containment
+     * question, run a GIST scan, or touch a polygon.
+     *
+     * The `/dispatch/coverage` diagnostic endpoint is deliberately NOT gated by
+     * this flag. It explains rather than decides, and being able to check
+     * whether the map is complete enough is exactly what has to happen while
+     * the flag is still off.
+     */
+    private coverageForPoints(
+        organisationId: string,
+        warehouseId: string,
+        points: readonly CoveragePoint[],
+    ): Promise<PointCoverage[]> {
+        const query = { organisationId, warehouseId };
+        return this.serviceAreaMatching
+            ? coveringDriversForPoints(this.dataSource, query, points)
+            : allDriversAsFloaters(this.dataSource, query, points.length);
+    }
+
+    /** The single-point form of `coverageForPoints`. Same rules. */
+    private coverageForPoint(
+        organisationId: string,
+        warehouseId: string,
+        point: CoveragePoint,
+    ): Promise<PointCoverage> {
+        const query = { organisationId, warehouseId };
+        return this.serviceAreaMatching
+            ? coveringDriversForPoint(this.dataSource, query, point)
+            : allDriversAsFloatersForPoint(this.dataSource, query);
     }
 
     /**
@@ -237,6 +607,8 @@ export class AssignmentService {
      * feasibility still runs, and a package that breaks a deadline is reported
      * as a warning rather than refused. The dispatcher is allowed to be wrong on
      * purpose; what they are not allowed to do is be wrong without being told.
+     * Pinning a package outside the shift driver's territory is the same kind of
+     * thing: it is warned about, never refused.
      *
      * Also the persistence half of POST /optimisation/adhoc, which is why it
      * takes a shift that already exists rather than opening one.
@@ -247,8 +619,20 @@ export class AssignmentService {
         packageIds: string[],
     ): Promise<{ verdicts: ShiftPackageVerdict[]; revision: number }> {
         const shift = await this.loadShiftForEdit(organisationId, shiftId);
-        const rows = await this.loadPackagesForShift(organisationId, packageIds);
+        const rows = await this.loadPackagesForShift(
+            organisationId,
+            packageIds,
+        );
         const found = new Map(rows.map((r) => [r.id, r]));
+
+        // Every point in ONE query, and before the lock rather than inside the
+        // loop under it. A pin of 200 packages otherwise takes 200 coverage
+        // queries with the whole warehouse queued behind them.
+        const coveredBy = await this.coverageForPinned(
+            organisationId,
+            shift.warehouseId,
+            rows,
+        );
 
         const runner = this.dataSource.createQueryRunner();
         await runner.connect();
@@ -270,7 +654,11 @@ export class AssignmentService {
             for (const packageId of packageIds) {
                 const row = found.get(packageId);
                 if (!row) {
-                    verdicts.push({ packageId, added: false, warning: 'unknown package' });
+                    verdicts.push({
+                        packageId,
+                        added: false,
+                        warning: 'unknown package',
+                    });
                     continue;
                 }
                 if (row.optimisation_id && row.optimisation_id !== shiftId) {
@@ -302,21 +690,27 @@ export class AssignmentService {
                     evictionCount: incoming.evictionCount,
                     createdAtMs: incoming.createdAtMs,
                 };
+                const outOfArea = this.isOutOfArea(
+                    shift.candidate.shift.driverId,
+                    coveredBy.get(packageId),
+                );
 
                 if (attempt.feasible) {
                     const stops = [...working.stops];
                     stops.splice(attempt.index, 0, newStop);
                     working = { ...working, stops };
-                    verdicts.push({ packageId, added: true, warning: null });
                 } else {
                     // Appended rather than dropped: the dispatcher asked for it.
-                    working = { ...working, stops: [...working.stops, newStop] };
-                    verdicts.push({
-                        packageId,
-                        added: true,
-                        warning: this.warningFor(attempt.reason),
-                    });
+                    working = {
+                        ...working,
+                        stops: [...working.stops, newStop],
+                    };
                 }
+                verdicts.push({
+                    packageId,
+                    added: true,
+                    warning: this.pinWarning(attempt, outOfArea),
+                });
                 added.push(packageId);
             }
 
@@ -418,9 +812,11 @@ export class AssignmentService {
      * again -- the path for a deadline that changed after creation.
      */
     async unassign(organisationId: string, packageId: string): Promise<void> {
-        const rows: { optimisation_id: string | null; status: string | null }[] =
-            await this.dataSource.query(
-                `SELECT p.optimisation_id, latest.enums AS status
+        const rows: {
+            optimisation_id: string | null;
+            status: string | null;
+        }[] = await this.dataSource.query(
+            `SELECT p.optimisation_id, latest.enums AS status
                    FROM packages p
                    LEFT JOIN LATERAL (
                         SELECT ps.enums
@@ -431,8 +827,8 @@ export class AssignmentService {
                          LIMIT 1
                    ) latest ON true
                   WHERE p.id = $1 AND p.organisation_id = $2`,
-                [packageId, organisationId],
-            );
+            [packageId, organisationId],
+        );
         const row = rows[0];
         if (!row) throw new NotFoundException('Package not found.');
 
@@ -444,7 +840,11 @@ export class AssignmentService {
         }
         if (!row.optimisation_id) return;
 
-        await this.removeFromShift(organisationId, row.optimisation_id, packageId);
+        await this.removeFromShift(
+            organisationId,
+            row.optimisation_id,
+            packageId,
+        );
     }
 
     /**
@@ -457,9 +857,13 @@ export class AssignmentService {
         candidate: Candidate,
         reason: string,
     ): Promise<number> {
-        const { routeId, solutionId } = candidate.routeId && candidate.solutionId
-            ? { routeId: candidate.routeId, solutionId: candidate.solutionId }
-            : await this.planWriter.ensureRoute(runner, candidate.shift.id);
+        const { routeId, solutionId } =
+            candidate.routeId && candidate.solutionId
+                ? {
+                      routeId: candidate.routeId,
+                      solutionId: candidate.solutionId,
+                  }
+                : await this.planWriter.ensureRoute(runner, candidate.shift.id);
 
         await this.planWriter.snapshotRevision(
             runner,
@@ -550,7 +954,11 @@ export class AssignmentService {
                 `Shift is ${row.status} and is closed to changes.`,
             );
         }
-        if (!row.warehouse_id || row.depot_lon == null || row.depot_lat == null) {
+        if (
+            !row.warehouse_id ||
+            row.depot_lon == null ||
+            row.depot_lat == null
+        ) {
             throw new ConflictException(
                 'Shift has no warehouse location to plan a route from.',
             );
@@ -575,9 +983,13 @@ export class AssignmentService {
                     departureMs: row.scheduled_start
                         ? new Date(row.scheduled_start).getTime()
                         : Math.max(
-                            now.getTime(),
-                            localHourMs(now, row.timezone, DEFAULT_DEPARTURE_HOUR),
-                        ),
+                              now.getTime(),
+                              localHourMs(
+                                  now,
+                                  row.timezone,
+                                  DEFAULT_DEPARTURE_HOUR,
+                              ),
+                          ),
                     depot,
                     stops: row.route_id ? (stops.get(row.route_id) ?? []) : [],
                 },
@@ -628,12 +1040,98 @@ export class AssignmentService {
         }
     }
 
+    /**
+     * What to tell the dispatcher about one pinned package, or null if there is
+     * nothing to say.
+     *
+     * Both problems can be true at once and both are worth knowing, so they are
+     * joined rather than one shadowing the other. The feasibility warning goes
+     * first: a broken customer promise outranks a driver working outside their
+     * usual patch.
+     */
+    private pinWarning(
+        attempt: InsertionResult,
+        outOfArea: boolean,
+    ): string | null {
+        const warnings: string[] = [];
+        if (!attempt.feasible) warnings.push(this.warningFor(attempt.reason));
+        if (outOfArea) warnings.push(OUT_OF_AREA_WARNING);
+        return warnings.length === 0 ? null : warnings.join('; ');
+    }
+
+    /**
+     * Is this pinned package outside the chosen driver's territory?
+     *
+     * An absent answer means "not known", never "outside": the point had no
+     * usable geocode, or the coverage lookup failed. Reporting an unknown as a
+     * problem would put a scary warning on a pin the dispatcher made on purpose,
+     * which is the one thing this method must not do.
+     */
+    private isOutOfArea(
+        driverId: string | null,
+        covering: readonly string[] | undefined,
+    ): boolean {
+        if (driverId === null || covering === undefined) return false;
+        return !covering.includes(driverId);
+    }
+
+    /**
+     * Who covers each pinned package's delivery point, keyed by package id.
+     *
+     * Never throws. A dispatcher's pin is not refused because a coverage lookup
+     * failed; without an answer there is simply no out-of-area warning to add,
+     * and `isOutOfArea` reads a missing entry that way by construction.
+     *
+     * Goes through `coverageForPoints`, so with SERVICE_AREA_MATCHING off this
+     * reads no territory table either. Every driver comes back a floater, every
+     * pinned package is therefore inside the chosen driver's area, and no
+     * out-of-area warning is produced. That is the correct behaviour for a
+     * switched-off feature: warning a dispatcher about a territory rule that is
+     * not being enforced would be advice they cannot act on.
+     */
+    private async coverageForPinned(
+        organisationId: string,
+        warehouseId: string,
+        rows: readonly PackageRow[],
+    ): Promise<Map<string, string[]>> {
+        const byPackage = new Map<string, string[]>();
+
+        const points: { id: string; lon: number; lat: number }[] = [];
+        for (const row of rows) {
+            if (row.lon == null || row.lat == null) continue;
+            const lon = Number(row.lon);
+            const lat = Number(row.lat);
+            if (!isPlausibleLonLat(lon, lat)) continue;
+            points.push({ id: row.id, lon, lat });
+        }
+        if (points.length === 0) return byPackage;
+
+        try {
+            const coverage = await this.coverageForPoints(
+                organisationId,
+                warehouseId,
+                points,
+            );
+            coverage.forEach((entry, index) => {
+                const point = points[index];
+                if (point) byPackage.set(point.id, entry.driverIds);
+            });
+        } catch (err: unknown) {
+            this.logger.warn(
+                `Coverage lookup for a manual pin failed; pinning without the ` +
+                    `out-of-area check: ${String(err)}`,
+            );
+        }
+
+        return byPackage;
+    }
+
     // ── Tier 1 ───────────────────────────────────────────────────────────────
 
     private async assignInternal(
         organisationId: string,
         packageId: string,
-        opts: { allowEviction?: boolean },
+        opts: { allowEviction?: boolean; coverage?: PointCoverage },
     ): Promise<AssignmentOutcome> {
         const allowEviction = opts.allowEviction ?? true;
 
@@ -650,7 +1148,10 @@ export class AssignmentService {
             return deferred('no_capacity');
         }
 
-        const warehouse = await this.loadWarehouse(organisationId, pkgRow.warehouse_id);
+        const warehouse = await this.loadWarehouse(
+            organisationId,
+            pkgRow.warehouse_id,
+        );
         if (!warehouse || warehouse.lon == null || warehouse.lat == null) {
             return deferred('no_capacity');
         }
@@ -664,6 +1165,42 @@ export class AssignmentService {
         const pkg = this.toIncoming(pkgRow);
         const depot: GeoPoint = { lon: warehouse.lon, lat: warehouse.lat };
 
+        // Resolved ONCE per assignment, deliberately outside the retry loop
+        // below: a lost revision race means the shifts moved, not the address.
+        //
+        // This is Phase A, so one more indexed local query is the right place
+        // for it; what Phase A rations is round trips to Valhalla, not to
+        // Postgres. A failure here propagates and `assign()` turns it into a
+        // deferral, which is the safe direction: carrying on as though nobody
+        // covered the point would send the package to an arbitrary driver and
+        // look exactly like a correct decision afterwards.
+        //
+        // The flag is read alongside it, once, and both travel on the plan. A
+        // batch hands its own precomputed coverage in, and it was resolved
+        // under whatever the flag said then; reading the flag again per package
+        // is close enough that the only disagreement possible is a flip landing
+        // mid-batch, which mislabels a handful of outcome values and changes no
+        // decision.
+        const serviceAreaMatching = this.serviceAreaMatching;
+        const coverage =
+            opts.coverage ??
+            (await this.coverageForPoint(organisationId, warehouse.id, {
+                lon: pkg.lon,
+                lat: pkg.lat,
+            }));
+
+        const plan: AssignmentPlan = {
+            organisationId,
+            warehouse,
+            shiftDate,
+            depot,
+            pkg,
+            ctx,
+            allowEviction,
+            coverage,
+            serviceAreaMatching,
+        };
+
         for (let attempt = 0; attempt <= MAX_REVISION_RETRIES; attempt++) {
             // ── PHASE A: no lock, no writes ──────────────────────────────────
             const candidates = await this.loadCandidates(
@@ -675,23 +1212,21 @@ export class AssignmentService {
                 warehouse.timezone,
             );
 
-            const decision = await this.decide(candidates, pkg, ctx, allowEviction);
+            const decision = await this.decide(candidates, pkg, ctx, coverage);
 
             // ── PHASE B: locked, no network I/O ──────────────────────────────
             const outcome = await this.commitDecision(
-                organisationId,
-                warehouse,
-                shiftDate,
-                depot,
-                pkg,
+                plan,
                 candidates,
                 decision,
-                ctx,
             );
 
             if (outcome !== 'retry') {
                 if (outcome.evictedPackageIds.length > 0) {
-                    await this.reassignVictims(organisationId, outcome.evictedPackageIds);
+                    await this.reassignVictims(
+                        organisationId,
+                        outcome.evictedPackageIds,
+                    );
                 }
                 return outcome;
             }
@@ -705,96 +1240,209 @@ export class AssignmentService {
     }
 
     /**
-     * Phase A's answer: which shift, at which position, and at what cost — or
-     * nothing. Pure decisions come from insertion.ts; the only I/O this method
-     * can do is the single grey-band routing call.
+     * Phase A's answer: which shift, at which position, and at what cost, or
+     * failing that, what Phase B needs to work down the rest of the order.
+     *
+     * Pure decisions come from insertion.ts; the only I/O this method can do is
+     * the single grey-band routing call. Note what it does NOT do any more:
+     * eviction. That is step 5, the true last resort, and computing it here
+     * would put it in front of steps 2 to 4, a package taking someone else's
+     * slot before a free van has even been looked for.
+     *
+     * The candidates are costed once and read twice, as two subsets. Splitting
+     * them AFTER `tryInsert` rather than before is what keeps the pure insertion
+     * layer geography-blind: `chooseBest` is simply called twice and has no idea
+     * a service area exists.
      */
     private async decide(
         candidates: Candidate[],
         pkg: IncomingPackage,
         ctx: InsertionContext,
-        allowEviction: boolean,
-    ): Promise<
-        | { kind: 'insert'; candidate: Candidate; insertion: InsertionSuccess }
-        | { kind: 'evict'; candidate: Candidate; insertion: InsertionSuccess; victimIds: string[] }
-        | { kind: 'none' }
-    > {
-        const stopCounts: Record<string, number> = {};
-        const byId = new Map<string, Candidate>();
+        coverage: PointCoverage,
+    ): Promise<AssignmentDecision> {
+        const costing: Costing = {
+            results: new Map<string, InsertionResult>(),
+            stopCounts: {},
+            byId: new Map<string, Candidate>(),
+            spreadLoad: this.loadSpread,
+            greyBandCallsLeft: 1,
+        };
+
+        const covers = new Set(coverage.driverIds);
+        const covering: Candidate[] = [];
+        const nonCovering: Candidate[] = [];
+
         for (const candidate of candidates) {
-            stopCounts[candidate.shift.id] = candidate.shift.stops.length;
-            byId.set(candidate.shift.id, candidate);
+            costing.stopCounts[candidate.shift.id] =
+                candidate.shift.stops.length;
+            costing.byId.set(candidate.shift.id, candidate);
+            costing.results.set(
+                candidate.shift.id,
+                tryInsert(candidate.shift, pkg, ctx),
+            );
+
+            const driverId = candidate.shift.driverId;
+            if (driverId !== null && covers.has(driverId)) {
+                covering.push(candidate);
+            } else {
+                nonCovering.push(candidate);
+            }
         }
 
-        let results: InsertionResult[] = candidates.map((c) =>
-            tryInsert(c.shift, pkg, ctx),
-        );
+        // ── Step 1 ───────────────────────────────────────────────────────────
+        const best = await this.bestOf(covering, costing, pkg, ctx);
+        if (best) {
+            this.logChoice(pkg, best, costing, candidates.length);
+            return { kind: 'covering_insert', placement: best };
+        }
 
-        // The grey band: the estimate says it fits, but only just. A haversine
-        // guess is not good enough to promise a customer on, so the winner — and
-        // only the winner — is re-checked against the real road network. Still
-        // Phase A, so still outside the lock.
-        let best = chooseBest(results, stopCounts);
-        if (best && isGreyBand(best)) {
-            const candidate = byId.get(best.shiftId);
+        // ── Step 3, priced now, committed later (or not at all) ──────────────
+        // Costing it here is free in the sense that matters: it happens outside
+        // the lock, so if Phase B works its way down to step 3 there is nothing
+        // left to compute under it.
+        const fallback = await this.bestOf(nonCovering, costing, pkg, ctx);
+
+        return {
+            kind: 'fallback',
+            coveringDriverIds: coverage.driverIds,
+            nonCovering: fallback,
+        };
+    }
+
+    /**
+     * The cheapest feasible insertion within one subset of the candidates.
+     *
+     * The grey band: the estimate says it fits, but only just. A haversine guess
+     * is not good enough to promise a customer on, so the winner, and only the
+     * winner, is re-checked against the real road network, and the subset is
+     * then re-scored with the measurement in hand (the re-check can turn the
+     * leader infeasible, at which point a different shift in the same subset
+     * wins). Still Phase A, so still outside the lock, and still at most one
+     * round trip per decision: see `Costing.greyBandCallsLeft`.
+     */
+    private async bestOf(
+        subset: readonly Candidate[],
+        costing: Costing,
+        pkg: IncomingPackage,
+        ctx: InsertionContext,
+    ): Promise<PlacedInsertion | null> {
+        if (subset.length === 0) return null;
+
+        const scores = (): InsertionResult[] =>
+            subset
+                .map((c) => costing.results.get(c.shift.id))
+                .filter((r): r is InsertionResult => r !== undefined);
+
+        let best = chooseBest(scores(), costing.stopCounts, {
+            spreadLoad: costing.spreadLoad,
+        });
+
+        if (best && isGreyBand(best) && costing.greyBandCallsLeft > 0) {
+            const candidate = costing.byId.get(best.shiftId);
             if (candidate) {
-                const measured = await this.measureLegs(candidate, best.order, pkg);
+                costing.greyBandCallsLeft -= 1;
+                const measured = await this.measureLegs(
+                    candidate,
+                    best.order,
+                    pkg,
+                );
                 if (measured) {
-                    const rechecked = tryInsert(candidate.shift, pkg, {
-                        ...ctx,
-                        measuredLegs: measured,
-                    });
-                    results = results.map((r) =>
-                        r.shiftId === best?.shiftId ? rechecked : r,
+                    costing.results.set(
+                        candidate.shift.id,
+                        tryInsert(candidate.shift, pkg, {
+                            ...ctx,
+                            measuredLegs: measured,
+                        }),
                     );
-                    best = chooseBest(results, stopCounts);
+                    best = chooseBest(scores(), costing.stopCounts, {
+                        spreadLoad: costing.spreadLoad,
+                    });
                 }
             }
         }
 
-        if (best) {
-            const candidate = byId.get(best.shiftId);
-            if (candidate) return { kind: 'insert', candidate, insertion: best };
-        }
+        if (!best) return null;
+        const candidate = costing.byId.get(best.shiftId);
+        return candidate ? { candidate, insertion: best } : null;
+    }
 
-        if (!allowEviction) return { kind: 'none' };
+    /**
+     * "Why did this go to the van that was already full?" needs an answer that
+     * does not involve rerunning the algorithm by hand, so both halves of the
+     * winning score are logged, not just the shift that won.
+     */
+    private logChoice(
+        pkg: IncomingPackage,
+        placement: PlacedInsertion,
+        costing: Costing,
+        candidateCount: number,
+    ): void {
+        const { insertion } = placement;
+        const stops = costing.stopCounts[insertion.shiftId] ?? 0;
+        const penalty = costing.spreadLoad ? loadPenaltySeconds(stops) : 0;
+        this.logger.debug(
+            `Package ${pkg.id} chose shift ${insertion.shiftId} (${stops} stop(s) already): ` +
+                `detour ${Math.round(insertion.deltaSeconds)}s + load penalty ${Math.round(penalty)}s ` +
+                `= ${Math.round(insertion.deltaSeconds + penalty)}s, ` +
+                `load spreading ${costing.spreadLoad ? 'on' : 'off'}, ` +
+                `over ${candidateCount} candidate shift(s).`,
+        );
+    }
 
-        // Last resort, and only after opening a new shift has been tried and
-        // failed — see commitDecision, which reaches eviction only on the
-        // no-free-pair path.
-        for (const candidate of candidates) {
-            const plan = pickVictims(candidate.shift, pkg, ctx);
-            if (plan) {
-                return {
-                    kind: 'evict',
-                    candidate,
-                    insertion: plan.insertion,
-                    victimIds: plan.victimIds,
-                };
-            }
-        }
-
-        return { kind: 'none' };
+    /**
+     * Records that a package went to a driver who does not work its area.
+     *
+     * The queryable record of the same fact is
+     * `package_assignment.coverage_outcome`, written by `commitPlacement` for
+     * every step including this one. This log line stays alongside it because
+     * the two answer different questions: the column says how often it happens
+     * and to which packages, this says which driver got it and, the part that
+     * separates a misconfiguration from an ordinary busy day, whether ANY
+     * driver covered that address at all.
+     */
+    private logCoverageFallback(
+        step: 3 | 4,
+        plan: AssignmentPlan,
+        driverId: string | null,
+        coveringDriverIds: readonly string[],
+    ): void {
+        const covered =
+            coveringDriverIds.length === 0
+                ? 'no driver covers that address'
+                : `${coveringDriverIds.length} driver(s) cover that address, ` +
+                  `none of them with room or an idle van`;
+        this.logger.debug(
+            `Coverage fallback (step ${step}): package ${plan.pkg.id} at ` +
+                `warehouse ${plan.warehouse.id} went to driver ` +
+                `${driverId ?? 'unknown'}, who does not cover its delivery ` +
+                `point (${covered}).`,
+        );
     }
 
     /**
      * Phase B. Everything from BEGIN to COMMIT, and nothing that touches the
      * network.
      *
+     * Steps 2 to 5 of the order in the class comment all live here, because all
+     * four need the lock: they either open a shift, take someone else's slot, or
+     * write to a shift whose revision has to be checked first. Step 1 arrives
+     * already decided, and step 3 already priced.
+     *
+     * The whole method is one transaction. Every early return either commits or
+     * rolls back before it leaves, so no path can drop out still holding the
+     * advisory lock.
+     *
      * Returns 'retry' when the chosen shift's revision moved between Phase A's
      * read and the lock being taken — someone else changed the plan we costed,
      * so the answer has to be recomputed rather than written over theirs.
      */
     private async commitDecision(
-        organisationId: string,
-        warehouse: WarehouseRow,
-        shiftDate: string,
-        depot: GeoPoint,
-        pkg: IncomingPackage,
+        plan: AssignmentPlan,
         candidates: Candidate[],
-        decision: Awaited<ReturnType<AssignmentService['decide']>>,
-        ctx: InsertionContext,
+        decision: AssignmentDecision,
     ): Promise<AssignmentOutcome | 'retry'> {
+        const { warehouse, pkg, ctx } = plan;
+
         const runner = this.dataSource.createQueryRunner();
         await runner.connect();
         await runner.startTransaction();
@@ -806,101 +1454,161 @@ export class AssignmentService {
                 `assign:${warehouse.id}`,
             ]);
 
-            let target: Candidate | null = null;
-            let insertion: InsertionSuccess | null = null;
-            let evicted: string[] = [];
-            let outcomeKind: AssignmentOutcomeKind = 'assigned';
-
-            if (decision.kind === 'insert' || decision.kind === 'evict') {
-                const fresh = await this.readRevision(runner, decision.candidate.shift.id);
-                if (!fresh || fresh.revision !== decision.candidate.shift.revision) {
+            // ── STEP 1: an existing shift whose driver covers the point ──────
+            if (decision.kind === 'covering_insert') {
+                if (await this.hasMoved(runner, decision.placement.candidate)) {
                     await runner.rollbackTransaction();
                     return 'retry';
                 }
-                if (fresh.status !== 'planned') {
-                    await runner.rollbackTransaction();
-                    return 'retry';
-                }
-                target = decision.candidate;
-                insertion = decision.insertion;
-                if (decision.kind === 'evict') {
-                    evicted = decision.victimIds;
-                    await this.planWriter.detach(runner, evicted, {
-                        incrementEviction: true,
-                    });
-                    target = {
-                        ...target,
-                        shift: {
-                            ...target.shift,
-                            stops: target.shift.stops.filter(
-                                (s) => !evicted.includes(s.packageId),
-                            ),
-                        },
-                    };
-                }
-            } else {
-                // Nothing fits. Open a new shift before evicting anybody — a
-                // free van is always a better answer than taking someone else's
-                // slot.
-                const opened = await this.openShift(
+                return await this.commitPlacement(
                     runner,
-                    organisationId,
-                    warehouse,
-                    shiftDate,
-                    depot,
-                    new Date(ctx.nowMs),
+                    plan,
+                    decision.placement,
+                    'assigned',
+                    [],
                 );
-                if (opened === 'allowance_exhausted') {
-                    await runner.rollbackTransaction();
-                    return deferred('shift_allowance_exhausted');
-                }
-                if (opened === null) {
-                    await runner.rollbackTransaction();
-                    return deferred(
-                        candidates.length === 0 ? 'no_free_driver_vehicle' : 'no_capacity',
-                    );
-                }
+            }
 
-                const attempt = tryInsert(opened.shift, pkg, ctx);
+            // An exhausted allowance is remembered rather than returned on the
+            // spot. It used to end the assignment, because there was only one
+            // place a shift could be opened; now it only rules out the step that
+            // hit it, and the reason still has to survive to the final deferral
+            // so that "you are out of shifts" does not come back as "no van had
+            // room", which is a different problem with a different fix.
+            let allowanceExhausted = false;
+
+            // ── STEP 2: a NEW shift for an idle driver who covers the point ──
+            const coveringShift = await this.openShift(
+                runner,
+                plan,
+                decision.coveringDriverIds,
+            );
+            if (coveringShift === 'allowance_exhausted') {
+                allowanceExhausted = true;
+            } else if (coveringShift !== null) {
+                const attempt = tryInsert(coveringShift.shift, pkg, ctx);
                 if (!attempt.feasible) {
                     // An empty shift that cannot take one package means the
                     // package cannot be delivered inside a 12h window at all.
+                    // (Strictly, a bigger van at step 4 could still take it on
+                    // weight alone, but openShift already picks the largest
+                    // vehicle it is allowed to, and rolling back is what keeps
+                    // an unusable shift from being opened and billed.)
                     await runner.rollbackTransaction();
                     return deferred('deadline_infeasible');
                 }
-                target = opened;
-                insertion = attempt;
-                outcomeKind = 'assigned_new_shift';
+                const committed = await this.commitPlacement(
+                    runner,
+                    plan,
+                    { candidate: coveringShift, insertion: attempt },
+                    'assigned_new_shift',
+                    [],
+                );
+                // Counted AFTER the commit, not when openShift returned: the
+                // insert can still be rolled back above, and a billing signal
+                // that counts shifts nobody was charged for is worse than none.
+                this.metrics?.recordShiftOpened(plan.organisationId, 2);
+                return committed;
             }
 
-            if (target === null || insertion === null) {
-                await runner.rollbackTransaction();
-                return deferred('no_capacity');
+            // ── STEP 3: an existing shift whose driver does NOT cover it ─────
+            if (decision.nonCovering) {
+                if (
+                    await this.hasMoved(runner, decision.nonCovering.candidate)
+                ) {
+                    await runner.rollbackTransaction();
+                    return 'retry';
+                }
+                this.logCoverageFallback(
+                    3,
+                    plan,
+                    decision.nonCovering.candidate.shift.driverId,
+                    decision.coveringDriverIds,
+                );
+                return await this.commitPlacement(
+                    runner,
+                    plan,
+                    decision.nonCovering,
+                    'assigned',
+                    [],
+                );
             }
 
-            const written = await this.persist(
-                runner,
-                target,
-                pkg,
-                insertion,
-                decision.kind === 'evict' ? 'evict' : 'assign',
+            // ── STEP 4: a NEW shift for any idle driver ──────────────────────
+            const anyShift = await this.openShift(runner, plan);
+            if (anyShift === 'allowance_exhausted') {
+                allowanceExhausted = true;
+            } else if (anyShift !== null) {
+                const attempt = tryInsert(anyShift.shift, pkg, ctx);
+                if (!attempt.feasible) {
+                    await runner.rollbackTransaction();
+                    return deferred('deadline_infeasible');
+                }
+                this.logCoverageFallback(
+                    4,
+                    plan,
+                    anyShift.shift.driverId,
+                    decision.coveringDriverIds,
+                );
+                const committed = await this.commitPlacement(
+                    runner,
+                    plan,
+                    { candidate: anyShift, insertion: attempt },
+                    'assigned_new_shift',
+                    [],
+                );
+                this.metrics?.recordShiftOpened(plan.organisationId, 4);
+                return committed;
+            }
+
+            // ── STEP 5: take somebody else's slot ────────────────────────────
+            // Genuinely last, now that there are two ways to open a shift in
+            // front of it. Costed here rather than in Phase A so that it cannot
+            // drift back up the order, and because it is wasted work on every
+            // assignment that never gets this far. It is pure CPU on the lock,
+            // bounded by MAX_STOPS, and pickVictims returns immediately for a
+            // package with no binding deadline, which is the common case.
+            if (plan.allowEviction) {
+                for (const candidate of candidates) {
+                    const eviction = pickVictims(candidate.shift, pkg, ctx);
+                    if (!eviction) continue;
+
+                    if (await this.hasMoved(runner, candidate)) {
+                        await runner.rollbackTransaction();
+                        return 'retry';
+                    }
+                    await this.planWriter.detach(runner, eviction.victimIds, {
+                        incrementEviction: true,
+                    });
+                    const emptied: Candidate = {
+                        ...candidate,
+                        shift: {
+                            ...candidate.shift,
+                            stops: candidate.shift.stops.filter(
+                                (s) =>
+                                    !eviction.victimIds.includes(s.packageId),
+                            ),
+                        },
+                    };
+                    return await this.commitPlacement(
+                        runner,
+                        plan,
+                        { candidate: emptied, insertion: eviction.insertion },
+                        'assigned',
+                        eviction.victimIds,
+                    );
+                }
+            }
+
+            await runner.rollbackTransaction();
+            if (allowanceExhausted) {
+                return deferred('shift_allowance_exhausted');
+            }
+            return deferred(
+                candidates.length === 0
+                    ? 'no_free_driver_vehicle'
+                    : 'no_capacity',
             );
-
-            await this.queue.enqueueReplan(runner, {
-                kind: 'replan',
-                optimisationId: target.shift.id,
-                warehouseId: warehouse.id,
-                organisationId,
-            });
-
-            await runner.commitTransaction();
-
-            return {
-                outcome: outcomeKind,
-                reason: null,
-                shift: written,
-                evictedPackageIds: evicted,
-            };
         } catch (err: unknown) {
             if (runner.isTransactionActive) await runner.rollbackTransaction();
             throw err;
@@ -909,17 +1617,110 @@ export class AssignmentService {
         }
     }
 
-    /** Writes the plan and returns the shift as the client should see it. */
+    /**
+     * Has the shift Phase A costed changed underneath us?
+     *
+     * Both halves are the same failure: the plan we priced is not the plan on
+     * disk. A different revision means somebody rewrote the route, so our
+     * arrival times are fiction; a status other than 'planned' means the van has
+     * rolled. Either way the answer is recomputed rather than written over
+     * theirs. Takes the row's lock, so the check cannot go stale between here
+     * and the write.
+     */
+    private async hasMoved(
+        runner: QueryRunner,
+        candidate: Candidate,
+    ): Promise<boolean> {
+        const fresh = await this.readRevision(runner, candidate.shift.id);
+        if (!fresh) return true;
+        if (fresh.revision !== candidate.shift.revision) return true;
+        return fresh.status !== 'planned';
+    }
+
+    /**
+     * Writes one chosen placement, queues the replan and commits.
+     *
+     * Shared by all five steps so that "how a decision is persisted" is written
+     * once. What differs between them is only how the placement was arrived at,
+     * which is the caller's business, and whether anybody was bumped to make
+     * room, which is what the eviction snapshot reason keys off.
+     *
+     * The coverage outcome is derived HERE rather than passed in by each step,
+     * for the same reason: it is a fact about the driver the package landed on
+     * and the coverage of its address, both of which this method already holds.
+     * Deriving it once means a sixth step added later records the truth without
+     * its author having to remember to, and it means step 5 (eviction, which
+     * can perfectly well land on a non-covering driver) is classified correctly
+     * even though the fallback LOG line only covers steps 3 and 4.
+     */
+    private async commitPlacement(
+        runner: QueryRunner,
+        plan: AssignmentPlan,
+        placement: PlacedInsertion,
+        outcome: AssignmentOutcomeKind,
+        evictedPackageIds: string[],
+    ): Promise<AssignmentOutcome> {
+        const coverageOutcome = coverageOutcomeFor(
+            plan.serviceAreaMatching,
+            plan.coverage,
+            placement.candidate.shift.driverId,
+        );
+
+        const written = await this.persist(
+            runner,
+            placement.candidate,
+            plan.pkg,
+            placement.insertion,
+            evictedPackageIds.length > 0 ? 'evict' : 'assign',
+            coverageOutcome,
+        );
+
+        await this.queue.enqueueReplan(runner, {
+            kind: 'replan',
+            optimisationId: placement.candidate.shift.id,
+            warehouseId: plan.warehouse.id,
+            organisationId: plan.organisationId,
+        });
+
+        await runner.commitTransaction();
+
+        // After the commit: the counter says what happened, not what was
+        // attempted. Synchronous and self-swallowing by contract, so it cannot
+        // turn a committed assignment into a thrown request.
+        this.metrics?.recordAssignment(plan.organisationId, coverageOutcome);
+
+        return {
+            outcome,
+            reason: null,
+            shift: written,
+            evictedPackageIds,
+        };
+    }
+
+    /**
+     * Writes the plan and returns the shift as the client should see it.
+     *
+     * `coverageOutcome` rides on the ONE stop being placed and on no other, so
+     * the row this assignment creates records its own decision while every
+     * other package already on the route keeps the one it recorded when it was
+     * placed. ShiftPlanWriter coalesces on conflict, which is the other half of
+     * that; see `upsertAssignments` there.
+     */
     private async persist(
         runner: QueryRunner,
         candidate: Candidate,
         pkg: IncomingPackage,
         insertion: InsertionSuccess,
         reason: string,
+        coverageOutcome: CoverageOutcome,
     ): Promise<AssignedShiftResult> {
-        const { routeId, solutionId } = candidate.routeId && candidate.solutionId
-            ? { routeId: candidate.routeId, solutionId: candidate.solutionId }
-            : await this.planWriter.ensureRoute(runner, candidate.shift.id);
+        const { routeId, solutionId } =
+            candidate.routeId && candidate.solutionId
+                ? {
+                      routeId: candidate.routeId,
+                      solutionId: candidate.solutionId,
+                  }
+                : await this.planWriter.ensureRoute(runner, candidate.shift.id);
 
         await this.planWriter.snapshotRevision(
             runner,
@@ -928,7 +1729,9 @@ export class AssignmentService {
             reason,
         );
 
-        const byId = new Map(candidate.shift.stops.map((s) => [s.packageId, s]));
+        const byId = new Map(
+            candidate.shift.stops.map((s) => [s.packageId, s]),
+        );
         const stops: PlanStop[] = insertion.order.map((packageId, i) => {
             const existing = byId.get(packageId);
             return {
@@ -937,6 +1740,7 @@ export class AssignmentService {
                 lat: existing?.lat ?? pkg.lat,
                 arrivalMs: insertion.arrivalsMs[i],
                 weightG: existing?.weightG ?? pkg.weightG,
+                ...(packageId === pkg.id ? { coverageOutcome } : {}),
             };
         });
 
@@ -954,7 +1758,9 @@ export class AssignmentService {
             reason,
         });
 
-        await this.planWriter.claimPackages(runner, candidate.shift.id, [pkg.id]);
+        await this.planWriter.claimPackages(runner, candidate.shift.id, [
+            pkg.id,
+        ]);
 
         return {
             id: candidate.shift.id,
@@ -963,7 +1769,9 @@ export class AssignmentService {
             shiftDate: candidate.shiftDate,
             scheduledStart: candidate.scheduledStart,
             stopIndex: insertion.index,
-            estimatedArrival: new Date(insertion.arrivalsMs[insertion.index]).toISOString(),
+            estimatedArrival: new Date(
+                insertion.arrivalsMs[insertion.index],
+            ).toISOString(),
             // The touch trigger bumped it as part of writePlan's UPDATE.
             revision: candidate.shift.revision + 1,
         };
@@ -978,22 +1786,50 @@ export class AssignmentService {
      * exception aborts the surrounding transaction, taking the advisory lock and
      * everything else with it. Rolling back to the savepoint turns a hard failure
      * into a `deferred` answer with the lock still held.
+     *
+     * STILL A LAST RESORT, ON PURPOSE. Nothing reaches here until no shift that
+     * already exists could take the package. Now that chooseBest
+     * spreads load (LOAD_SPREAD_SECONDS_PER_STOP), the obvious next question is
+     * whether a shift should also be opened PROACTIVELY, once every existing
+     * one is past some target, rather than only once a package cannot be
+     * squeezed in at all. That question is deliberately left open. Opening a
+     * shift is the one billed insert in this path, so the rule can only be
+     * sized against real numbers, how many shifts an organisation opens on a
+     * representative day today versus under the proposed rule, and there is no
+     * historical delivery data available to compute them from. It needs those
+     * numbers and a sign-off, not a default picked here. The trigger condition
+     * below is therefore left unchanged.
+     *
+     * CALLED UP TO TWICE PER TRANSACTION, since service areas made "open a shift
+     * for somebody who covers this address" (step 2) a different question from
+     * "open a shift for anybody" (step 4). `driverIds` is what separates them,
+     * as an allowlist appended to the same idle-pair query rather than a second
+     * copy of it. Both attempts are equally guarded: rolling back to a savepoint
+     * does not destroy it, and re-declaring one of the same name simply shadows
+     * it, so the second attempt's SAVEPOINT/ROLLBACK TO pair behaves exactly as
+     * the first's did.
+     *
+     * @param driverIds restrict to these drivers; omit for any idle driver. An
+     *                  EMPTY array means "nobody covers this address", which no
+     *                  pair can satisfy, so the query is skipped entirely.
      */
     private async openShift(
         runner: QueryRunner,
-        organisationId: string,
-        warehouse: WarehouseRow,
-        shiftDate: string,
-        depot: GeoPoint,
-        now: Date,
+        plan: AssignmentPlan,
+        driverIds?: readonly string[],
     ): Promise<Candidate | null | 'allowance_exhausted'> {
+        const { organisationId, warehouse, shiftDate, depot } = plan;
         const warehouseId = warehouse.id;
-        const pairs: {
-            driver_id: string;
-            vehicle_id: string;
-            vehicle_gross_limits: string | number | null;
-            ors_vehicle_type: string | null;
-        }[] = await runner.query(
+
+        if (driverIds && driverIds.length === 0) return null;
+
+        const restrictToDrivers = driverIds
+            ? 'AND dva.driver_id = ANY($4::uuid[])'
+            : '';
+        const params: unknown[] = [warehouseId, organisationId, shiftDate];
+        if (driverIds) params.push(driverIds);
+
+        const pairs = (await runner.query(
             `SELECT dva.driver_id,
                     dva.vehicle_id,
                     v.vehicle_gross_limits,
@@ -1005,6 +1841,7 @@ export class AssignmentService {
               WHERE v.warehouse_id   = $1
                 AND d.warehouse_id   = $1
                 AND v.organisation_id = $2
+                ${restrictToDrivers}
                 AND NOT EXISTS (
                     SELECT 1 FROM vrp_optimization o
                      WHERE o.shift_date = $3::date
@@ -1013,14 +1850,15 @@ export class AssignmentService {
                 )
               ORDER BY v.vehicle_gross_limits DESC, dva.vehicle_id
               LIMIT 1`,
-            [warehouseId, organisationId, shiftDate],
-        );
+            params,
+        )) as IdlePairRow[];
 
         const pair = pairs[0];
         if (!pair) return null;
 
         // Same default the candidate loader uses, so a package's ETA does not
         // jump depending on whether it landed on a new shift or an existing one.
+        const now = new Date(plan.ctx.nowMs);
         const departureMs = Math.max(
             now.getTime(),
             localHourMs(now, warehouse.timezone, DEFAULT_DEPARTURE_HOUR),
@@ -1029,7 +1867,7 @@ export class AssignmentService {
         await runner.query(`SAVEPOINT open_shift`);
         let shiftId: string;
         try {
-            const rows: { id: string; revision: number }[] = await runner.query(
+            const rows = (await runner.query(
                 `INSERT INTO vrp_optimization
                      (provider, request, response, organisation_id,
                       status, driver_id, vehicle_id, warehouse_id, shift_date)
@@ -1037,14 +1875,16 @@ export class AssignmentService {
                          'planned', $3, $4, $5, $6::date)
                  RETURNING id, revision`,
                 [
-                    JSON.stringify({ _meta: { opened_by: 'instant-assignment' } }),
+                    JSON.stringify({
+                        _meta: { opened_by: 'instant-assignment' },
+                    }),
                     organisationId,
                     pair.driver_id,
                     pair.vehicle_id,
                     warehouseId,
                     shiftDate,
                 ],
-            );
+            )) as { id: string; revision: number }[];
             await runner.query(`RELEASE SAVEPOINT open_shift`);
             shiftId = rows[0].id;
         } catch (err: unknown) {
@@ -1057,7 +1897,10 @@ export class AssignmentService {
             throw err;
         }
 
-        const { routeId, solutionId } = await this.planWriter.ensureRoute(runner, shiftId);
+        const { routeId, solutionId } = await this.planWriter.ensureRoute(
+            runner,
+            shiftId,
+        );
 
         return {
             shift: {
@@ -1198,7 +2041,9 @@ export class AssignmentService {
                     ? new Date(row.scheduled_start).getTime()
                     : defaultDepartureMs,
                 depot,
-                stops: row.route_id ? (stopsByRoute.get(row.route_id) ?? []) : [],
+                stops: row.route_id
+                    ? (stopsByRoute.get(row.route_id) ?? [])
+                    : [],
             },
             profile: row.ors_vehicle_type ?? 'driving-car',
             routeId: row.route_id,
@@ -1217,7 +2062,9 @@ export class AssignmentService {
      * in AllowStatusRevisits, so without the id tiebreak this returns an
      * arbitrary one of a package's statuses the moment it revisits one.
      */
-    private async loadStops(routeIds: string[]): Promise<Map<string, RouteStop[]>> {
+    private async loadStops(
+        routeIds: string[],
+    ): Promise<Map<string, RouteStop[]>> {
         const byRoute = new Map<string, RouteStop[]>();
         if (routeIds.length === 0) return byRoute;
 
@@ -1283,7 +2130,9 @@ export class AssignmentService {
         order: string[],
         pkg: IncomingPackage,
     ): Promise<Record<string, number> | null> {
-        const byId = new Map(candidate.shift.stops.map((s) => [s.packageId, s]));
+        const byId = new Map(
+            candidate.shift.stops.map((s) => [s.packageId, s]),
+        );
         const points: GeoPoint[] = [
             candidate.shift.depot,
             ...order.map((id) => {
@@ -1321,6 +2170,12 @@ export class AssignmentService {
      * disabled for these — a victim must never displace a third package and
      * start a cascade. Anything that still does not fit stays PENDING for the
      * replan worker.
+     *
+     * A victim re-enters through the ordinary front door, so it gets the whole
+     * coverage order applied to it exactly as a new package would: a bumped
+     * parcel lands back inside its own driver's territory if anything there can
+     * take it. That falls out of going through `assign()` rather than being
+     * arranged here, which is precisely why it is worth a test of its own.
      */
     private async reassignVictims(
         organisationId: string,
@@ -1330,7 +2185,10 @@ export class AssignmentService {
             const outcome = await this.assign(organisationId, victimId, {
                 allowEviction: false,
             });
-            if (outcome.outcome === 'deferred' || outcome.outcome === 'skipped') {
+            if (
+                outcome.outcome === 'deferred' ||
+                outcome.outcome === 'skipped'
+            ) {
                 this.logger.log(
                     `Evicted package ${victimId} did not fit elsewhere; left PENDING.`,
                 );
@@ -1342,10 +2200,10 @@ export class AssignmentService {
         runner: QueryRunner,
         shiftId: string,
     ): Promise<{ revision: number; status: string } | null> {
-        const rows: { revision: number; status: string }[] = await runner.query(
+        const rows = (await runner.query(
             `SELECT revision, status FROM vrp_optimization WHERE id = $1 FOR UPDATE`,
             [shiftId],
-        );
+        )) as { revision: number; status: string }[];
         return rows[0] ?? null;
     }
 
@@ -1375,7 +2233,8 @@ export class AssignmentService {
      * every sub-kilo parcel.
      */
     private capacityGrams(grossLimits: string | number | null): number {
-        const kg = typeof grossLimits === 'string' ? Number(grossLimits) : grossLimits;
+        const kg =
+            typeof grossLimits === 'string' ? Number(grossLimits) : grossLimits;
         return (Number.isFinite(kg) && kg ? Number(kg) : 1000) * 1000;
     }
 

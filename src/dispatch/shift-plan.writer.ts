@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { QueryRunner } from 'typeorm';
+import type { CoverageOutcome } from './coverage';
 
 /** One job stop in the order it will be driven. */
 export interface PlanStop {
@@ -10,6 +11,18 @@ export interface PlanStop {
     arrivalMs: number;
     /** Grams. Stored on the step as `load` so the dashboard can show it. */
     weightG: number;
+    /**
+     * How this package's driver related to who covers its address, for the ONE
+     * stop this write is placing. Left undefined for every other stop on the
+     * route, and by every caller that is rewriting a plan rather than making a
+     * placement decision (the replan worker, both hand-edit paths).
+     *
+     * Undefined does not mean "no outcome": the upsert coalesces, so a stop
+     * that arrives without one keeps whatever it recorded when it was placed.
+     * Writing null over it on every replan would erase the only record of a
+     * decision that cannot be recomputed afterwards.
+     */
+    coverageOutcome?: CoverageOutcome;
 }
 
 export interface PlanWrite {
@@ -60,7 +73,7 @@ export class ShiftPlanWriter {
         runner: QueryRunner,
         optimisationId: string,
     ): Promise<{ routeId: string; solutionId: string }> {
-        const existing: { route_id: string; solution_id: string }[] = await runner.query(
+        const existing = (await runner.query(
             `SELECT r.id AS route_id, s.id AS solution_id
                FROM vrp_solution s
                JOIN vrp_route  r ON r.solution_id = s.id
@@ -68,23 +81,26 @@ export class ShiftPlanWriter {
               ORDER BY r.id
               LIMIT 1`,
             [optimisationId],
-        );
+        )) as { route_id: string; solution_id: string }[];
         if (existing[0]) {
-            return { routeId: existing[0].route_id, solutionId: existing[0].solution_id };
+            return {
+                routeId: existing[0].route_id,
+                solutionId: existing[0].solution_id,
+            };
         }
 
-        const solutionRows: { id: string }[] = await runner.query(
+        const solutionRows = (await runner.query(
             `INSERT INTO vrp_solution (optimization_id, routes_count, unassigned_count)
              VALUES ($1, 1, 0)
              RETURNING id`,
             [optimisationId],
-        );
+        )) as { id: string }[];
         const solutionId = solutionRows[0].id;
 
-        const routeRows: { id: string }[] = await runner.query(
+        const routeRows = (await runner.query(
             `INSERT INTO vrp_route (solution_id) VALUES ($1) RETURNING id`,
             [solutionId],
-        );
+        )) as { id: string }[];
         return { routeId: routeRows[0].id, solutionId };
     }
 
@@ -233,7 +249,9 @@ export class ShiftPlanWriter {
         const claimed = (result.records ?? []) as { id: string }[];
 
         if (claimed.length < packageIds.length) {
-            const lost = packageIds.filter((id) => !claimed.some((c) => c.id === id));
+            const lost = packageIds.filter(
+                (id) => !claimed.some((c) => c.id === id),
+            );
             throw new ConflictException(
                 `Package(s) claimed by another shift while this assignment was being planned: ${lost.join(', ')}`,
             );
@@ -259,21 +277,60 @@ export class ShiftPlanWriter {
         );
     }
 
+    /**
+     * Stamps the driver, the vehicle and (for the one stop being placed) the
+     * coverage outcome onto package_assignment.
+     *
+     * ONE STATEMENT, and it stays one statement. This is the write the whole
+     * of Phase B's budget is spent on: every step of the assignment order ends
+     * here, inside the per-warehouse advisory lock, so a second round trip to
+     * record the outcome would be paid by every package at the depot rather
+     * than by the one being placed. The outcome therefore rides along as a
+     * fourth column on the row that was being written anyway.
+     *
+     * The COALESCE in the conflict branch is what makes that safe to share
+     * with callers who have no opinion. `writePlan` rewrites EVERY stop on the
+     * route, not just the new one, so an unqualified
+     * `coverage_outcome = EXCLUDED.coverage_outcome` would blank the recorded
+     * outcome of every other package on the van each time one more was added,
+     * and every replan would blank the lot. Coalescing keeps the value the
+     * placement wrote and lets a caller with nothing to say stay silent.
+     */
     private async upsertAssignments(
         runner: QueryRunner,
         plan: PlanWrite,
     ): Promise<void> {
+        const PARAMS_PER_ROW = 4;
         const values = plan.stops
-            .map((_, i) => `($${i + 1}, $${plan.stops.length + 1}, $${plan.stops.length + 2})`)
+            .map((_, i) => {
+                const b = i * PARAMS_PER_ROW;
+                return `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}::text)`;
+            })
             .join(', ');
 
+        // The driver and vehicle repeat per row rather than being shared
+        // placeholders, because the outcome varies per row and mixing the two
+        // shapes in one VALUES list is how off-by-one placeholder bugs happen.
+        // At the 45-stop ceiling that is 180 parameters, against a protocol
+        // limit of 65535.
+        const params = plan.stops.flatMap((stop) => [
+            stop.packageId,
+            plan.driverId,
+            plan.vehicleId,
+            stop.coverageOutcome ?? null,
+        ]);
+
         await runner.query(
-            `INSERT INTO package_assignment (package_id, driver_id, vehicle_id)
+            `INSERT INTO package_assignment
+                 (package_id, driver_id, vehicle_id, coverage_outcome)
              VALUES ${values}
              ON CONFLICT (package_id)
              DO UPDATE SET driver_id  = EXCLUDED.driver_id,
-                           vehicle_id = EXCLUDED.vehicle_id`,
-            [...plan.stops.map((s) => s.packageId), plan.driverId, plan.vehicleId],
+                           vehicle_id = EXCLUDED.vehicle_id,
+                           coverage_outcome = COALESCE(
+                               EXCLUDED.coverage_outcome,
+                               package_assignment.coverage_outcome)`,
+            params,
         );
     }
 
@@ -283,7 +340,10 @@ export class ShiftPlanWriter {
      * Arrivals are stored as seconds relative to departure, which is the
      * convention every other writer and both clients already read.
      */
-    private async insertSteps(runner: QueryRunner, plan: PlanWrite): Promise<void> {
+    private async insertSteps(
+        runner: QueryRunner,
+        plan: PlanWrite,
+    ): Promise<void> {
         const rows: {
             index: number;
             type: string;
@@ -313,14 +373,25 @@ export class ShiftPlanWriter {
                 packageId: stop.packageId,
                 lon: stop.lon,
                 lat: stop.lat,
-                arrival: Math.max(0, Math.round((stop.arrivalMs - plan.departureMs) / 1000)),
+                arrival: Math.max(
+                    0,
+                    Math.round((stop.arrivalMs - plan.departureMs) / 1000),
+                ),
                 load: [cumulativeLoad],
             });
         });
 
-        const lastArrival = plan.stops.length > 0
-            ? Math.max(0, Math.round((plan.stops[plan.stops.length - 1].arrivalMs - plan.departureMs) / 1000))
-            : 0;
+        const lastArrival =
+            plan.stops.length > 0
+                ? Math.max(
+                      0,
+                      Math.round(
+                          (plan.stops[plan.stops.length - 1].arrivalMs -
+                              plan.departureMs) /
+                              1000,
+                      ),
+                  )
+                : 0;
         rows.push({
             index: plan.stops.length + 1,
             type: 'end',
@@ -387,7 +458,10 @@ export class ShiftPlanWriter {
      * to the customer and writing planner output there is what destroyed
      * deadlines before SplitDeadlineFromEta.
      */
-    private async writeEtas(runner: QueryRunner, stops: PlanStop[]): Promise<void> {
+    private async writeEtas(
+        runner: QueryRunner,
+        stops: PlanStop[],
+    ): Promise<void> {
         const values = stops
             .map((_, i) => `($${i * 2 + 1}::uuid, $${i * 2 + 2}::timestamptz)`)
             .join(', ');

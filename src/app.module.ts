@@ -1,4 +1,3 @@
-
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { SentryModule, SentryGlobalFilter } from '@sentry/nestjs/setup';
@@ -33,47 +32,47 @@ import { VinModule } from './vin/vin.module';
 const sentryEnabled = !!process.env.SENTRY_DSN;
 
 @Module({
-  imports: [
-    ...(sentryEnabled ? [SentryModule.forRoot()] : []),
-    ConfigModule.forRoot({
-      envFilePath: ['.env.local', '.env'],
-    }),
-    SupabaseModule,
-    AuthModule,
-    DispatchModule,
-    // Schema is Supabase-owned: synchronize stays off and migrations are NOT run
-    // on boot (both enforced in dataSourceOptions). autoLoadEntities keeps Nest's
-    // existing per-module entity discovery. See src/database/data-source.ts.
-    TypeOrmModule.forRoot({
-      ...dataSourceOptions,
-      autoLoadEntities: true,
-    }),
-    GeocodeModule,
-    DatabaseModule,
-    UsersModule,
-    StripeModule,
-    PaymentsModule,
-    IssuingModule,
-    MailerModule,
-    InvitationsModule,
-    OrganisationsModule,
-    BillingModule,
-    ConnectModule,
-    CustomersModule,
-    ServicesModule,
-    RoutingModule,
-    OptimisationModule,
-    PackagesModule,
-    ShiftsModule,
-    TzdataModule,
-    HealthModule,
-    VinModule,
-  ],
-  controllers: [],
-  providers: [
-    ...(sentryEnabled
-      ? [{ provide: APP_FILTER, useClass: SentryGlobalFilter }]
-      : []),
-  ],
+    imports: [
+        ...(sentryEnabled ? [SentryModule.forRoot()] : []),
+        ConfigModule.forRoot({
+            envFilePath: ['.env.local', '.env'],
+        }),
+        SupabaseModule,
+        AuthModule,
+        DispatchModule,
+        // Schema is Supabase-owned: synchronize stays off and migrations are NOT run
+        // on boot (both enforced in dataSourceOptions). autoLoadEntities keeps Nest's
+        // existing per-module entity discovery. See src/database/data-source.ts.
+        TypeOrmModule.forRoot({
+            ...dataSourceOptions,
+            autoLoadEntities: true,
+        }),
+        GeocodeModule,
+        DatabaseModule,
+        UsersModule,
+        StripeModule,
+        PaymentsModule,
+        IssuingModule,
+        MailerModule,
+        InvitationsModule,
+        OrganisationsModule,
+        BillingModule,
+        ConnectModule,
+        CustomersModule,
+        ServicesModule,
+        RoutingModule,
+        OptimisationModule,
+        PackagesModule,
+        ShiftsModule,
+        TzdataModule,
+        HealthModule,
+        VinModule,
+    ],
+    controllers: [],
+    providers: [
+        ...(sentryEnabled
+            ? [{ provide: APP_FILTER, useClass: SentryGlobalFilter }]
+            : []),
+    ],
 })
-export class AppModule { }
+export class AppModule {}

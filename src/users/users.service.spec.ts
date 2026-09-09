@@ -132,14 +132,23 @@ describe('UsersService', () => {
     });
 
     /** Invite + phone update both succeed, returning `userId`. */
-    function mockSuccessfulInvite(userId: string, invitedAt: string | null = null) {
+    function mockSuccessfulInvite(
+        userId: string,
+        invitedAt: string | null = null,
+    ) {
         supabase.auth.admin.inviteUserByEmail.mockResolvedValueOnce({
             data: {
-                user: { id: userId, email: 'user@example.com', invited_at: invitedAt },
+                user: {
+                    id: userId,
+                    email: 'user@example.com',
+                    invited_at: invitedAt,
+                },
             },
             error: null,
         });
-        supabase.auth.admin.updateUserById.mockResolvedValueOnce({ error: null });
+        supabase.auth.admin.updateUserById.mockResolvedValueOnce({
+            error: null,
+        });
     }
 
     // ---------------------------------------------------------------------------
@@ -161,7 +170,10 @@ describe('UsersService', () => {
                 service.createUser(
                     {
                         ...VALID_DTO,
-                        user_permission: ['team_members.view', 'team_members.add'],
+                        user_permission: [
+                            'team_members.view',
+                            'team_members.add',
+                        ],
                     },
                     CALLER_ID,
                     ORG_ID,
@@ -192,7 +204,11 @@ describe('UsersService', () => {
         it('throws InternalServerErrorException when phone update fails', async () => {
             supabase.auth.admin.inviteUserByEmail.mockResolvedValueOnce({
                 data: {
-                    user: { id: 'u1', email: 'user@example.com', invited_at: null },
+                    user: {
+                        id: 'u1',
+                        email: 'user@example.com',
+                        invited_at: null,
+                    },
                 },
                 error: null,
             });
@@ -210,7 +226,9 @@ describe('UsersService', () => {
             );
             db.beginTransaction.mockResolvedValueOnce(runner);
             mockSuccessfulInvite('u1');
-            supabase.auth.admin.deleteUser.mockResolvedValueOnce({ error: null });
+            supabase.auth.admin.deleteUser.mockResolvedValueOnce({
+                error: null,
+            });
 
             await expect(
                 service.createUser(VALID_DTO, CALLER_ID, ORG_ID),
@@ -230,7 +248,9 @@ describe('UsersService', () => {
             );
             db.beginTransaction.mockResolvedValueOnce(runner);
             mockSuccessfulInvite('u1');
-            supabase.auth.admin.deleteUser.mockResolvedValueOnce({ error: null });
+            supabase.auth.admin.deleteUser.mockResolvedValueOnce({
+                error: null,
+            });
 
             await expect(
                 service.createUser(VALID_DTO, CALLER_ID, ORG_ID),
@@ -242,7 +262,11 @@ describe('UsersService', () => {
             db.beginTransaction.mockResolvedValueOnce(runner);
             mockSuccessfulInvite('u1', '2026-01-01T00:00:00Z');
 
-            const result = await service.createUser(VALID_DTO, CALLER_ID, ORG_ID);
+            const result = await service.createUser(
+                VALID_DTO,
+                CALLER_ID,
+                ORG_ID,
+            );
 
             expect(result.user_id).toBe('u1');
             expect(result.user_email).toBe('user@example.com');
@@ -296,7 +320,10 @@ describe('UsersService', () => {
 
         it('creates Driver user and inserts driver metadata', async () => {
             const runner = makeRunner();
-            appRoleRepo.findOne.mockResolvedValueOnce({ id: 2, name: 'Driver' });
+            appRoleRepo.findOne.mockResolvedValueOnce({
+                id: 2,
+                name: 'Driver',
+            });
             db.beginTransaction.mockResolvedValueOnce(runner);
             mockSuccessfulInvite('u2');
 
@@ -328,7 +355,9 @@ describe('UsersService', () => {
             appPermissionRepo.findBy.mockResolvedValueOnce([
                 { id: 10, permission: 'packages.view' },
             ]);
-            userPermissionRepo.findBy.mockResolvedValueOnce([{ permissionId: 10 }]);
+            userPermissionRepo.findBy.mockResolvedValueOnce([
+                { permissionId: 10 },
+            ]);
             db.beginTransaction.mockResolvedValueOnce(runner);
             mockSuccessfulInvite('u3');
 
@@ -347,7 +376,9 @@ describe('UsersService', () => {
 
         it('logs error when orphaned auth user cleanup also fails after DB error', async () => {
             const runner = makeRunner(
-                jest.fn().mockRejectedValueOnce(new Error('constraint violation')),
+                jest
+                    .fn()
+                    .mockRejectedValueOnce(new Error('constraint violation')),
             );
             db.beginTransaction.mockResolvedValueOnce(runner);
             mockSuccessfulInvite('u4');
@@ -381,14 +412,18 @@ describe('UsersService', () => {
 
             it('throws ForbiddenException when granting a permission the caller does not hold', async () => {
                 // Caller holds packages.view but not organisation.edit.
-                userPermissionRepo.findBy.mockResolvedValue([{ permissionId: 10 }]);
+                userPermissionRepo.findBy.mockResolvedValue([
+                    { permissionId: 10 },
+                ]);
 
                 await expect(
                     service.createUser(ESCALATING_DTO, CALLER_ID, ORG_ID),
                 ).rejects.toThrow(ForbiddenException);
                 await expect(
                     service.createUser(ESCALATING_DTO, CALLER_ID, ORG_ID),
-                ).rejects.toThrow('You cannot grant permissions you do not hold');
+                ).rejects.toThrow(
+                    'You cannot grant permissions you do not hold',
+                );
             });
 
             it('throws ForbiddenException when the caller holds no permissions at all', async () => {
@@ -400,12 +435,16 @@ describe('UsersService', () => {
             });
 
             it('rejects before inviting, so no auth user is left behind', async () => {
-                userPermissionRepo.findBy.mockResolvedValueOnce([{ permissionId: 10 }]);
+                userPermissionRepo.findBy.mockResolvedValueOnce([
+                    { permissionId: 10 },
+                ]);
 
                 await expect(
                     service.createUser(ESCALATING_DTO, CALLER_ID, ORG_ID),
                 ).rejects.toThrow(ForbiddenException);
-                expect(supabase.auth.admin.inviteUserByEmail).not.toHaveBeenCalled();
+                expect(
+                    supabase.auth.admin.inviteUserByEmail,
+                ).not.toHaveBeenCalled();
                 expect(db.beginTransaction).not.toHaveBeenCalled();
                 expect(supabase.auth.admin.deleteUser).not.toHaveBeenCalled();
             });
@@ -519,7 +558,9 @@ describe('UsersService', () => {
         it('returns deactivated list with empty failed on success', async () => {
             appPermissionRepo.count.mockResolvedValue(5);
             userPermissionRepo.countBy.mockResolvedValue(2);
-            supabase.auth.admin.updateUserById.mockResolvedValue({ error: null });
+            supabase.auth.admin.updateUserById.mockResolvedValue({
+                error: null,
+            });
             supabase.auth.admin.signOut.mockResolvedValue({});
 
             const result = await service.deactivateUsers(
@@ -606,7 +647,9 @@ describe('UsersService', () => {
         const UID = '00000000-0000-0000-0000-000000000001';
 
         it('returns reactivated list with empty failed on success', async () => {
-            supabase.auth.admin.updateUserById.mockResolvedValue({ error: null });
+            supabase.auth.admin.updateUserById.mockResolvedValue({
+                error: null,
+            });
 
             const result = await service.reactivateUsers({ user_ids: [UID] });
 

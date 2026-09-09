@@ -8,7 +8,9 @@ import { QuoteBookingDto } from './quote-booking.dto';
  * carried through to the package created at fulfillment.
  */
 export class PayBookingDto extends QuoteBookingDto {
-    @ApiPropertyOptional({ description: 'Free-text notes shown to the driver.' })
+    @ApiPropertyOptional({
+        description: 'Free-text notes shown to the driver.',
+    })
     @IsOptional()
     @IsString()
     @MaxLength(1000)

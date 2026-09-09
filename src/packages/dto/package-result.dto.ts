@@ -15,7 +15,9 @@ export class PackageDto {
     @ApiProperty({ format: 'date-time' })
     createdAt: string;
 
-    @ApiProperty({ description: 'Generated or client-supplied tracking number.' })
+    @ApiProperty({
+        description: 'Generated or client-supplied tracking number.',
+    })
     trackingNumber: string;
 
     @ApiProperty({ format: 'uuid' })
@@ -44,7 +46,8 @@ export class PackageDto {
     deadlineAt: string | null;
 
     @ApiProperty({
-        description: 'Latest package_timeline status enum, e.g. PENDING, ASSIGNED.',
+        description:
+            'Latest package_timeline status enum, e.g. PENDING, ASSIGNED.',
     })
     status: string;
 }
@@ -63,7 +66,10 @@ export class AssignedShiftDto {
     @ApiProperty({ type: String, format: 'uuid', nullable: true })
     vehicleId: string | null;
 
-    @ApiProperty({ format: 'date', description: 'Warehouse-local service day.' })
+    @ApiProperty({
+        format: 'date',
+        description: 'Warehouse-local service day.',
+    })
     shiftDate: string;
 
     @ApiProperty({ type: String, format: 'date-time', nullable: true })

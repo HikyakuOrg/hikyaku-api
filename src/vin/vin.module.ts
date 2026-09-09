@@ -8,4 +8,4 @@ import { VinService } from './vin.service';
     providers: [VinService, AuthGuard],
     exports: [VinService],
 })
-export class VinModule { }
+export class VinModule {}

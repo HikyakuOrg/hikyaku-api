@@ -37,11 +37,14 @@ export class ShiftDto {
         type: String,
         format: 'uuid',
         nullable: true,
-        description: 'vrp_route.id of the single route, or null while the shift is empty.',
+        description:
+            'vrp_route.id of the single route, or null while the shift is empty.',
     })
     routeId: string | null;
 
-    @ApiProperty({ description: 'Job steps on the route, excluding depot start/end.' })
+    @ApiProperty({
+        description: 'Job steps on the route, excluding depot start/end.',
+    })
     stopCount: number;
 
     @ApiProperty({ description: 'Bumped on every plan rewrite.' })
@@ -60,7 +63,9 @@ export class ShiftVersionDto {
     @ApiProperty({ format: 'uuid' })
     id: string;
 
-    @ApiProperty({ description: 'Compare against the loaded value; differs means replan.' })
+    @ApiProperty({
+        description: 'Compare against the loaded value; differs means replan.',
+    })
     revision: number;
 
     @ApiProperty({ format: 'date-time' })
@@ -78,7 +83,9 @@ export class ShiftPackageOutcomeDto {
     @ApiProperty({ format: 'uuid' })
     packageId: string;
 
-    @ApiProperty({ description: 'False when the package was already claimed elsewhere.' })
+    @ApiProperty({
+        description: 'False when the package was already claimed elsewhere.',
+    })
     added: boolean;
 
     @ApiPropertyOptional({

@@ -1,4 +1,11 @@
-import { Column, CreateDateColumn, Entity, JoinColumn, OneToOne, PrimaryColumn } from 'typeorm';
+import {
+    Column,
+    CreateDateColumn,
+    Entity,
+    JoinColumn,
+    OneToOne,
+    PrimaryColumn,
+} from 'typeorm';
 import { Organisation } from './organisation.entity';
 
 /**
@@ -38,7 +45,11 @@ export class OrganisationSubscription {
      * `get_booking_organisation()`/`get_tracking_details()` to decide whether
      * a company org's `vanity_slug` host currently resolves.
      */
-    @Column({ name: 'has_vanity_url_entitlement', type: 'boolean', default: false })
+    @Column({
+        name: 'has_vanity_url_entitlement',
+        type: 'boolean',
+        default: false,
+    })
     hasVanityUrlEntitlement: boolean;
 
     @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })

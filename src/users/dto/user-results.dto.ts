@@ -111,7 +111,8 @@ export class UpdateUserRoleResultDto {
     user_id: string;
 
     @ApiProperty({
-        description: 'The role now in effect, resolved from the requested name.',
+        description:
+            'The role now in effect, resolved from the requested name.',
         example: 'Driver',
     })
     role: string;

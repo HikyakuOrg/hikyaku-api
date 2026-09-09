@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class SplitDeadlineFromEta1787100200000 implements MigrationInterface {
     name = 'SplitDeadlineFromEta1787100200000';
 

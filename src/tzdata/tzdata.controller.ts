@@ -10,7 +10,7 @@ import { TzdataStatusDto } from './dto/tzdata-status.dto';
 @ApiTags('tzdata')
 @Controller('api/v1/tzdata')
 export class TzdataController {
-    constructor(private readonly tzdataService: TzdataService) { }
+    constructor(private readonly tzdataService: TzdataService) {}
 
     @Get('status')
     @ApiOperation({

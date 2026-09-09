@@ -2,7 +2,10 @@
  * Decodes a Google-encoded polyline into `[lng, lat]` pairs. Valhalla encodes
  * route shapes with 6-digit precision (pass `1e6`), not the usual 5.
  */
-export function decodePolyline(encoded: string, precision = 1e5): [number, number][] {
+export function decodePolyline(
+    encoded: string,
+    precision = 1e5,
+): [number, number][] {
     const points: [number, number][] = [];
     const len = encoded.length;
     let index = 0;

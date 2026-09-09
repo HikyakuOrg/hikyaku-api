@@ -41,7 +41,8 @@ export class IssuingCardDto implements CardDto {
     vehicleId: string | null;
 
     @ApiProperty({
-        description: 'Stripe card id. Duplicates `id`; kept for clarity at call sites.',
+        description:
+            'Stripe card id. Duplicates `id`; kept for clarity at call sites.',
         example: 'ic_1QhX1a2B3c4D5e6',
     })
     stripeCardId: string;
@@ -49,7 +50,8 @@ export class IssuingCardDto implements CardDto {
     @ApiProperty({
         type: String,
         nullable: true,
-        description: 'Last four digits of the PAN. The full number never leaves Stripe.',
+        description:
+            'Last four digits of the PAN. The full number never leaves Stripe.',
         example: '4242',
     })
     last4: string | null;
@@ -85,7 +87,8 @@ export class IssuingCardDto implements CardDto {
         type: String,
         enum: SPENDING_INTERVALS,
         nullable: true,
-        description: 'Window the limit resets over. Null when there is no limit.',
+        description:
+            'Window the limit resets over. Null when there is no limit.',
         example: 'daily',
     })
     spendingInterval: string | null;
@@ -106,7 +109,8 @@ export class IssuingCardDto implements CardDto {
 /** A settled fuel-card transaction. */
 export class IssuingTransactionDto implements TransactionDto {
     @ApiProperty({
-        description: 'Stripe transaction id — the same value as `stripeTransactionId`.',
+        description:
+            'Stripe transaction id — the same value as `stripeTransactionId`.',
         example: 'ipi_1QhX1a2B3c4D5e6',
     })
     id: string;
@@ -114,17 +118,26 @@ export class IssuingTransactionDto implements TransactionDto {
     @ApiProperty({ format: 'uuid' })
     organisationId: string;
 
-    @ApiProperty({ type: String, nullable: true, example: 'ic_1QhX1a2B3c4D5e6' })
+    @ApiProperty({
+        type: String,
+        nullable: true,
+        example: 'ic_1QhX1a2B3c4D5e6',
+    })
     cardId: string | null;
 
-    @ApiProperty({ type: String, nullable: true, example: 'ich_1QhX1a2B3c4D5e6' })
+    @ApiProperty({
+        type: String,
+        nullable: true,
+        example: 'ich_1QhX1a2B3c4D5e6',
+    })
     cardholderId: string | null;
 
     @ApiProperty({
         type: String,
         format: 'uuid',
         nullable: true,
-        description: 'From the card’s Stripe metadata; null if the card has no vehicle.',
+        description:
+            'From the card’s Stripe metadata; null if the card has no vehicle.',
     })
     vehicleId: string | null;
 
@@ -142,13 +155,15 @@ export class IssuingTransactionDto implements TransactionDto {
     @ApiProperty({
         type: String,
         nullable: true,
-        description: 'The authorization this transaction settled, where there was one.',
+        description:
+            'The authorization this transaction settled, where there was one.',
     })
     stripeAuthorizationId: string | null;
 
     @ApiProperty({
         enum: ['capture', 'refund'],
-        description: 'Anything Stripe does not report as a refund is a capture.',
+        description:
+            'Anything Stripe does not report as a refund is a capture.',
         example: 'capture',
     })
     type: string;

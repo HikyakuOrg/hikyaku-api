@@ -1,5 +1,9 @@
 import { NotFoundException } from '@nestjs/common';
-import { ShiftUsageReporter, SHIFT_USAGE_CHANNEL } from './shift-usage.reporter';
+import {
+    ShiftUsageReporter,
+    SHIFT_USAGE_CHANNEL,
+} from './shift-usage.reporter';
+import type { NotifySubscription } from 'src/dispatch/pg-notify.service';
 
 interface State {
     /** Rows the claim UPDATE ... RETURNING hands back. */
@@ -14,12 +18,16 @@ function build(state: State = {}) {
         (sql: string, params: unknown[] = [], structured?: boolean) => {
             log.push({ sql, params });
             if (state.claimError) return Promise.reject(state.claimError);
-            const rows =
-                state.claimed ?? [{ id: '1', organisation_id: 'org-1' }];
+            const rows = state.claimed ?? [
+                { id: '1', organisation_id: 'org-1' },
+            ];
             return Promise.resolve(structured ? { records: rows } : rows);
         },
     );
-    const runner = { query: runnerQuery, release: jest.fn().mockResolvedValue(undefined) };
+    const runner = {
+        query: runnerQuery,
+        release: jest.fn().mockResolvedValue(undefined),
+    };
 
     const query = jest.fn((sql: string, params: unknown[] = []) => {
         log.push({ sql, params });
@@ -27,8 +35,14 @@ function build(state: State = {}) {
     });
     const dataSource = { query, createQueryRunner: jest.fn(() => runner) };
 
-    const notify = { subscribe: jest.fn() };
-    const billing = { reportShiftUsageBatch: jest.fn().mockResolvedValue(undefined) };
+    const notify = {
+        subscribe: jest.fn<void, [NotifySubscription]>(),
+    };
+    const billing = {
+        reportShiftUsageBatch: jest
+            .fn<Promise<void>, [string, number, string]>()
+            .mockResolvedValue(undefined),
+    };
 
     const reporter = new ShiftUsageReporter(
         dataSource as never,
@@ -57,7 +71,8 @@ describe('ShiftUsageReporter', () => {
         const { reporter, notify, billing } = build();
         reporter.onApplicationBootstrap();
 
-        await notify.subscribe.mock.calls[0][0].onWake(['org-1']);
+        const subscription = notify.subscribe.mock.calls[0][0];
+        await subscription.onWake(['org-1']);
         expect(billing.reportShiftUsageBatch).toHaveBeenCalled();
     });
 
@@ -192,14 +207,18 @@ describe('ShiftUsageReporter', () => {
             );
             await reporter.drain();
 
-            expect(log.some((q) => q.sql.includes('reported_at = now()'))).toBe(false);
+            expect(log.some((q) => q.sql.includes('reported_at = now()'))).toBe(
+                false,
+            );
         });
 
         it('releases a failed claim so the next drain retries it', async () => {
             const { reporter, billing, log } = build({
                 claimed: [{ id: '7', organisation_id: 'org-1' }],
             });
-            billing.reportShiftUsageBatch.mockRejectedValue(new Error('stripe down'));
+            billing.reportShiftUsageBatch.mockRejectedValue(
+                new Error('stripe down'),
+            );
             await reporter.drain();
 
             const release = log.find((q) =>
@@ -217,7 +236,9 @@ describe('ShiftUsageReporter', () => {
             });
             billing.reportShiftUsageBatch.mockImplementation((orgId: string) =>
                 orgId === 'org-broken'
-                    ? Promise.reject(new NotFoundException('Organisation not found'))
+                    ? Promise.reject(
+                          new NotFoundException('Organisation not found'),
+                      )
                     : Promise.resolve(),
             );
 

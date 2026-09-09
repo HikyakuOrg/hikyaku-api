@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class AddShopifyCustomerIdAndDedupFallbacks1786344314518 implements MigrationInterface {
     name = 'AddShopifyCustomerIdAndDedupFallbacks1786344314518';
 
@@ -11,7 +10,11 @@ export class AddShopifyCustomerIdAndDedupFallbacks1786344314518 implements Migra
     }
 
     public async up(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(this.read('1786344314518-add_shopify_customer_id_and_dedup_fallbacks.sql'));
+        await queryRunner.query(
+            this.read(
+                '1786344314518-add_shopify_customer_id_and_dedup_fallbacks.sql',
+            ),
+        );
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {

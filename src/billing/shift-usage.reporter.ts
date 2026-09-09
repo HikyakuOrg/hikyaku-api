@@ -56,7 +56,7 @@ export class ShiftUsageReporter implements OnApplicationBootstrap {
         @InjectDataSource() private readonly dataSource: DataSource,
         private readonly notify: PgNotifyService,
         private readonly billing: BillingService,
-    ) { }
+    ) {}
 
     onApplicationBootstrap(): void {
         this.notify.subscribe({
@@ -134,7 +134,9 @@ export class ShiftUsageReporter implements OnApplicationBootstrap {
             );
             return (result.records ?? []) as ClaimedRow[];
         } catch (err: unknown) {
-            this.logger.error(`Could not claim shift usage events: ${String(err)}`);
+            this.logger.error(
+                `Could not claim shift usage events: ${String(err)}`,
+            );
             return [];
         } finally {
             await runner.release();

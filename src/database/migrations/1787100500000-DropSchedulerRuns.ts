@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class DropSchedulerRuns1787100500000 implements MigrationInterface {
     name = 'DropSchedulerRuns1787100500000';
 

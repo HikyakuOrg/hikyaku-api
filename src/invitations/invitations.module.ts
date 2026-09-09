@@ -27,4 +27,4 @@ import { InvitationsService } from './invitations.service';
     controllers: [InvitationsController],
     providers: [InvitationsService, PermissionGuard, Reflector],
 })
-export class InvitationsModule { }
+export class InvitationsModule {}

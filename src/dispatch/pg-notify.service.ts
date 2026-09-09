@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+    Injectable,
+    Logger,
+    OnApplicationBootstrap,
+    OnModuleDestroy,
+} from '@nestjs/common';
 import { Client } from 'pg';
 import { resolvePostgresSsl } from '../database/postgres-ssl';
 
@@ -46,7 +51,9 @@ export interface NotifySubscription {
  * seconds of latency instead of work lost until the next unrelated event.
  */
 @Injectable()
-export class PgNotifyService implements OnApplicationBootstrap, OnModuleDestroy {
+export class PgNotifyService
+    implements OnApplicationBootstrap, OnModuleDestroy
+{
     private readonly logger = new Logger(PgNotifyService.name);
     private readonly subscriptions = new Map<string, NotifySubscription>();
     private readonly buffers = new Map<string, Set<string>>();

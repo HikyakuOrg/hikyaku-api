@@ -17,7 +17,8 @@ import { SUPABASE_CLIENT } from 'src/supabase/supabase.provider';
 import { TokenVerifier } from 'src/auth/token-verifier.service';
 
 const DAY = 24 * 60 * 60 * 1000;
-const future = (days: number) => new Date(Date.now() + days * DAY).toISOString();
+const future = (days: number) =>
+    new Date(Date.now() + days * DAY).toISOString();
 const past = (days: number) => new Date(Date.now() - days * DAY).toISOString();
 
 /**
@@ -89,7 +90,9 @@ describe('PermissionGuard', () => {
         // verify()/verifyFull() resolve to a user, or reject, and it reacts
         // correctly either way.
         tokenVerifier = {
-            verify: jest.fn().mockResolvedValue({ id: 'u1', email: 'u1@example.com' }),
+            verify: jest
+                .fn()
+                .mockResolvedValue({ id: 'u1', email: 'u1@example.com' }),
             verifyFull: jest.fn().mockResolvedValue({
                 id: 'u1',
                 email: 'u1@example.com',
@@ -130,7 +133,9 @@ describe('PermissionGuard', () => {
 
             await guard.canActivate(makeContext());
 
-            expect(tokenVerifier.verifyFull).toHaveBeenCalledWith('Bearer valid');
+            expect(tokenVerifier.verifyFull).toHaveBeenCalledWith(
+                'Bearer valid',
+            );
             expect(tokenVerifier.verify).not.toHaveBeenCalled();
         });
     });
@@ -156,9 +161,9 @@ describe('PermissionGuard', () => {
 
         it('throws ForbiddenException when the caller is not a member', async () => {
             await build({ id: 'org-1', trial_ends_at: null, team_members: [] });
-            await expect(guard.canActivate(makeContext('acme'))).rejects.toThrow(
-                ForbiddenException,
-            );
+            await expect(
+                guard.canActivate(makeContext('acme')),
+            ).rejects.toThrow(ForbiddenException);
         });
     });
 
@@ -169,7 +174,9 @@ describe('PermissionGuard', () => {
                 trial_ends_at: null,
                 team_members: [{ id: 'u1' }],
             });
-            await expect(guard.canActivate(makeContext('acme'))).resolves.toBe(true);
+            await expect(guard.canActivate(makeContext('acme'))).resolves.toBe(
+                true,
+            );
         });
 
         it('returns true when the user has the required permission', async () => {
@@ -182,7 +189,9 @@ describe('PermissionGuard', () => {
                     { app_permission: { permission: 'team_members.add' } },
                 ],
             });
-            await expect(guard.canActivate(makeContext('acme'))).resolves.toBe(true);
+            await expect(guard.canActivate(makeContext('acme'))).resolves.toBe(
+                true,
+            );
         });
 
         it('throws ForbiddenException when the user lacks the required permission', async () => {
@@ -193,9 +202,9 @@ describe('PermissionGuard', () => {
                 team_members: [{ id: 'u1' }],
                 user_permission: [],
             });
-            await expect(guard.canActivate(makeContext('acme'))).rejects.toThrow(
-                ForbiddenException,
-            );
+            await expect(
+                guard.canActivate(makeContext('acme')),
+            ).rejects.toThrow(ForbiddenException);
         });
     });
 
@@ -232,7 +241,9 @@ describe('PermissionGuard', () => {
         // Every company org that predated Stripe billing was backfilled to this
         // sentinel and must never be locked out by it.
         it('allows a grandfathered organisation regardless of any stray deadline', async () => {
-            expect(await statusFor(past(30), 'grandfathered')).toBe(HttpStatus.OK);
+            expect(await statusFor(past(30), 'grandfathered')).toBe(
+                HttpStatus.OK,
+            );
         });
 
         it('answers 402 once a real Stripe subscription is canceled', async () => {
@@ -257,10 +268,14 @@ describe('PermissionGuard', () => {
         // Non-membership must win, so an outsider cannot probe an org's billing
         // state by watching for 402 instead of 403.
         it('still answers 403, not 402, for a non-member of an expired org', async () => {
-            await build({ id: 'org-1', trial_ends_at: past(1), team_members: [] });
-            await expect(guard.canActivate(makeContext('acme'))).rejects.toThrow(
-                ForbiddenException,
-            );
+            await build({
+                id: 'org-1',
+                trial_ends_at: past(1),
+                team_members: [],
+            });
+            await expect(
+                guard.canActivate(makeContext('acme')),
+            ).rejects.toThrow(ForbiddenException);
         });
     });
 });

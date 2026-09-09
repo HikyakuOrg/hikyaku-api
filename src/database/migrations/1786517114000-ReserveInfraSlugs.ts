@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class ReserveInfraSlugs1786517114000 implements MigrationInterface {
     name = 'ReserveInfraSlugs1786517114000';
 
@@ -11,7 +10,9 @@ export class ReserveInfraSlugs1786517114000 implements MigrationInterface {
     }
 
     public async up(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(this.read('1786517114000-reserve_infra_slugs.sql'));
+        await queryRunner.query(
+            this.read('1786517114000-reserve_infra_slugs.sql'),
+        );
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {

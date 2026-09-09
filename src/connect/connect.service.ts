@@ -11,13 +11,20 @@ import { OrganisationStripeAccount } from 'src/organisations/organisation-stripe
 
 type AccountCreateParams = Parameters<StripeClient['accounts']['create']>[0];
 
-const ISSUING_ELIGIBLE_COUNTRIES = ['US', 'GB', 'DE', 'FR', 'IE', 'NL', 'ES', 'IT'];
+const ISSUING_ELIGIBLE_COUNTRIES = [
+    'US',
+    'GB',
+    'DE',
+    'FR',
+    'IE',
+    'NL',
+    'ES',
+    'IT',
+];
 
 /** issuing/funding_instructions isn't a typed SDK resource — call it raw. */
 type BankTransferType =
-    | 'us_bank_transfer'
-    | 'gb_bank_transfer'
-    | 'eu_bank_transfer';
+    'us_bank_transfer' | 'gb_bank_transfer' | 'eu_bank_transfer';
 
 export interface ConnectStatus {
     accountId: string | null;
@@ -165,7 +172,9 @@ export class ConnectService {
                 currency: null,
             };
         }
-        const account = await this.stripe.accounts.retrieve(stripeAccount.stripeAccountId);
+        const account = await this.stripe.accounts.retrieve(
+            stripeAccount.stripeAccountId,
+        );
         return {
             accountId: stripeAccount.stripeAccountId,
             detailsSubmitted: account.details_submitted ?? false,
@@ -190,10 +199,12 @@ export class ConnectService {
                         chargesEnabled: false,
                     };
                 }
-                const account = await this.stripe.accounts.retrieve(stripeAccountId);
+                const account =
+                    await this.stripe.accounts.retrieve(stripeAccountId);
                 return {
                     slug,
-                    cardIssuingStatus: account.capabilities?.card_issuing ?? null,
+                    cardIssuingStatus:
+                        account.capabilities?.card_issuing ?? null,
                     detailsSubmitted: account.details_submitted ?? false,
                     chargesEnabled: account.charges_enabled ?? false,
                 };
@@ -208,7 +219,9 @@ export class ConnectService {
      */
     async getFundingInstructions(organisationId: string): Promise<unknown> {
         const stripe = await this.requireOnboardedAccount(organisationId);
-        const account = await this.stripe.accounts.retrieve(stripe.stripeAccountId as string);
+        const account = await this.stripe.accounts.retrieve(
+            stripe.stripeAccountId,
+        );
         const currency = (account.default_currency ?? 'usd').toLowerCase();
 
         return this.stripe.rawRequest(

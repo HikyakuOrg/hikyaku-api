@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-export class AllowPersonalOwnerDeletePendingOrAssignedPackages1787100800000
-    implements MigrationInterface
-{
+export class AllowPersonalOwnerDeletePendingOrAssignedPackages1787100800000 implements MigrationInterface {
     name = 'AllowPersonalOwnerDeletePendingOrAssignedPackages1787100800000';
 
     private read(file: string): string {

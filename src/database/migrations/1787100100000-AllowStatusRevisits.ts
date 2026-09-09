@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class AllowStatusRevisits1787100100000 implements MigrationInterface {
     name = 'AllowStatusRevisits1787100100000';
 

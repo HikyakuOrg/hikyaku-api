@@ -27,12 +27,17 @@ export class CreateUserDto {
     @IsNotEmpty()
     user_phone_number: string;
 
-    @ApiProperty({ description: 'Role name, must match an existing app_roles.name' })
+    @ApiProperty({
+        description: 'Role name, must match an existing app_roles.name',
+    })
     @IsString()
     @IsNotEmpty()
     user_role: string;
 
-    @ApiPropertyOptional({ type: [String], description: 'Array of app_permission.permission strings' })
+    @ApiPropertyOptional({
+        type: [String],
+        description: 'Array of app_permission.permission strings',
+    })
     @IsArray()
     @IsString({ each: true })
     @IsOptional()

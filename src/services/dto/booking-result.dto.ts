@@ -15,7 +15,8 @@ import type {
 /** One priced line of a quote: the item, how much of it, and what that costs. */
 export class QuoteLineDto implements QuoteLine {
     @ApiProperty({
-        description: 'Stripe product id of the service or add-on this line bills.',
+        description:
+            'Stripe product id of the service or add-on this line bills.',
         example: 'prod_QhX1a2B3c4D5e6',
     })
     id: string;

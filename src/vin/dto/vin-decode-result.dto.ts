@@ -89,7 +89,9 @@ export class CheckDigitResultDto {
     @ApiProperty({ description: 'Actual check digit character from the VIN.' })
     actual: string;
 
-    @ApiPropertyOptional({ description: 'Check digit calculated from the VIN.' })
+    @ApiPropertyOptional({
+        description: 'Check digit calculated from the VIN.',
+    })
     expected?: string;
 
     @ApiProperty()
@@ -177,22 +179,33 @@ export class DecodeErrorDto {
     @ApiProperty()
     message: string;
 
-    @ApiPropertyOptional({ type: [Number], description: 'VIN positions this error covers.' })
+    @ApiPropertyOptional({
+        type: [Number],
+        description: 'VIN positions this error covers.',
+    })
     positions?: number[];
 
     @ApiPropertyOptional()
     details?: string;
 
-    @ApiPropertyOptional({ description: 'Validation errors only: the expected value.' })
+    @ApiPropertyOptional({
+        description: 'Validation errors only: the expected value.',
+    })
     expected?: string;
 
-    @ApiPropertyOptional({ description: 'Validation errors only: the actual value.' })
+    @ApiPropertyOptional({
+        description: 'Validation errors only: the actual value.',
+    })
     actual?: string;
 
-    @ApiPropertyOptional({ description: 'Lookup errors only: the key that was searched for.' })
+    @ApiPropertyOptional({
+        description: 'Lookup errors only: the key that was searched for.',
+    })
     searchKey?: string;
 
-    @ApiPropertyOptional({ description: 'Lookup errors only: what kind of lookup ran.' })
+    @ApiPropertyOptional({
+        description: 'Lookup errors only: what kind of lookup ran.',
+    })
     searchType?: string;
 }
 

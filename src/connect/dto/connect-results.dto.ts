@@ -87,13 +87,17 @@ export class ConnectStatusDto implements ConnectStatus {
 
 /** One entry of GET /api/v1/connect/issuing-statuses — powers the org switcher. */
 export class OrgIssuingStatusDto implements OrgIssuingStatus {
-    @ApiProperty({ description: 'Organisation slug.', example: 'acme-logistics' })
+    @ApiProperty({
+        description: 'Organisation slug.',
+        example: 'acme-logistics',
+    })
     slug: string;
 
     @ApiProperty({
         type: String,
         nullable: true,
-        description: 'As on the status endpoint. Null when the org has no account.',
+        description:
+            'As on the status endpoint. Null when the org has no account.',
         example: 'active',
     })
     cardIssuingStatus: string | null;

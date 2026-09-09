@@ -22,7 +22,7 @@ import { DecodeResult } from '@cardog/corgi';
 @UseGuards(AuthGuard)
 @Controller('api/v1/vin')
 export class VinController {
-    constructor(private readonly vinService: VinService) { }
+    constructor(private readonly vinService: VinService) {}
 
     /**
      * Decode a VIN offline against corgi's bundled NHTSA vPIC snapshot.

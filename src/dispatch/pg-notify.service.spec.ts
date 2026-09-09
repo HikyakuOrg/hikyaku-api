@@ -18,15 +18,15 @@ interface FakeClient extends EventEmitter {
 }
 
 declare global {
-    // eslint-disable-next-line no-var
     var __pgClients: FakeClient[] | undefined;
     /** How many of the next connect() attempts should fail. */
-    // eslint-disable-next-line no-var
+
     var __pgConnectFails: number | undefined;
 }
 
 jest.mock('pg', () => {
-    const { EventEmitter: Emitter } = jest.requireActual<typeof import('events')>('events');
+    const { EventEmitter: Emitter } =
+        jest.requireActual<typeof import('events')>('events');
 
     class Client extends Emitter {
         connect = jest.fn().mockImplementation(() => {
@@ -43,7 +43,7 @@ jest.mock('pg', () => {
         constructor(public readonly config: { connectionString?: string }) {
             super();
             globalThis.__pgClients ??= [];
-            globalThis.__pgClients.push(this as unknown as FakeClient);
+            globalThis.__pgClients.push(this);
         }
 
         notify(channel: string, payload?: string): void {
@@ -85,8 +85,16 @@ describe('PgNotifyService', () => {
     });
 
     it('opens a dedicated client and LISTENs on every registered channel', async () => {
-        service.subscribe({ channel: 'ch_a', debounceMs: 10, onWake: jest.fn() });
-        service.subscribe({ channel: 'ch_b', debounceMs: 10, onWake: jest.fn() });
+        service.subscribe({
+            channel: 'ch_a',
+            debounceMs: 10,
+            onWake: jest.fn(),
+        });
+        service.subscribe({
+            channel: 'ch_b',
+            debounceMs: 10,
+            onWake: jest.fn(),
+        });
         await service.onApplicationBootstrap();
 
         // One client, not a pooled connection — a pool would hand the socket to
@@ -98,7 +106,7 @@ describe('PgNotifyService', () => {
     });
 
     it('drains once on connect, because anything sent while connecting reached nobody', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 3_000, onWake });
         await service.onApplicationBootstrap();
 
@@ -107,7 +115,7 @@ describe('PgNotifyService', () => {
     });
 
     it('coalesces a burst of notifications into a single wake', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 3_000, onWake });
         await service.onApplicationBootstrap();
         onWake.mockClear();
@@ -120,11 +128,15 @@ describe('PgNotifyService', () => {
         jest.advanceTimersByTime(3_000);
         expect(onWake).toHaveBeenCalledTimes(1);
         // 500 notifications naming three shifts is three distinct payloads.
-        expect(onWake.mock.calls[0][0].sort()).toEqual(['shift-0', 'shift-1', 'shift-2']);
+        expect(onWake.mock.calls[0][0].sort()).toEqual([
+            'shift-0',
+            'shift-1',
+            'shift-2',
+        ]);
     });
 
     it('starts a fresh window after one closes', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 1_000, onWake });
         await service.onApplicationBootstrap();
         onWake.mockClear();
@@ -139,7 +151,7 @@ describe('PgNotifyService', () => {
     });
 
     it('ignores a notification on a channel nobody subscribed to', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 1_000, onWake });
         await service.onApplicationBootstrap();
         onWake.mockClear();
@@ -150,7 +162,7 @@ describe('PgNotifyService', () => {
     });
 
     it('re-LISTENs and drains again after the connection drops', async () => {
-        const onWake = jest.fn();
+        const onWake = jest.fn<void, [string[]]>();
         service.subscribe({ channel: 'ch', debounceMs: 1_000, onWake });
         await service.onApplicationBootstrap();
         onWake.mockClear();
@@ -204,13 +216,19 @@ describe('PgNotifyService', () => {
 
     it('LISTENs immediately for a channel subscribed after connecting', async () => {
         await service.onApplicationBootstrap();
-        service.subscribe({ channel: 'late', debounceMs: 10, onWake: jest.fn() });
+        service.subscribe({
+            channel: 'late',
+            debounceMs: 10,
+            onWake: jest.fn(),
+        });
         await Promise.resolve();
         expect(client().query).toHaveBeenCalledWith('LISTEN "late"');
     });
 
     it('survives a handler that throws', async () => {
-        const onWake = jest.fn().mockRejectedValue(new Error('consumer blew up'));
+        const onWake = jest
+            .fn()
+            .mockRejectedValue(new Error('consumer blew up'));
         service.subscribe({ channel: 'ch', debounceMs: 100, onWake });
         await service.onApplicationBootstrap();
 

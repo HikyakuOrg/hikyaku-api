@@ -1,5 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsNotEmpty, IsNumber, IsString, MaxLength, Min } from 'class-validator';
+import {
+    IsIn,
+    IsNotEmpty,
+    IsNumber,
+    IsString,
+    MaxLength,
+    Min,
+} from 'class-validator';
 import { PRICING_UNITS } from '../pricing';
 import type { PricingUnit } from '../pricing';
 
@@ -14,7 +21,9 @@ export class CreateAddonDto {
     @MaxLength(200)
     name: string;
 
-    @ApiProperty({ description: 'Per-unit rate in major units (e.g. dollars).' })
+    @ApiProperty({
+        description: 'Per-unit rate in major units (e.g. dollars).',
+    })
     @IsNumber()
     @Min(0)
     amountMajor: number;

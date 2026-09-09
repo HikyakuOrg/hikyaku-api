@@ -6,4 +6,4 @@ import { TzdataController } from './tzdata.controller';
     controllers: [TzdataController],
     providers: [TzdataService],
 })
-export class TzdataModule { }
+export class TzdataModule {}

@@ -23,7 +23,8 @@ export class CreateInvitationResultDto implements CreateInvitationResult {
 
     @ApiProperty({
         format: 'email',
-        description: 'Lower-cased — compare case-insensitively against the request.',
+        description:
+            'Lower-cased — compare case-insensitively against the request.',
     })
     email: string;
 

@@ -25,7 +25,11 @@ export class Payment {
     @Column({ name: 'package_id', type: 'uuid', nullable: true })
     packageId: string | null;
 
-    @Column({ name: 'amount_minor', type: 'bigint', transformer: bigintAsNumber })
+    @Column({
+        name: 'amount_minor',
+        type: 'bigint',
+        transformer: bigintAsNumber,
+    })
     amountMinor: number;
 
     @Column({ type: 'text' })
@@ -37,7 +41,11 @@ export class Payment {
     @Column({ name: 'organisation_id', type: 'uuid', nullable: true })
     organisationId: string | null;
 
-    @Column({ name: 'stripe_checkout_session_id', type: 'text', nullable: true })
+    @Column({
+        name: 'stripe_checkout_session_id',
+        type: 'text',
+        nullable: true,
+    })
     stripeCheckoutSessionId: string | null;
 
     @Column({ name: 'stripe_payment_intent_id', type: 'text', nullable: true })

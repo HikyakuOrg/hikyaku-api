@@ -26,8 +26,20 @@ function mockDataSource(rows: {
 }
 
 /** A valid, unclaimed package row sitting at the requested warehouse. */
-function pkg(id: string, lon: number, lat: number, over: Record<string, unknown> = {}) {
-    return { id, warehouse_id: 'wh-1', optimisation_id: null, lon, lat, ...over };
+function pkg(
+    id: string,
+    lon: number,
+    lat: number,
+    over: Record<string, unknown> = {},
+) {
+    return {
+        id,
+        warehouse_id: 'wh-1',
+        optimisation_id: null,
+        lon,
+        lat,
+        ...over,
+    };
 }
 
 const baseDto: AdhocOptimisationDto = {
@@ -50,7 +62,7 @@ describe('OptimisationService.runAdhoc', () => {
                 routeId: 'route-1',
                 status: 'planned',
             }),
-        } as never;
+        };
         assignment = {
             assignToShift: jest.fn().mockResolvedValue({
                 verdicts: [
@@ -59,7 +71,7 @@ describe('OptimisationService.runAdhoc', () => {
                 ],
                 revision: 2,
             }),
-        } as never;
+        };
     });
 
     function makeService(dataSource: DataSource) {
@@ -125,7 +137,11 @@ describe('OptimisationService.runAdhoc', () => {
         assignment.assignToShift.mockResolvedValue({
             verdicts: [
                 { packageId: 'pkg-a', added: true, warning: null },
-                { packageId: 'pkg-b', added: false, warning: 'recipient has no geocode' },
+                {
+                    packageId: 'pkg-b',
+                    added: false,
+                    warning: 'recipient has no geocode',
+                },
             ],
             revision: 2,
         });
@@ -136,9 +152,9 @@ describe('OptimisationService.runAdhoc', () => {
 
     it('rejects when the warehouse is not in the org', async () => {
         const ds = mockDataSource({ warehouse: [] });
-        await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toBeInstanceOf(
-            BadRequestException,
-        );
+        await expect(
+            makeService(ds).runAdhoc(ORG, baseDto),
+        ).rejects.toBeInstanceOf(BadRequestException);
         expect(shifts.create).not.toHaveBeenCalled();
     });
 
@@ -168,7 +184,9 @@ describe('OptimisationService.runAdhoc', () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2, timezone: 'UTC' }],
             driver: [{ warehouse_id: 'depot-1' }],
-            vehicle: [{ warehouse_id: 'depot-2', ors_vehicle_type: 'driving-car' }],
+            vehicle: [
+                { warehouse_id: 'depot-2', ors_vehicle_type: 'driving-car' },
+            ],
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
             /same warehouse/,
@@ -204,7 +222,10 @@ describe('OptimisationService.runAdhoc', () => {
     it('rejects a package whose recipient has no location', async () => {
         const ds = mockDataSource({
             warehouse: [{ lon: 1, lat: 2, timezone: 'UTC' }],
-            packages: [pkg('pkg-a', 10, 20), pkg('pkg-b', null as never, null as never)],
+            packages: [
+                pkg('pkg-a', 10, 20),
+                pkg('pkg-b', null as never, null as never),
+            ],
         });
         await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toThrow(
             /no location: pkg-b/,
@@ -220,7 +241,9 @@ describe('OptimisationService.runAdhoc', () => {
                 pkg('pkg-b', 30, 40, { optimisation_id: 'opt-old' }),
             ],
         });
-        const err = await makeService(ds).runAdhoc(ORG, baseDto).catch((e: unknown) => e);
+        const err = await makeService(ds)
+            .runAdhoc(ORG, baseDto)
+            .catch((e: unknown) => e);
         expect(err).toBeInstanceOf(ConflictException);
         expect((err as Error).message).toMatch(/pkg-b/);
         expect(shifts.create).not.toHaveBeenCalled();
@@ -241,9 +264,9 @@ describe('OptimisationService.runAdhoc', () => {
             warehouse: [{ lon: 1, lat: 2, timezone: 'UTC' }],
             packages: [pkg('pkg-b', 30, 40, { optimisation_id: 'opt-old' })], // pkg-a unknown
         });
-        await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toBeInstanceOf(
-            BadRequestException,
-        );
+        await expect(
+            makeService(ds).runAdhoc(ORG, baseDto),
+        ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('dedupes repeated package ids into a single job', async () => {
@@ -265,11 +288,13 @@ describe('OptimisationService.runAdhoc', () => {
             warehouse: [{ lon: 1, lat: 2, timezone: 'UTC' }],
             packages: [pkg('pkg-a', 10, 20), pkg('pkg-b', 30, 40)],
         });
-        shifts.create.mockRejectedValue(new ConflictException('already has a shift'));
-
-        await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toBeInstanceOf(
-            ConflictException,
+        shifts.create.mockRejectedValue(
+            new ConflictException('already has a shift'),
         );
+
+        await expect(
+            makeService(ds).runAdhoc(ORG, baseDto),
+        ).rejects.toBeInstanceOf(ConflictException);
         expect(assignment.assignToShift).not.toHaveBeenCalled();
     });
 
@@ -279,9 +304,9 @@ describe('OptimisationService.runAdhoc', () => {
             packages: [pkg('pkg-a', 10, 20)],
         });
 
-        await expect(makeService(ds).runAdhoc(ORG, baseDto)).rejects.toBeInstanceOf(
-            BadRequestException,
-        );
+        await expect(
+            makeService(ds).runAdhoc(ORG, baseDto),
+        ).rejects.toBeInstanceOf(BadRequestException);
         expect(shifts.create).not.toHaveBeenCalled();
     });
 });
@@ -294,17 +319,26 @@ describe('OptimisationService.triggerRun', () => {
      * hands the callback an entity manager whose `query` answers by SQL
      * fragment and records the sequence.
      */
-    function build(state: { warehouse?: unknown[]; recent?: unknown[]; shifts?: unknown[] } = {}) {
+    function build(
+        state: {
+            warehouse?: unknown[];
+            recent?: unknown[];
+            shifts?: unknown[];
+        } = {},
+    ) {
         const log: { sql: string; params: unknown[] }[] = [];
 
         const emQuery = jest.fn((sql: string, params: unknown[] = []) => {
             log.push({ sql, params });
-            if (sql.includes('FROM optimisation_run')) return Promise.resolve(state.recent ?? []);
+            if (sql.includes('FROM optimisation_run'))
+                return Promise.resolve(state.recent ?? []);
             if (sql.includes('INSERT INTO optimisation_run')) {
                 return Promise.resolve([{ id: 'run-1' }]);
             }
             if (sql.includes('FROM vrp_optimization')) {
-                return Promise.resolve(state.shifts ?? [{ id: 'shift-1' }, { id: 'shift-2' }]);
+                return Promise.resolve(
+                    state.shifts ?? [{ id: 'shift-1' }, { id: 'shift-2' }],
+                );
             }
             return Promise.resolve([]);
         });
@@ -319,7 +353,9 @@ describe('OptimisationService.triggerRun', () => {
 
         const dataSource = {
             query,
-            transaction: jest.fn((cb: (em: unknown) => unknown) => cb({ query: emQuery })),
+            transaction: jest.fn((cb: (em: unknown) => unknown) =>
+                cb({ query: emQuery }),
+            ),
         } as unknown as DataSource;
 
         const service = new OptimisationService(
@@ -342,8 +378,12 @@ describe('OptimisationService.triggerRun', () => {
         const { service, log } = build();
         await service.triggerRun(ORG, 'user-1', { warehouseId: 'wh-1' });
 
-        const lock = log.findIndex((q) => q.sql.includes('pg_advisory_xact_lock'));
-        const check = log.findIndex((q) => q.sql.includes('FROM optimisation_run'));
+        const lock = log.findIndex((q) =>
+            q.sql.includes('pg_advisory_xact_lock'),
+        );
+        const check = log.findIndex((q) =>
+            q.sql.includes('FROM optimisation_run'),
+        );
         expect(lock).toBeGreaterThan(-1);
         expect(check).toBeGreaterThan(lock);
     });
@@ -369,7 +409,9 @@ describe('OptimisationService.triggerRun', () => {
             kind: 'replan',
             optimisationId: 'shift-1',
         });
-        expect(log.some((q) => /INSERT INTO vrp_optimization\b/i.test(q.sql))).toBe(false);
+        expect(
+            log.some((q) => /INSERT INTO vrp_optimization\b/i.test(q.sql)),
+        ).toBe(false);
     });
 
     it('rings the doorbell once for the batch', async () => {

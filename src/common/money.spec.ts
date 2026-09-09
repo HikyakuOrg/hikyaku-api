@@ -1,4 +1,8 @@
-import { currencyExponent, fromStripeMinorUnits, toStripeMinorUnits } from './money';
+import {
+    currencyExponent,
+    fromStripeMinorUnits,
+    toStripeMinorUnits,
+} from './money';
 
 describe('currencyExponent', () => {
     it('treats common currencies as two-decimal', () => {

@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-export class RestrictOrgLogosReadPolicy1787000900000
-    implements MigrationInterface
-{
+export class RestrictOrgLogosReadPolicy1787000900000 implements MigrationInterface {
     name = 'RestrictOrgLogosReadPolicy1787000900000';
 
     private read(file: string): string {

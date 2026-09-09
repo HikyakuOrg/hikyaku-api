@@ -4,19 +4,41 @@ import type { VroomRequest } from './vroom.types';
 
 describe('VroomService', () => {
     let service: VroomService;
-    let mockFetch: jest.Mock;
+    let mockFetch: jest.Mock<
+        Promise<{ ok: boolean; json: () => Promise<unknown> }>,
+        [string, RequestInit?]
+    >;
     const originalFetch = global.fetch;
     const originalVroomUrl = process.env.VROOM_URL;
 
     const request: VroomRequest = {
-        jobs: [{ id: 1, service: 900, location: [151.2, -33.8], amount: [2000], priority: 50 }],
-        vehicles: [{ id: 1, profile: 'auto', start: [151.0, -33.7], end: [151.0, -33.7], capacity: [5000] }],
+        jobs: [
+            {
+                id: 1,
+                service: 900,
+                location: [151.2, -33.8],
+                amount: [2000],
+                priority: 50,
+            },
+        ],
+        vehicles: [
+            {
+                id: 1,
+                profile: 'auto',
+                start: [151.0, -33.7],
+                end: [151.0, -33.7],
+                capacity: [5000],
+            },
+        ],
     };
 
     beforeEach(() => {
         service = new VroomService();
-        mockFetch = jest.fn();
-        global.fetch = mockFetch as unknown as typeof fetch;
+        mockFetch = jest.fn<
+            Promise<{ ok: boolean; json: () => Promise<unknown> }>,
+            [string, RequestInit?]
+        >();
+        global.fetch = mockFetch;
         process.env.VROOM_URL = 'http://vroom.test:3000';
     });
 
@@ -52,7 +74,7 @@ describe('VroomService', () => {
 
         await service.solve({ ...request, options: { g: true } });
 
-        expect(mockFetch.mock.calls[0][1].body).toBe(
+        expect(mockFetch.mock.calls[0][1]!.body).toBe(
             JSON.stringify({ ...request, options: { c: false, g: true } }),
         );
     });
@@ -84,7 +106,10 @@ describe('VroomService', () => {
     });
 
     it('throws an HttpException carrying status and body on error', async () => {
-        const errorBody = { code: 2, error: 'Input error: invalid vehicle profile' };
+        const errorBody = {
+            code: 2,
+            error: 'Input error: invalid vehicle profile',
+        };
         mockFetch.mockResolvedValueOnce({
             ok: false,
             status: 400,

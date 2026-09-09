@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class AddShiftLifecycleColumns1787100000000 implements MigrationInterface {
     name = 'AddShiftLifecycleColumns1787100000000';
 

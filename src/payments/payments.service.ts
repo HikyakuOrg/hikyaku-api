@@ -2,7 +2,10 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, QueryRunner } from 'typeorm';
 import { CustomersService } from 'src/customers/customers.service';
-import { PackagesService, type PackageSpec } from 'src/packages/packages.service';
+import {
+    PackagesService,
+    type PackageSpec,
+} from 'src/packages/packages.service';
 
 /**
  * The only fields of a Checkout Session our fulfillment touches. Declared
@@ -21,6 +24,8 @@ interface BookingAddress {
     lon: number;
     lat: number;
     street: string;
+    /** Subpremise line captured by the booking flow; optional throughout. */
+    unit?: string | null;
     suburb: string;
     state: string;
     country: string;
@@ -33,7 +38,12 @@ interface BookingParty {
 }
 interface BookingDetails {
     sender: BookingParty & {
-        parcel: { weight: number; height: number; width: number; length: number };
+        parcel: {
+            weight: number;
+            height: number;
+            width: number;
+            length: number;
+        };
         collectionDate: string;
     };
     receiver: (BookingParty & { deliveryDate: string })[];
@@ -58,7 +68,9 @@ export class PaymentsService {
      * insertion runs in a separate short transaction, re-locking the payment
      * row to guard against concurrent webhook retries.
      */
-    async fulfillCheckoutSession(session: FulfillableCheckoutSession): Promise<void> {
+    async fulfillCheckoutSession(
+        session: FulfillableCheckoutSession,
+    ): Promise<void> {
         // ── Step 1: Read payment (no lock — optimistic check) ─────────────────
         const paymentRows: {
             id: string;
@@ -74,7 +86,9 @@ export class PaymentsService {
 
         if (paymentRows.length === 0) {
             // Webhook arrived before our own DB insert — Stripe will retry.
-            throw new NotFoundException(`No payment for checkout session ${session.id}`);
+            throw new NotFoundException(
+                `No payment for checkout session ${session.id}`,
+            );
         }
 
         const payment = paymentRows[0];
@@ -87,7 +101,9 @@ export class PaymentsService {
 
         // ── Step 2: Create Stripe customers + thin DB rows (outside any tx) ───
         const stripeAccountId = payment.organisation_id
-            ? await this.customersService.resolveStripeAccount(payment.organisation_id)
+            ? await this.customersService.resolveStripeAccount(
+                  payment.organisation_id,
+              )
             : null;
 
         const fromCustomerId = await this.customersService.upsertFromBooking(
@@ -127,15 +143,17 @@ export class PaymentsService {
         try {
             // Re-lock and re-check — guards against concurrent retries that both
             // passed the optimistic check above.
-            const lockRows: { id: string; status: string }[] = await runner.query(
+            const lockRows = (await runner.query(
                 `SELECT id, status FROM stripe.payments
                  WHERE stripe_checkout_session_id = $1 FOR UPDATE`,
                 [session.id],
-            );
+            )) as { id: string; status: string }[];
 
             if (lockRows[0]?.status === 'completed') {
                 await runner.commitTransaction();
-                this.logger.log(`Payment ${payment.id} already fulfilled — no-op (retry)`);
+                this.logger.log(
+                    `Payment ${payment.id} already fulfilled — no-op (retry)`,
+                );
                 return;
             }
 
@@ -156,21 +174,23 @@ export class PaymentsService {
                 fromCustomerId,
             );
 
-            const specs: PackageSpec[] = booking.receiver.map((receiver, i) => ({
-                warehouseId,
-                fromCustomerId,
-                toCustomerId: receiverCustomerIds[i],
-                deliveryNotes: booking.deliveryNotes ?? null,
-                weightKg: booking.sender.parcel.weight,
-                lengthCm: booking.sender.parcel.length,
-                widthCm: booking.sender.parcel.width,
-                heightCm: booking.sender.parcel.height,
-                scheduledDeparture: `${booking.sender.collectionDate}T00:00:00Z`,
-                // END of the promised day, not the start. Midnight at the top of
-                // the delivery date makes every booking instantly past-due, which
-                // is how these packages ended up permanently at priority 100.
-                deadlineAt: `${receiver.deliveryDate}T23:59:59.999Z`,
-            }));
+            const specs: PackageSpec[] = booking.receiver.map(
+                (receiver, i) => ({
+                    warehouseId,
+                    fromCustomerId,
+                    toCustomerId: receiverCustomerIds[i],
+                    deliveryNotes: booking.deliveryNotes ?? null,
+                    weightKg: booking.sender.parcel.weight,
+                    lengthCm: booking.sender.parcel.length,
+                    widthCm: booking.sender.parcel.width,
+                    heightCm: booking.sender.parcel.height,
+                    scheduledDeparture: `${booking.sender.collectionDate}T00:00:00Z`,
+                    // END of the promised day, not the start. Midnight at the top of
+                    // the delivery date makes every booking instantly past-due, which
+                    // is how these packages ended up permanently at priority 100.
+                    deadlineAt: `${receiver.deliveryDate}T23:59:59.999Z`,
+                }),
+            );
 
             // One call, on this transaction: the packages and the completed
             // payment commit together, or a paid booking has no parcel.
@@ -196,10 +216,14 @@ export class PaymentsService {
             );
 
             await runner.commitTransaction();
-            this.logger.log(`Fulfilled payment ${payment.id} (session ${session.id})`);
+            this.logger.log(
+                `Fulfilled payment ${payment.id} (session ${session.id})`,
+            );
         } catch (err) {
             await runner.rollbackTransaction();
-            this.logger.error(`Fulfillment failed for session ${session.id}: ${String(err)}`);
+            this.logger.error(
+                `Fulfillment failed for session ${session.id}: ${String(err)}`,
+            );
             throw err;
         } finally {
             await runner.release();
@@ -242,7 +266,7 @@ export class PaymentsService {
         organisationId: string,
         senderCustomerId: string,
     ): Promise<string> {
-        const rows: { id: string }[] = await runner.query(
+        const rows = (await runner.query(
             `SELECT w.id
                FROM warehouse w
                LEFT JOIN customer c ON c.id = $2
@@ -254,7 +278,7 @@ export class PaymentsService {
                        w.warehouse_location <-> c.customer_location
               LIMIT 1`,
             [organisationId, senderCustomerId],
-        );
+        )) as { id: string }[];
 
         if (rows.length === 0) {
             throw new Error(

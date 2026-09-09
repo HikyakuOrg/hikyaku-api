@@ -20,7 +20,11 @@ export class ValhallaService {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                locations: coordinates.map(([lon, lat]) => ({ lat, lon, type: 'break' })),
+                locations: coordinates.map(([lon, lat]) => ({
+                    lat,
+                    lon,
+                    type: 'break',
+                })),
                 costing: 'auto',
                 units: 'kilometers',
                 directions_type: 'none',
@@ -40,14 +44,21 @@ export class ValhallaService {
      * normalised RoutePreview — coordinates in [lng, lat], durations in seconds,
      * distances in meters.
      */
-    async route(profile: string, coordinates: [number, number][]): Promise<RoutePreview> {
+    async route(
+        profile: string,
+        coordinates: [number, number][],
+    ): Promise<RoutePreview> {
         const baseUrl = process.env.VALHALLA_URL ?? 'http://localhost:8002';
 
         const response = await fetch(`${baseUrl}/route`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                locations: coordinates.map(([lng, lat]) => ({ lat, lon: lng, type: 'break' })),
+                locations: coordinates.map(([lng, lat]) => ({
+                    lat,
+                    lon: lng,
+                    type: 'break',
+                })),
                 costing: orsProfileToValhallaCosting(profile),
                 units: 'kilometers',
                 directions_type: 'none',
@@ -69,7 +80,9 @@ export class ValhallaService {
             // Valhalla shapes are encoded with 6-digit precision (not the usual 5).
             const legCoords = decodePolyline(leg.shape, 1e6);
             // Consecutive legs share their boundary vertex — drop the duplicate.
-            points.push(...(points.length > 0 ? legCoords.slice(1) : legCoords));
+            points.push(
+                ...(points.length > 0 ? legCoords.slice(1) : legCoords),
+            );
             wayPoints.push(points.length - 1);
             legs.push({
                 duration: leg.summary.time,

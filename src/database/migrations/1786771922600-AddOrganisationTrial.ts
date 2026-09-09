@@ -2,7 +2,6 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 export class AddOrganisationTrial1786771922600 implements MigrationInterface {
     name = 'AddOrganisationTrial1786771922600';
 

@@ -39,11 +39,13 @@ function build(state: State = {}) {
     const log: { sql: string; params: unknown[] }[] = [];
 
     const answer = (sql: string, params: unknown[]): unknown[] => {
-        if (sql.includes('FROM warehouse')) return state.warehouse ?? [{ id: 'wh-1' }];
+        if (sql.includes('FROM warehouse'))
+            return state.warehouse ?? [{ id: 'wh-1' }];
         if (sql.includes('FROM customer')) {
             return state.customers ?? [{ id: 'cust-from' }, { id: 'cust-to' }];
         }
-        if (sql.includes('p.tracking_number = $1')) return state.byTracking ?? [];
+        if (sql.includes('p.tracking_number = $1'))
+            return state.byTracking ?? [];
         if (sql.includes('p.id = $1')) return state.stored ?? [STORED];
         if (sql.includes('INSERT INTO packages')) {
             if (state.insertError) throw state.insertError;
@@ -57,7 +59,8 @@ function build(state: State = {}) {
         try {
             return Promise.resolve(answer(sql, params));
         } catch (err) {
-            return Promise.reject(err);
+            // answer() only ever throws state.insertError, which is typed Error.
+            return Promise.reject(err as Error);
         }
     });
 
@@ -91,7 +94,10 @@ function build(state: State = {}) {
         unassign: jest.fn().mockResolvedValue(undefined),
     };
 
-    const service = new PackagesService(dataSource as never, assignment as never);
+    const service = new PackagesService(
+        dataSource as never,
+        assignment as never,
+    );
     return { service, assignment, runner, log, query };
 }
 
@@ -107,7 +113,9 @@ describe('PackagesService', () => {
 
         it('rejects a customer in another organisation as unknown', async () => {
             const { service } = build({ customers: [{ id: 'cust-from' }] });
-            await expect(service.create('org-1', dto())).rejects.toThrow(/cust-to/);
+            await expect(service.create('org-1', dto())).rejects.toThrow(
+                /cust-to/,
+            );
         });
 
         it('does not write anything when validation fails', async () => {
@@ -123,12 +131,22 @@ describe('PackagesService', () => {
             await service.create('org-1', dto());
 
             const written = log.map((q) => q.sql);
-            expect(written.some((s) => s.includes('INSERT INTO packages'))).toBe(true);
-            expect(written.some((s) => s.includes('INSERT INTO package_dimensions'))).toBe(true);
             expect(
-                written.some((s) => s.includes('INSERT INTO package_delivery_window')),
+                written.some((s) => s.includes('INSERT INTO packages')),
             ).toBe(true);
-            expect(written.some((s) => s.includes('insert_package_timeline'))).toBe(true);
+            expect(
+                written.some((s) =>
+                    s.includes('INSERT INTO package_dimensions'),
+                ),
+            ).toBe(true);
+            expect(
+                written.some((s) =>
+                    s.includes('INSERT INTO package_delivery_window'),
+                ),
+            ).toBe(true);
+            expect(
+                written.some((s) => s.includes('insert_package_timeline')),
+            ).toBe(true);
         });
 
         it('commits creation BEFORE assignment runs', async () => {
@@ -190,7 +208,9 @@ describe('PackagesService', () => {
             });
             await service.create('org-1', dto({ id: 'client-uuid' }));
 
-            const insert = log.find((q) => q.sql.includes('INSERT INTO packages'));
+            const insert = log.find((q) =>
+                q.sql.includes('INSERT INTO packages'),
+            );
             expect(insert?.params[0]).toBe('client-uuid');
         });
 
@@ -200,13 +220,18 @@ describe('PackagesService', () => {
             const { service, log } = build();
             await service.create('org-1', dto());
 
-            const insert = log.find((q) => q.sql.includes('INSERT INTO packages'));
+            const insert = log.find((q) =>
+                q.sql.includes('INSERT INTO packages'),
+            );
             expect(insert?.params[6]).toBeNull();
         });
 
         it('writes the deadline to scheduled_arrival and nothing to the ETA', async () => {
             const { service, log } = build();
-            await service.create('org-1', dto({ deadlineAt: '2026-09-02T17:00:00Z' }));
+            await service.create(
+                'org-1',
+                dto({ deadlineAt: '2026-09-02T17:00:00Z' }),
+            );
 
             const window = log.find((q) =>
                 q.sql.includes('INSERT INTO package_delivery_window'),
@@ -274,7 +299,9 @@ describe('PackagesService', () => {
 
             expect(replayed).toBe(true);
             expect(result.package.id).toBe('pkg-1');
-            expect(log.some((q) => q.sql.includes('INSERT INTO packages'))).toBe(false);
+            expect(
+                log.some((q) => q.sql.includes('INSERT INTO packages')),
+            ).toBe(false);
         });
 
         it('conflicts when the same tracking number describes a different delivery', async () => {
@@ -305,7 +332,10 @@ describe('PackagesService', () => {
             });
             const { replayed } = await service.create(
                 'org-1',
-                dto({ trackingNumber: 'WDN000001', deliveryNotes: 'ring the bell' }),
+                dto({
+                    trackingNumber: 'WDN000001',
+                    deliveryNotes: 'ring the bell',
+                }),
             );
             expect(replayed).toBe(true);
         });
@@ -324,19 +354,26 @@ describe('PackagesService', () => {
         it('lets one bad entry fail without taking the batch with it', async () => {
             let call = 0;
             const { service } = build();
-            const original = service['validateReferences'].bind(service);
-            jest
-                .spyOn(
-                    service as unknown as { validateReferences: () => Promise<void> },
-                    'validateReferences',
-                )
-                .mockImplementation(((org: string, d: CreatePackageDto) => {
-                    call += 1;
-                    if (call === 1) {
-                        return Promise.reject(new BadRequestException('bad warehouse'));
-                    }
-                    return original(org, d);
-                }) as never);
+            // strictBindCallApply is off project-wide, so .bind() always types as
+            // `any`; assert the signature back to what validateReferences actually is.
+            const original = service['validateReferences'].bind(service) as (
+                organisationId: string,
+                dto: CreatePackageDto,
+            ) => Promise<void>;
+            jest.spyOn(
+                service as unknown as {
+                    validateReferences: () => Promise<void>;
+                },
+                'validateReferences',
+            ).mockImplementation(((org: string, d: CreatePackageDto) => {
+                call += 1;
+                if (call === 1) {
+                    return Promise.reject(
+                        new BadRequestException('bad warehouse'),
+                    );
+                }
+                return original(org, d);
+            }) as never);
 
             const out = await service.createBulk('org-1', {
                 packages: [dto(), dto()],

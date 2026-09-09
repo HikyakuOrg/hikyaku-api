@@ -17,10 +17,7 @@ import { ApiGuardErrors } from 'src/common/swagger/api-errors.decorator';
 import { ApiOrganisationSlugHeader } from 'src/common/swagger/tenant-header.decorator';
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
 import { RequirePermission } from 'src/auth/decorators/required-permission.decorator';
-import {
-    AddPackagesToShiftDto,
-    CreateShiftDto,
-} from './dto/create-shift.dto';
+import { AddPackagesToShiftDto, CreateShiftDto } from './dto/create-shift.dto';
 import {
     ShiftDto,
     ShiftPlanDto,
@@ -35,7 +32,7 @@ import { ShiftsService } from './shifts.service';
 @Controller('api/v1/shifts')
 @UseGuards(PermissionGuard)
 export class ShiftsController {
-    constructor(private readonly shifts: ShiftsService) { }
+    constructor(private readonly shifts: ShiftsService) {}
 
     @Post()
     @HttpCode(HttpStatus.CREATED)

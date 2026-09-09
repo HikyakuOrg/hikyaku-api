@@ -27,7 +27,9 @@ async function emit(): Promise<void> {
     await app.close();
     const paths = Object.keys(document.paths ?? {}).length;
     const schemas = Object.keys(document.components?.schemas ?? {}).length;
-    process.stdout.write(`openapi.json written: ${paths} paths, ${schemas} schemas\n`);
+    process.stdout.write(
+        `openapi.json written: ${paths} paths, ${schemas} schemas\n`,
+    );
 }
 
 emit().catch((error) => {

@@ -43,23 +43,23 @@ types.setTypeParser(types.builtins.DATE, (value: string) => value);
  * See src/database/README.md for the full workflow and the baseline rationale.
  */
 export const dataSourceOptions: DataSourceOptions = {
-  type: 'postgres',
-  // App connection — unchanged from before (the running app keeps using DB_URL).
-  url: process.env.DB_URL,
-  // SSL turns on only when DB_SSL_CA_PATH names a CA cert that's actually on
-  // disk; otherwise this is undefined and the connection stays plain TCP.
-  // See postgres-ssl.ts for why a bare `ssl: true` isn't enough for Supabase.
-  ssl: resolvePostgresSsl(),
-  migrations: [__dirname + '/migrations/*.{ts,js}'],
-  // Schema-qualified (not the top-level `schema` option) so ONLY the ledger
-  // table moves — the top-level option would silently default every entity
-  // without its own @Entity({schema}) into hikyaku_migrations too.
-  // Requires `CREATE SCHEMA IF NOT EXISTS "hikyaku_migrations"` to already
-  // exist in the target database (see infra/db/schema.sql) — TypeORM does
-  // not create the schema itself, only the table within it.
-  migrationsTableName: 'hikyaku_migrations.typeorm_migrations',
-  synchronize: false,
-  migrationsRun: false,
+    type: 'postgres',
+    // App connection — unchanged from before (the running app keeps using DB_URL).
+    url: process.env.DB_URL,
+    // SSL turns on only when DB_SSL_CA_PATH names a CA cert that's actually on
+    // disk; otherwise this is undefined and the connection stays plain TCP.
+    // See postgres-ssl.ts for why a bare `ssl: true` isn't enough for Supabase.
+    ssl: resolvePostgresSsl(),
+    migrations: [__dirname + '/migrations/*.{ts,js}'],
+    // Schema-qualified (not the top-level `schema` option) so ONLY the ledger
+    // table moves — the top-level option would silently default every entity
+    // without its own @Entity({schema}) into hikyaku_migrations too.
+    // Requires `CREATE SCHEMA IF NOT EXISTS "hikyaku_migrations"` to already
+    // exist in the target database (see infra/db/schema.sql) — TypeORM does
+    // not create the schema itself, only the table within it.
+    migrationsTableName: 'hikyaku_migrations.typeorm_migrations',
+    synchronize: false,
+    migrationsRun: false,
 };
 
 /**
@@ -73,7 +73,7 @@ export const dataSourceOptions: DataSourceOptions = {
  *     feature and is unavailable to the CLI.
  */
 export default new DataSource({
-  ...dataSourceOptions,
-  url: process.env.DB_MIGRATION_URL ?? process.env.DB_URL,
-  entities: [__dirname + '/../**/*.entity.{ts,js}'],
+    ...dataSourceOptions,
+    url: process.env.DB_MIGRATION_URL ?? process.env.DB_URL,
+    entities: [__dirname + '/../**/*.entity.{ts,js}'],
 });

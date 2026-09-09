@@ -52,7 +52,7 @@ export class TokenVerifier {
     constructor(
         @Inject(SUPABASE_CLIENT)
         private readonly supabase: SupabaseClient,
-    ) { }
+    ) {}
 
     /** Parses `Bearer <token>`, verifies it (memoised), and returns the caller. */
     async verify(authHeader: string | undefined): Promise<AuthedUser> {
@@ -81,7 +81,9 @@ export class TokenVerifier {
         }
         const parts = authHeader.split(' ');
         if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
-            throw new UnauthorizedException('Invalid Authorization header format');
+            throw new UnauthorizedException(
+                'Invalid Authorization header format',
+            );
         }
         return parts[1];
     }
@@ -107,7 +109,11 @@ export class TokenVerifier {
         const { user, expiresAtMs } = await this.verifyClaims(token);
 
         if (this.memo.size >= MEMO_MAX_ENTRIES) {
-            const oldestKey = this.memo.keys().next().value;
+            // IteratorResult<T> types the done:true branch's `value` as `any`,
+            // so `.next().value` is `string | any` even though the Map key is
+            // always a string.
+            const oldestKey = this.memo.keys().next().value as
+                string | undefined;
             if (oldestKey !== undefined) this.memo.delete(oldestKey);
         }
         this.memo.set(key, {

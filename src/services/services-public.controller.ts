@@ -47,7 +47,9 @@ export class ServicesPublicController {
     })
     @ApiOrgSlugHeader({ required: false })
     @ApiOkResponse({ type: ServiceCatalogDto })
-    async catalog(@Headers('x-org-slug') slug?: string): Promise<ServiceCatalogDto> {
+    async catalog(
+        @Headers('x-org-slug') slug?: string,
+    ): Promise<ServiceCatalogDto> {
         const organisationId = await this.resolveOrg(slug);
         if (!organisationId) return { services: [] };
         return this.services.getCatalog(organisationId);

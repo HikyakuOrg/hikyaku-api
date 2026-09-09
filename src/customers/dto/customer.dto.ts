@@ -64,6 +64,14 @@ export class CustomerDto implements CustomerRow {
     @ApiProperty({ description: 'Street line. Empty string when unset.' })
     customer_address: string;
 
+    @ApiProperty({
+        description:
+            'Subpremise line — unit, suite or business name for a building ' +
+            'delivery. Separate from the geocoded street line, and never fed ' +
+            'back into geocoding or routing. Empty string when unset.',
+    })
+    customer_unit: string;
+
     @ApiProperty({ description: 'Empty string when unset.' })
     customer_suburb: string;
 
@@ -100,7 +108,7 @@ export class CustomerDto implements CustomerRow {
             'Raw Pelias feature kept for provenance. Opaque — do not read fields ' +
             'off it.',
     })
-    pelias_raw: unknown | null;
+    pelias_raw: unknown;
 
     @ApiProperty({
         type: CustomerLocationDto,

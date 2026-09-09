@@ -6,4 +6,4 @@ import { SupabaseProvider } from './supabase.provider';
     providers: [SupabaseProvider],
     exports: [SupabaseProvider],
 })
-export class SupabaseModule { }
+export class SupabaseModule {}

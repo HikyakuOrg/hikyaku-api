@@ -8,7 +8,8 @@ import {
     FastifyAdapter,
     NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import request = require('supertest');
+import request from 'supertest';
+import type { Response } from 'supertest';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
@@ -26,7 +27,9 @@ const mockUsersService = {
 
 const bypassGuardValue = {
     canActivate(ctx: ExecutionContext) {
-        ctx.switchToHttp().getRequest().user = { id: 'caller-id' };
+        ctx.switchToHttp().getRequest<{ user?: { id: string } }>().user = {
+            id: 'caller-id',
+        };
         return true;
     },
 };
@@ -45,15 +48,13 @@ async function buildApp(options: {
 }): Promise<NestFastifyApplication> {
     const { bypass = false } = options;
     const supabase = options.supabase ?? { from: jest.fn() };
-    const tokenVerifier =
-        options.tokenVerifier ??
-        {
-            verify: jest
-                .fn()
-                .mockRejectedValue(
-                    new UnauthorizedException('Missing Authorization header'),
-                ),
-        };
+    const tokenVerifier = options.tokenVerifier ?? {
+        verify: jest
+            .fn()
+            .mockRejectedValue(
+                new UnauthorizedException('Missing Authorization header'),
+            ),
+    };
 
     const builder = Test.createTestingModule({
         controllers: [UsersController],
@@ -81,7 +82,6 @@ async function buildApp(options: {
     await app.getHttpAdapter().getInstance().ready();
     return app;
 }
-
 
 describe('UsersController (integration)', () => {
     let app: NestFastifyApplication;
@@ -154,9 +154,13 @@ describe('UsersController (integration)', () => {
                 .post('/api/v1/users')
                 .send(validBody)
                 .expect(201)
-                .expect((res) => {
-                    expect(res.body.user_id).toBe('u1');
-                    expect(res.body.user_email).toBe('user@example.com');
+                .expect((res: Response) => {
+                    const body = res.body as {
+                        user_id: string;
+                        user_email: string;
+                    };
+                    expect(body.user_id).toBe('u1');
+                    expect(body.user_email).toBe('user@example.com');
                 });
         });
     });
@@ -191,9 +195,13 @@ describe('UsersController (integration)', () => {
                 .delete('/api/v1/users')
                 .send({ user_ids: [VALID_UUID] })
                 .expect(200)
-                .expect((res) => {
-                    expect(res.body.deactivated).toEqual([VALID_UUID]);
-                    expect(res.body.failed).toHaveLength(0);
+                .expect((res: Response) => {
+                    const body = res.body as {
+                        deactivated: string[];
+                        failed: string[];
+                    };
+                    expect(body.deactivated).toEqual([VALID_UUID]);
+                    expect(body.failed).toHaveLength(0);
                 });
         });
     });
@@ -228,9 +236,13 @@ describe('UsersController (integration)', () => {
                 .patch('/api/v1/users/reactivate')
                 .send({ user_ids: [VALID_UUID] })
                 .expect(200)
-                .expect((res) => {
-                    expect(res.body.reactivated).toEqual([VALID_UUID]);
-                    expect(res.body.failed).toHaveLength(0);
+                .expect((res: Response) => {
+                    const body = res.body as {
+                        reactivated: string[];
+                        failed: string[];
+                    };
+                    expect(body.reactivated).toEqual([VALID_UUID]);
+                    expect(body.failed).toHaveLength(0);
                 });
         });
     });

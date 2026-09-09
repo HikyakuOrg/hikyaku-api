@@ -30,7 +30,7 @@ import {
 @Controller('api/v1/optimisation')
 @UseGuards(PermissionGuard)
 export class OptimisationController {
-    constructor(private readonly optimisation: OptimisationService) { }
+    constructor(private readonly optimisation: OptimisationService) {}
 
     @Post('run')
     @HttpCode(HttpStatus.ACCEPTED)
@@ -49,7 +49,11 @@ export class OptimisationController {
         @Body() dto: RunOptimisationDto,
         @Req() req: Request & { organisationId: string; user: { id: string } },
     ) {
-        return this.optimisation.triggerRun(req.organisationId, req.user.id, dto);
+        return this.optimisation.triggerRun(
+            req.organisationId,
+            req.user.id,
+            dto,
+        );
     }
 
     @Get('run/latest')

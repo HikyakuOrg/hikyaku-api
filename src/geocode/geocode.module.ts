@@ -8,4 +8,4 @@ import { GeocodeService } from './geocode.service';
     providers: [GeocodeService, AuthGuard],
     exports: [GeocodeService],
 })
-export class GeocodeModule { }
+export class GeocodeModule {}

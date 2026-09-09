@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-export class AddOrganisationVanityUrlEntitlement1787000500000
-    implements MigrationInterface
-{
+export class AddOrganisationVanityUrlEntitlement1787000500000 implements MigrationInterface {
     name = 'AddOrganisationVanityUrlEntitlement1787000500000';
 
     private read(file: string): string {

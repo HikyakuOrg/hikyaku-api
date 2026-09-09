@@ -2,10 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
-export class AllowUnknownDriverSpeed1787101100000
-    implements MigrationInterface
-{
+export class AllowUnknownDriverSpeed1787101100000 implements MigrationInterface {
     name = 'AllowUnknownDriverSpeed1787101100000';
 
     private read(file: string): string {

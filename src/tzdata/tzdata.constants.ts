@@ -32,7 +32,16 @@ export type TzdataImportPhase = (typeof TZDATA_IMPORT_PHASES)[number];
 /** Message protocol from tzdata-import.worker.ts back to TzdataService. */
 export type TzdataWorkerMessage =
     | { type: 'log'; message: string }
-    | { type: 'status'; phase: Extract<TzdataImportPhase, 'downloading' | 'importing' | 'completed' | 'skipped_locked_elsewhere'> };
+    | {
+          type: 'status';
+          phase: Extract<
+              TzdataImportPhase,
+              | 'downloading'
+              | 'importing'
+              | 'completed'
+              | 'skipped_locked_elsewhere'
+          >;
+      };
 
 /**
  * Defense-in-depth scrub for log/error text that might carry a DB credential.
@@ -46,4 +55,3 @@ export function redactSecrets(text: string): string {
         .replace(/password='[^']*'/gi, "password='***'")
         .replace(/:\/\/([^:/@\s]+):([^@/\s]+)@/g, '://$1:***@');
 }
-

@@ -14,8 +14,21 @@
  * major unit itself (e.g. 500 == ¥500). Source: Stripe "zero-decimal currencies".
  */
 const STRIPE_ZERO_DECIMAL = new Set([
-    'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA',
-    'PYG', 'RWF', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+    'BIF',
+    'CLP',
+    'DJF',
+    'GNF',
+    'JPY',
+    'KMF',
+    'KRW',
+    'MGA',
+    'PYG',
+    'RWF',
+    'VND',
+    'VUV',
+    'XAF',
+    'XOF',
+    'XPF',
 ]);
 
 /**
@@ -50,7 +63,10 @@ export function currencyExponent(currency: string): CurrencyExponent {
  * The result is what gets persisted as `payments.amount_minor` and sent to
  * Stripe, so there is a single representation everywhere.
  */
-export function toStripeMinorUnits(amountMajor: number, currency: string): number {
+export function toStripeMinorUnits(
+    amountMajor: number,
+    currency: string,
+): number {
     if (!Number.isFinite(amountMajor) || amountMajor < 0) {
         throw new Error(`Invalid monetary amount: ${amountMajor}`);
     }
@@ -77,7 +93,10 @@ export function toStripeMinorUnits(amountMajor: number, currency: string): numbe
  *   (500, 'AUD') -> 5
  *   (500, 'JPY') -> 500
  */
-export function fromStripeMinorUnits(amountMinor: number, currency: string): number {
+export function fromStripeMinorUnits(
+    amountMinor: number,
+    currency: string,
+): number {
     if (!Number.isInteger(amountMinor)) {
         throw new Error(`Minor-unit amount must be an integer: ${amountMinor}`);
     }

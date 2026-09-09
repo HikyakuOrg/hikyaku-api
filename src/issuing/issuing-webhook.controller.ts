@@ -70,7 +70,8 @@ export class IssuingWebhookController {
         }
 
         if (event.type === 'account.updated') {
-            const account = event.data.object as unknown as StripeConnectAccount;
+            const account = event.data
+                .object as unknown as StripeConnectAccount;
             const accountId = event.account ?? account.id;
             await this.orgs.stampOnboardedAt(
                 accountId,
