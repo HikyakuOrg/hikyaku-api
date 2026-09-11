@@ -23,6 +23,7 @@ import { ServicesModule } from './services/services.module';
 import { RoutingModule } from './routing/routing.module';
 import { OptimisationModule } from './optimisation/optimisation.module';
 import { PackagesModule } from './packages/packages.module';
+import { SkillsModule } from './skills/skills.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { TzdataModule } from './tzdata/tzdata.module';
 import { HealthModule } from './health/health.module';
@@ -63,6 +64,7 @@ const sentryEnabled = !!process.env.SENTRY_DSN;
         RoutingModule,
         OptimisationModule,
         PackagesModule,
+        SkillsModule,
         ShiftsModule,
         TzdataModule,
         HealthModule,

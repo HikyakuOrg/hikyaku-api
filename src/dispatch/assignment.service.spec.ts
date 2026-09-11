@@ -249,16 +249,33 @@ function makeDb(state: DbState) {
         }
         if (sql.includes('FROM vrp_route_step rs')) return state.stops ?? [];
         if (sql.includes('FROM driver_vehicle_assignment dva')) {
-            const pairs = state.freePairs ?? [];
+            let pairs = state.freePairs ?? [];
             // Step 2 asks the same question as step 4 with an allowlist bolted
-            // on, so the fake has to honour the allowlist or the two steps
-            // would be indistinguishable here.
-            if (!sql.includes('ANY($4::uuid[])')) return pairs;
-            const allowed = new Set((params[3] as string[] | undefined) ?? []);
-            return pairs.filter(
-                (p) =>
-                    typeof p.driver_id === 'string' && allowed.has(p.driver_id),
-            );
+            // on, so the fake has to honour it — or the two steps would be
+            // indistinguishable here. $4 is null for step 4 (every idle pair
+            // eligible) and an array for step 2 (only these drivers), mirroring
+            // the real `$4::uuid[] IS NULL OR dva.driver_id = ANY($4::uuid[])`.
+            const driverIds = params[3] as string[] | null;
+            if (driverIds) {
+                const allowed = new Set(driverIds);
+                pairs = pairs.filter(
+                    (p) =>
+                        typeof p.driver_id === 'string' &&
+                        allowed.has(p.driver_id),
+                );
+            }
+            // Same hard constraint as filterBySkills, applied here because
+            // openShift enforces it in SQL rather than in JS: a required skill
+            // this vehicle does not hold makes it ineligible, same as being
+            // outside the allowlist above.
+            const requiredSkillIds = (params[4] as string[] | undefined) ?? [];
+            if (requiredSkillIds.length > 0) {
+                pairs = pairs.filter((p) => {
+                    const held = (p.skill_ids as string[] | undefined) ?? [];
+                    return requiredSkillIds.every((id) => held.includes(id));
+                });
+            }
+            return pairs;
         }
         if (sql.includes('SELECT revision, status FROM vrp_optimization')) {
             return state.revision === undefined
@@ -576,6 +593,104 @@ describe('AssignmentService', () => {
             );
             expect(idlePairQueries).toHaveLength(1);
             expect(idlePairQueries[0].sql).toContain('ANY($4::uuid[])');
+        });
+    });
+
+    describe('skills: a hard constraint mirroring VROOM', () => {
+        it('is unaffected when the package requires no skill', async () => {
+            const { service } = build({
+                shifts: [{ ...SHIFT, skill_ids: [] }],
+            });
+            const outcome = await service.assign('org-1', 'pkg-1');
+            expect(outcome.outcome).toBe('assigned');
+        });
+
+        it('drops a candidate shift whose vehicle lacks the required skill', async () => {
+            const { service } = build({
+                package: { ...PACKAGE, skill_ids: ['skill-liftgate'] },
+                shifts: [{ ...SHIFT, skill_ids: [] }],
+                freePairs: [],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome).toMatchObject({ outcome: 'deferred' });
+        });
+
+        it('assigns to the shift whose vehicle holds the required skill', async () => {
+            const { service } = build({
+                package: { ...PACKAGE, skill_ids: ['skill-liftgate'] },
+                shifts: [{ ...SHIFT, skill_ids: ['skill-liftgate'] }],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned');
+            expect(outcome.shift?.id).toBe('shift-1');
+        });
+
+        it('requires every skill on the SAME vehicle, not one skill each on several', async () => {
+            const { service } = build({
+                package: {
+                    ...PACKAGE,
+                    skill_ids: ['skill-liftgate', 'skill-fragile'],
+                },
+                // Holds one of the two required skills, not both.
+                shifts: [{ ...SHIFT, skill_ids: ['skill-liftgate'] }],
+                freePairs: [],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome).toMatchObject({ outcome: 'deferred' });
+        });
+
+        it('opens a new shift only for the idle vehicle holding the required skill', async () => {
+            const { service } = build({
+                package: { ...PACKAGE, skill_ids: ['skill-liftgate'] },
+                shifts: [],
+                freePairs: [
+                    {
+                        driver_id: 'driver-2',
+                        vehicle_id: 'vehicle-2',
+                        vehicle_gross_limits: '1500',
+                        ors_vehicle_type: 'driving-car',
+                        skill_ids: [],
+                    },
+                    {
+                        driver_id: 'driver-3',
+                        vehicle_id: 'vehicle-3',
+                        vehicle_gross_limits: '1500',
+                        ors_vehicle_type: 'driving-car',
+                        skill_ids: ['skill-liftgate'],
+                    },
+                ],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned_new_shift');
+            expect(outcome.shift?.driverId).toBe('driver-3');
+        });
+
+        it('defers when no vehicle anywhere at the warehouse holds the required skill', async () => {
+            const { service } = build({
+                package: { ...PACKAGE, skill_ids: ['skill-liftgate'] },
+                shifts: [{ ...SHIFT, skill_ids: [] }],
+                freePairs: [
+                    {
+                        driver_id: 'driver-2',
+                        vehicle_id: 'vehicle-2',
+                        vehicle_gross_limits: '1500',
+                        ors_vehicle_type: 'driving-car',
+                        skill_ids: [],
+                    },
+                ],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome).toMatchObject({ outcome: 'deferred' });
         });
     });
 

@@ -18,6 +18,13 @@ export interface VroomJob {
      * (deadlines are modelled as priority); kept for a future enhancement.
      */
     time_windows?: [number, number][];
+    /**
+     * Required skills, as request-scoped small integers (see
+     * src/vroom/skill-index.ts) — VROOM's own hard constraint: this job can
+     * only route onto a vehicle whose own `skills` is a superset of this
+     * array. Omitted or empty means no requirement, matching VROOM's default.
+     */
+    skills?: number[];
 }
 
 /**
@@ -46,6 +53,13 @@ export interface VroomVehicle {
      * insertOptimisedRoutes normalises arrivals back to relative seconds.
      */
     time_window?: [number, number];
+    /**
+     * Skills this vehicle holds, as request-scoped small integers (see
+     * src/vroom/skill-index.ts). A job can only route onto a vehicle whose
+     * `skills` is a superset of the job's own — VROOM's own hard constraint.
+     * Omitted or empty means the vehicle holds no particular skill.
+     */
+    skills?: number[];
 }
 
 /**

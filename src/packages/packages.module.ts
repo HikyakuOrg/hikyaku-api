@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { DispatchModule } from 'src/dispatch/dispatch.module';
+import { SkillsModule } from 'src/skills/skills.module';
 import { PackagesController } from './packages.controller';
 import { PackagesService } from './packages.service';
 
@@ -11,7 +12,7 @@ import { PackagesService } from './packages.service';
  * completed, or a paid booking can end up with no parcel.
  */
 @Module({
-    imports: [DispatchModule],
+    imports: [DispatchModule, SkillsModule],
     controllers: [PackagesController],
     providers: [PackagesService],
     exports: [PackagesService],

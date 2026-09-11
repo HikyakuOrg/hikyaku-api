@@ -15,6 +15,7 @@ const STORED = {
     delivery_notes: null,
     scheduled_arrival: null,
     status: 'PENDING',
+    skill_ids: [],
 };
 
 function dto(overrides: Partial<CreatePackageDto> = {}): CreatePackageDto {
@@ -94,11 +95,16 @@ function build(state: State = {}) {
         unassign: jest.fn().mockResolvedValue(undefined),
     };
 
+    const skills = {
+        validateSkillIds: jest.fn().mockResolvedValue(undefined),
+    };
+
     const service = new PackagesService(
         dataSource as never,
         assignment as never,
+        skills as never,
     );
-    return { service, assignment, runner, log, query };
+    return { service, assignment, skills, runner, log, query };
 }
 
 describe('PackagesService', () => {
@@ -259,6 +265,62 @@ describe('PackagesService', () => {
             await expect(
                 service.create('org-1', dto({ trackingNumber: 'WDN000001' })),
             ).rejects.toBeInstanceOf(ConflictException);
+        });
+    });
+
+    describe('skillIds', () => {
+        it('validates skillIds against the org catalog before writing anything', async () => {
+            const { service, skills, log } = build();
+            skills.validateSkillIds.mockRejectedValue(
+                new BadRequestException(
+                    'Skill not found for this organisation: skill-x',
+                ),
+            );
+
+            await expect(
+                service.create('org-1', dto({ skillIds: ['skill-x'] })),
+            ).rejects.toBeInstanceOf(BadRequestException);
+            expect(skills.validateSkillIds).toHaveBeenCalledWith('org-1', [
+                'skill-x',
+            ]);
+            expect(log.some((q) => q.sql.includes('INSERT'))).toBe(false);
+        });
+
+        it('links the requested skills to the new package', async () => {
+            const { service, log } = build();
+            await service.create(
+                'org-1',
+                dto({ skillIds: ['skill-a', 'skill-b'] }),
+            );
+
+            const link = log.find((q) =>
+                q.sql.includes('INSERT INTO package_skills'),
+            );
+            expect(link?.params).toEqual([
+                'pkg-1',
+                ['skill-a', 'skill-b'],
+                'org-1',
+            ]);
+        });
+
+        it('writes nothing to package_skills when no skill is required', async () => {
+            const { service, log } = build();
+            await service.create('org-1', dto());
+
+            expect(
+                log.some((q) => q.sql.includes('INSERT INTO package_skills')),
+            ).toBe(false);
+        });
+
+        it('round-trips skillIds onto the returned package', async () => {
+            const { service } = build({
+                stored: [{ ...STORED, skill_ids: ['skill-a'] }],
+            });
+            const { result } = await service.create(
+                'org-1',
+                dto({ skillIds: ['skill-a'] }),
+            );
+            expect(result.package.skillIds).toEqual(['skill-a']);
         });
     });
 
