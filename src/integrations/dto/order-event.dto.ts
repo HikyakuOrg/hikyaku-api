@@ -113,7 +113,9 @@ export class OrderLineItemDto {
     @IsNumber()
     quantity: number;
 
-    @ApiProperty({ description: 'Decimal string, matching the source currency.' })
+    @ApiProperty({
+        description: 'Decimal string, matching the source currency.',
+    })
     @IsString()
     @IsNotEmpty()
     price: string;
@@ -145,7 +147,9 @@ export class OrderInfoDto {
     @IsNumber()
     legacy_id: number;
 
-    @ApiProperty({ description: 'Human-facing order name/number, e.g. "#1001".' })
+    @ApiProperty({
+        description: 'Human-facing order name/number, e.g. "#1001".',
+    })
     @IsString()
     @IsNotEmpty()
     name: string;
