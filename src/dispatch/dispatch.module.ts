@@ -8,6 +8,8 @@ import { AssignmentService } from './assignment.service';
 import { CoverageController } from './coverage.controller';
 import { CoverageDiagnosticsService } from './coverage-diagnostics.service';
 import { CoverageMetricsService } from './coverage-metrics.service';
+import { DrivingLimitsController } from './driving-limits.controller';
+import { DrivingLimitsDiagnosticsService } from './driving-limits-diagnostics.service';
 import { PgNotifyService } from './pg-notify.service';
 import { QueueService } from './queue.service';
 import { ReplanWorker } from './replan.worker';
@@ -37,10 +39,11 @@ import { ShiftPlanWriter } from './shift-plan.writer';
         ValhallaModule,
         VroomModule,
     ],
-    // The one HTTP surface dispatch owns: a read-only explanation of a coverage
-    // decision, answered by the same code the engine decides with. Everything
-    // else in this module is driven by package creation or by a NOTIFY.
-    controllers: [CoverageController],
+    // The HTTP surface dispatch owns: read-only explanations of dispatch
+    // decisions, answered by the same code the engine decides with.
+    // Everything else in this module is driven by package creation or by a
+    // NOTIFY.
+    controllers: [CoverageController, DrivingLimitsController],
     providers: [
         QueueService,
         PgNotifyService,
@@ -48,6 +51,7 @@ import { ShiftPlanWriter } from './shift-plan.writer';
         AssignmentService,
         CoverageDiagnosticsService,
         CoverageMetricsService,
+        DrivingLimitsDiagnosticsService,
         ReplanWorker,
     ],
     exports: [
