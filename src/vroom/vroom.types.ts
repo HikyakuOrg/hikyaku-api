@@ -60,6 +60,24 @@ export interface VroomVehicle {
      * Omitted or empty means the vehicle holds no particular skill.
      */
     skills?: number[];
+    /**
+     * Hard cap on travel time, seconds (VROOM since v1.13.0). Travel only —
+     * excludes service, setup, waiting and breaks, so this is NOT the
+     * working-time limit; see driving-limits.ts's `vroomVehicleLimits`,
+     * which is the one place this distinction is written down.
+     */
+    max_travel_time?: number;
+    /**
+     * Hard cap on total route distance, METRES, return leg included (VROOM
+     * since v1.14.0). No unit conversion belongs at this boundary — the
+     * profile already stores metres.
+     */
+    max_distance?: number;
+    /**
+     * Hard cap on task count (VROOM since v1.11.0). A job counts 1; breaks
+     * do not count, and this fleet sends none.
+     */
+    max_tasks?: number;
 }
 
 /**

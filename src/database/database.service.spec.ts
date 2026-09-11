@@ -814,6 +814,106 @@ describe('DatabaseService', () => {
                 ).toEqual([3_500_000]);
             });
         });
+
+        describe('driving limits (HIK-84)', () => {
+            const original = process.env.DRIVING_LIMITS;
+
+            afterEach(() => {
+                if (original === undefined) {
+                    delete process.env.DRIVING_LIMITS;
+                } else {
+                    process.env.DRIVING_LIMITS = original;
+                }
+            });
+
+            it('sends no limit fields while the flag is off, even with an organisation known', async () => {
+                delete process.env.DRIVING_LIMITS;
+                const today = new Date();
+                const runner = makeRunner(
+                    jest
+                        .fn()
+                        .mockResolvedValueOnce([
+                            {
+                                id: 'pkg-1',
+                                tracking_number: 'TRK001',
+                                created_at: today,
+                                warehouse_id: 'wh-1',
+                                warehouse_lon: 151.2,
+                                warehouse_lat: -33.8,
+                                weight_kg: 2,
+                                scheduled_arrival: null,
+                                customer_lon: 151.3,
+                                customer_lat: -33.9,
+                            },
+                        ])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([]), // no pinned packages
+                );
+
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                    { organisationId: 'org-1' },
+                );
+
+                const vehicle = result.request.vehicles[0];
+                expect(vehicle.max_travel_time).toBeUndefined();
+                expect(vehicle.max_distance).toBeUndefined();
+                expect(vehicle.max_tasks).toBeUndefined();
+                expect(
+                    runner.query.mock.calls.some(([sql]) =>
+                        String(sql).includes('driving_limit_profile'),
+                    ),
+                ).toBe(false);
+            });
+
+            it("sends the assigned driver's resolved limits to the vehicle once the flag is on", async () => {
+                process.env.DRIVING_LIMITS = 'on';
+                const today = new Date();
+                const runner = makeRunner(
+                    jest
+                        .fn()
+                        .mockResolvedValueOnce([
+                            {
+                                id: 'pkg-1',
+                                tracking_number: 'TRK001',
+                                created_at: today,
+                                warehouse_id: 'wh-1',
+                                warehouse_lon: 151.2,
+                                warehouse_lat: -33.8,
+                                weight_kg: 2,
+                                scheduled_arrival: null,
+                                customer_lon: 151.3,
+                                customer_lat: -33.9,
+                            },
+                        ])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW]) // driver_id: drv-1
+                        .mockResolvedValueOnce([
+                            {
+                                driver_id: 'drv-1',
+                                driver_max_working_seconds: null,
+                                driver_max_driving_seconds: 1_800,
+                                driver_max_distance_m: 50_000,
+                                driver_max_stops: null,
+                                org_max_working_seconds: null,
+                                org_max_driving_seconds: null,
+                                org_max_distance_m: null,
+                                org_max_stops: null,
+                            },
+                        ])
+                        .mockResolvedValueOnce([]), // no pinned packages
+                );
+
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                    { organisationId: 'org-1' },
+                );
+
+                const vehicle = result.request.vehicles[0];
+                expect(vehicle.max_travel_time).toBe(1_800);
+                expect(vehicle.max_distance).toBe(50_000);
+                expect(vehicle.max_tasks).toBeUndefined();
+            });
+        });
     });
 
     // ---------------------------------------------------------------------------

@@ -16,6 +16,13 @@ import type { OptimizationResponse } from '../vroom/vroom.types';
 import { orsProfileToValhallaCosting } from '../vroom/profile-map';
 import { SkillIndex } from '../vroom/skill-index';
 import { SHIFT_WINDOW_SECONDS, TIME_PER_STOP } from '../dispatch/insertion';
+import {
+    driverLimitsOrDefault,
+    driverLimitsOrDefaultForDrivers,
+    NO_LIMITS,
+    vroomVehicleLimits,
+    type DrivingLimits,
+} from '../dispatch/driving-limits';
 import type {
     AssignmentRow,
     BuildOptions,
@@ -337,6 +344,18 @@ export class DatabaseService implements OnApplicationBootstrap {
         skillIndex.register(assignments.map((a) => a.skill_ids));
         skillIndex.register(packages.map((p) => p.skill_ids));
 
+        // 3d. Every assigned driver's effective limits, in one round trip —
+        //     NO_LIMITS for all of them with no query while DRIVING_LIMITS is
+        //     off (see driving-limits.ts). Resolved before the vehicle loop
+        //     below since building it is synchronous.
+        const limitsByDriver = organisationId
+            ? await driverLimitsOrDefaultForDrivers(
+                  runner,
+                  organisationId,
+                  assignments.map((a) => a.driver_id),
+              )
+            : new Map<string, DrivingLimits>();
+
         // 4. Build vehicles array.
         const vehicles: BuildResult['request']['vehicles'] = [];
         const vehicleMap: Record<number, string> = {};
@@ -362,7 +381,13 @@ export class DatabaseService implements OnApplicationBootstrap {
             // the same clock. Arrivals come back absolute and are normalised back
             // to relative-from-departure on the way into the database.
             const setOff = setOffByVehicle[a.vehicle_id] ?? nowEpoch;
-            vehicle.time_window = [setOff, setOff + SHIFT_WINDOW_SECONDS];
+            Object.assign(
+                vehicle,
+                vroomVehicleLimits(
+                    limitsByDriver.get(a.driver_id) ?? NO_LIMITS,
+                    [setOff, setOff + SHIFT_WINDOW_SECONDS],
+                ),
+            );
             vehicles.push(vehicle);
             vehicleMap[vehicleNumericId] = a.vehicle_id;
             if (a.driver_id) {
@@ -441,6 +466,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         //    single-vehicle request per pair so they still get a route.
         const pinnedRoutes = await this.buildPinnedRoutes(
             runner,
+            organisationId,
             opts.warehouseId ?? null,
             warehouseCoords,
             setOffByVehicle,
@@ -473,6 +499,7 @@ export class DatabaseService implements OnApplicationBootstrap {
      */
     private async buildPinnedRoutes(
         runner: QueryRunner,
+        organisationId: string | null,
         warehouseId: string | null,
         warehouseCoords: [number, number],
         setOffByVehicle: Record<string, number>,
@@ -558,6 +585,14 @@ export class DatabaseService implements OnApplicationBootstrap {
                 setOffByVehicle[group.vehicleId] ??
                 Math.floor(now.getTime() / 1000);
 
+            const limits = organisationId
+                ? await driverLimitsOrDefault(
+                      runner,
+                      organisationId,
+                      group.driverId,
+                  )
+                : NO_LIMITS;
+
             // Solved as its own VROOM request (see runWarehouseOptimisation),
             // so its skill index is scoped to just this group rather than
             // shared with the main solve above.
@@ -622,10 +657,10 @@ export class DatabaseService implements OnApplicationBootstrap {
                             start: warehouseCoords,
                             end: warehouseCoords,
                             capacity: [group.capacityG],
-                            time_window: [
+                            ...vroomVehicleLimits(limits, [
                                 setOff,
                                 setOff + SHIFT_WINDOW_SECONDS,
-                            ],
+                            ]),
                             skills: skillIndex.indicesFor(
                                 group.vehicleSkillIds,
                             ),

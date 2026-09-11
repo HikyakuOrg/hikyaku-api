@@ -261,6 +261,104 @@ export async function resolveDrivingLimitsForDriver(
     return forDriver;
 }
 
+/**
+ * One driver's effective limits, or NO_LIMITS with no query at all when
+ * DRIVING_LIMITS is off or the caller has no driver yet (an unopened shift,
+ * a row still being loaded).
+ *
+ * The gate every caller across both tiers should go through rather than
+ * hand-rolling `!driverId || !drivingLimitsEnabled()` themselves — three
+ * near-identical copies of that check is exactly the kind of drift this
+ * module's own header warns against.
+ */
+export async function driverLimitsOrDefault(
+    executor: DrivingLimitsQueryExecutor,
+    organisationId: string,
+    driverId: string | null,
+): Promise<DrivingLimits> {
+    if (!driverId || !drivingLimitsEnabled()) return NO_LIMITS;
+    return resolveDrivingLimitsForDriver(executor, organisationId, driverId);
+}
+
+/**
+ * Every listed driver's effective limits, in one round trip, or NO_LIMITS
+ * for all of them with no query when DRIVING_LIMITS is off. The batch
+ * counterpart to `driverLimitsOrDefault`.
+ */
+export async function driverLimitsOrDefaultForDrivers(
+    executor: DrivingLimitsQueryExecutor,
+    organisationId: string,
+    driverIds: readonly string[],
+): Promise<Map<string, DrivingLimits>> {
+    if (!drivingLimitsEnabled()) return noLimitsForDrivers(driverIds);
+    return resolveDrivingLimitsForDrivers(executor, organisationId, driverIds);
+}
+
+// ── Tier 2: VROOM ────────────────────────────────────────────────────────────
+
+/** The VROOM vehicle fields a driver's limits translate to. */
+export interface VroomVehicleLimits {
+    time_window: [number, number];
+    max_travel_time?: number;
+    max_distance?: number;
+    max_tasks?: number;
+}
+
+/**
+ * How a driver's limits bind on a VROOM vehicle, given the window it would
+ * otherwise get (normally `[setOff, setOff + SHIFT_WINDOW_SECONDS]`).
+ *
+ * `maxDrivingSeconds` -> `max_travel_time`, NOT the working-time limit despite
+ * the tempting name: VROOM's `max_travel_time` counts travel only. Service,
+ * setup, waiting and break durations are excluded — VROOM accumulates those
+ * separately, in a field this limit never sees. There is no VROOM field for
+ * working time in any released version; the maintainer's own documented
+ * workaround for it is the vehicle `time_window`, which is what
+ * `maxWorkingSeconds` narrows below. Getting the two backwards would let a
+ * driver's actual on-road time run past their working-time cap.
+ *
+ * `maxWorkingSeconds` narrows `time_window`'s end, never widens it — same
+ * rule Tier 1's `cheapestPosition` applies to its own copy of this window
+ * (see SHIFT_WINDOW_SECONDS in insertion.ts). The window itself is never
+ * dropped to express "no limit": VROOM needs SOME time_window present for
+ * `step.arrival` to report absolute epoch seconds, which every caller here
+ * already depends on.
+ *
+ * `maxDistanceM` -> `max_distance`, unconverted: both are already metres.
+ * The profile stores metres and VROOM's field takes metres — no conversion
+ * belongs on this path, the same rule that keeps `vehicle_gross_limits`
+ * (kilograms) and job `amount` (grams) from ever silently colliding.
+ *
+ * `maxStops` -> `max_tasks`: a job counts 1 towards it; this fleet sends no
+ * breaks, so there is nothing else on a route that could.
+ *
+ * A null limit on any dimension omits that VROOM field entirely, which is
+ * VROOM's own spelling of "no limit" — so a fully-null `limits` produces
+ * byte-for-byte today's request, just the `time_window` unchanged.
+ */
+export function vroomVehicleLimits(
+    limits: DrivingLimits,
+    window: readonly [number, number],
+): VroomVehicleLimits {
+    const [start, end] = window;
+    const result: VroomVehicleLimits = {
+        time_window:
+            limits.maxWorkingSeconds != null
+                ? [start, Math.min(end, start + limits.maxWorkingSeconds)]
+                : [start, end],
+    };
+    if (limits.maxDrivingSeconds != null) {
+        result.max_travel_time = limits.maxDrivingSeconds;
+    }
+    if (limits.maxDistanceM != null) {
+        result.max_distance = limits.maxDistanceM;
+    }
+    if (limits.maxStops != null) {
+        result.max_tasks = limits.maxStops;
+    }
+    return result;
+}
+
 // ── Row shape checking ───────────────────────────────────────────────────────
 
 /** Reads one nullable numeric column, coercing a text-mode driver's string back to a number. */

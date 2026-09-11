@@ -1,4 +1,6 @@
 import {
+    driverLimitsOrDefault,
+    driverLimitsOrDefaultForDrivers,
     DRIVING_LIMITS_SQL,
     drivingLimitsEnabled,
     NO_LIMITS,
@@ -7,6 +9,8 @@ import {
     resolveDrivingLimitsForDriver,
     resolveDrivingLimitsForDrivers,
     resolveLimits,
+    vroomVehicleLimits,
+    type DrivingLimits,
     type DrivingLimitsQueryExecutor,
 } from './driving-limits';
 
@@ -306,5 +310,153 @@ describe('drivingLimitsEnabled', () => {
         expect(drivingLimitsEnabled()).toBe(false);
         process.env.DRIVING_LIMITS = 'on';
         expect(drivingLimitsEnabled()).toBe(true);
+    });
+});
+
+describe('driverLimitsOrDefault', () => {
+    const original = process.env.DRIVING_LIMITS;
+
+    afterEach(() => {
+        if (original === undefined) delete process.env.DRIVING_LIMITS;
+        else process.env.DRIVING_LIMITS = original;
+    });
+
+    it('answers NO_LIMITS with no query while the flag is off', async () => {
+        delete process.env.DRIVING_LIMITS;
+        const executor = fakeExecutor([
+            row('driver-1', { driver_max_stops: 5 }),
+        ]);
+
+        const limits = await driverLimitsOrDefault(executor, ORG, 'driver-1');
+
+        expect(limits).toBe(NO_LIMITS);
+        expect(executor.calls).toHaveLength(0);
+    });
+
+    it('answers NO_LIMITS with no query for a null driver, even with the flag on', async () => {
+        process.env.DRIVING_LIMITS = 'on';
+        const executor = fakeExecutor([]);
+
+        const limits = await driverLimitsOrDefault(executor, ORG, null);
+
+        expect(limits).toBe(NO_LIMITS);
+        expect(executor.calls).toHaveLength(0);
+    });
+
+    it('resolves through the real query once the flag is on', async () => {
+        process.env.DRIVING_LIMITS = 'on';
+        const executor = fakeExecutor([
+            row('driver-1', { driver_max_stops: 5 }),
+        ]);
+
+        const limits = await driverLimitsOrDefault(executor, ORG, 'driver-1');
+
+        expect(limits.maxStops).toBe(5);
+        expect(executor.calls).toHaveLength(1);
+    });
+});
+
+describe('driverLimitsOrDefaultForDrivers', () => {
+    const original = process.env.DRIVING_LIMITS;
+
+    afterEach(() => {
+        if (original === undefined) delete process.env.DRIVING_LIMITS;
+        else process.env.DRIVING_LIMITS = original;
+    });
+
+    it('answers every driver with NO_LIMITS and no query while the flag is off', async () => {
+        delete process.env.DRIVING_LIMITS;
+        const executor = fakeExecutor([
+            row('driver-1', { driver_max_stops: 5 }),
+        ]);
+
+        const limits = await driverLimitsOrDefaultForDrivers(executor, ORG, [
+            'driver-1',
+            'driver-2',
+        ]);
+
+        expect(limits.get('driver-1')).toBe(NO_LIMITS);
+        expect(limits.get('driver-2')).toBe(NO_LIMITS);
+        expect(executor.calls).toHaveLength(0);
+    });
+
+    it('resolves the whole batch through the real query once the flag is on', async () => {
+        process.env.DRIVING_LIMITS = 'on';
+        const executor = fakeExecutor([
+            row('driver-1', { driver_max_stops: 5 }),
+        ]);
+
+        const limits = await driverLimitsOrDefaultForDrivers(executor, ORG, [
+            'driver-1',
+        ]);
+
+        expect(limits.get('driver-1')?.maxStops).toBe(5);
+        expect(executor.calls).toHaveLength(1);
+    });
+});
+
+describe('vroomVehicleLimits', () => {
+    const WINDOW: [number, number] = [1_000, 1_000 + 12 * 3600];
+
+    it('produces byte-for-byte the unmodified window and no other fields when every limit is null', () => {
+        expect(vroomVehicleLimits(NO_LIMITS, WINDOW)).toEqual({
+            time_window: WINDOW,
+        });
+    });
+
+    it('narrows the window end by maxWorkingSeconds, never widening it', () => {
+        const limits: DrivingLimits = {
+            ...NO_LIMITS,
+            maxWorkingSeconds: 3_600,
+        };
+        expect(vroomVehicleLimits(limits, WINDOW)).toEqual({
+            time_window: [1_000, 1_000 + 3_600],
+        });
+    });
+
+    it('leaves the window alone when maxWorkingSeconds is looser than it', () => {
+        const limits: DrivingLimits = {
+            ...NO_LIMITS,
+            maxWorkingSeconds: 999_999,
+        };
+        expect(vroomVehicleLimits(limits, WINDOW).time_window).toEqual(WINDOW);
+    });
+
+    it('maps maxDrivingSeconds to max_travel_time, not the window', () => {
+        // The finding the ticket calls out explicitly: max_travel_time counts
+        // travel only, so it must never be confused with the working-time
+        // limit above, which is what narrows the window instead.
+        const limits: DrivingLimits = {
+            ...NO_LIMITS,
+            maxDrivingSeconds: 7_200,
+        };
+        const result = vroomVehicleLimits(limits, WINDOW);
+        expect(result.max_travel_time).toBe(7_200);
+        expect(result.time_window).toEqual(WINDOW);
+    });
+
+    it('maps maxDistanceM to max_distance, unconverted', () => {
+        const limits: DrivingLimits = { ...NO_LIMITS, maxDistanceM: 250_000 };
+        expect(vroomVehicleLimits(limits, WINDOW).max_distance).toBe(250_000);
+    });
+
+    it('maps maxStops to max_tasks', () => {
+        const limits: DrivingLimits = { ...NO_LIMITS, maxStops: 25 };
+        expect(vroomVehicleLimits(limits, WINDOW).max_tasks).toBe(25);
+    });
+
+    it('sets all four independently, none masking another', () => {
+        const limits: DrivingLimits = {
+            maxWorkingSeconds: 3_600,
+            maxDrivingSeconds: 1_800,
+            maxDistanceM: 50_000,
+            maxStops: 10,
+        };
+        expect(vroomVehicleLimits(limits, WINDOW)).toEqual({
+            time_window: [1_000, 1_000 + 3_600],
+            max_travel_time: 1_800,
+            max_distance: 50_000,
+            max_tasks: 10,
+        });
     });
 });

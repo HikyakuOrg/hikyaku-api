@@ -10,7 +10,11 @@ import { OptimisationRun } from 'src/entities/optimisation-run.entity';
 import { DatabaseService } from 'src/database/database.service';
 import { VroomService } from 'src/vroom/vroom.service';
 import { orsProfileToValhallaCosting } from 'src/vroom/profile-map';
-import type { VroomJob, VroomRequest } from 'src/vroom/vroom.types';
+import type {
+    OptimizationRoute,
+    VroomJob,
+    VroomRequest,
+} from 'src/vroom/vroom.types';
 import { SkillIndex } from 'src/vroom/skill-index';
 import type { SetOffOverride } from 'src/database/database.types';
 import { PgNotifyService } from './pg-notify.service';
@@ -22,6 +26,12 @@ import {
 import { ShiftPlanWriter, type PlanStop } from './shift-plan.writer';
 import { AssignmentService } from './assignment.service';
 import { SHIFT_WINDOW_SECONDS, TIME_PER_STOP } from './insertion';
+import {
+    driverLimitsOrDefault,
+    NO_LIMITS,
+    vroomVehicleLimits,
+    type DrivingLimits,
+} from './driving-limits';
 
 /** Coalescing window for replan notifications, in ms. */
 const DEBOUNCE_MS = 3_000;
@@ -273,6 +283,14 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             if (shift.depot_lon == null || shift.depot_lat == null) return;
             if (!shift.driver_id || !shift.vehicle_id) return;
 
+            const limits = shift.organisation_id
+                ? await driverLimitsOrDefault(
+                      this.dataSource,
+                      shift.organisation_id,
+                      shift.driver_id,
+                  )
+                : NO_LIMITS;
+
             const packages = await this.loadShiftPackages(optimisationId);
             const routable = packages.filter(
                 (p) => p.lon != null && p.lat != null,
@@ -331,10 +349,10 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                         capacity: [
                             this.capacityGrams(shift.vehicle_gross_limits),
                         ],
-                        time_window: [
+                        ...vroomVehicleLimits(limits, [
                             departureEpoch,
                             departureEpoch + SHIFT_WINDOW_SECONDS,
-                        ],
+                        ]),
                         skills: skillIndex.indicesFor(shift.skill_ids),
                     },
                 ],
@@ -343,6 +361,28 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             const response = await this.vroom.solve(request);
 
             const route = response.routes?.[0];
+            if (route && this.breachesLimits(route, limits, departureEpoch)) {
+                // The one real routing call VROOM makes should have honoured
+                // these as hard constraints; a route that comes back over one
+                // anyway means the field was unsupported by this build, or
+                // silently ignored. Either way, writing it would hand this
+                // driver exactly the route this ticket exists to stop, so the
+                // solve is treated as failed: log loudly and leave the
+                // shift's existing plan untouched rather than persist it.
+                const duration =
+                    route.duration != null ? `${route.duration}s` : 'unknown';
+                const distance =
+                    route.distance != null ? `${route.distance}m` : 'unknown';
+                this.logger.error(
+                    `Replan for shift ${optimisationId} returned a route ` +
+                        `breaching driver ${shift.driver_id}'s limits ` +
+                        `(duration ${duration}, distance ${distance}, ` +
+                        `${route.steps.filter((s) => s.type === 'job').length} stop(s)); ` +
+                        'refusing to write it.',
+                );
+                return;
+            }
+
             const stops: PlanStop[] = [];
             const packageById = new Map(routable.map((p) => [p.id, p]));
 
@@ -638,5 +678,48 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
     private weightGrams(weightKg: string | number | null): number {
         const kg = typeof weightKg === 'string' ? Number(weightKg) : weightKg;
         return Number.isFinite(kg) && kg ? Math.round(Number(kg) * 1000) : 1;
+    }
+
+    /**
+     * Does this returned route violate a limit `vroomVehicleLimits` already
+     * asked VROOM to respect?
+     *
+     * Not the primary enforcement — VROOM's own hard constraints are — this
+     * is the backstop for a build that does not honour one of them. Working
+     * time is checked here too even though it is enforced via `time_window`
+     * rather than a VROOM limit field, for the same defence-in-depth reason:
+     * the 'end' step's arrival is absolute epoch seconds whenever a vehicle
+     * time_window is present, which it always is on this path.
+     */
+    private breachesLimits(
+        route: OptimizationRoute,
+        limits: DrivingLimits,
+        departureEpoch: number,
+    ): boolean {
+        if (
+            limits.maxDrivingSeconds != null &&
+            (route.duration ?? 0) > limits.maxDrivingSeconds
+        ) {
+            return true;
+        }
+        if (
+            limits.maxDistanceM != null &&
+            (route.distance ?? 0) > limits.maxDistanceM
+        ) {
+            return true;
+        }
+        if (limits.maxStops != null) {
+            const stopCount = route.steps.filter(
+                (s) => s.type === 'job',
+            ).length;
+            if (stopCount > limits.maxStops) return true;
+        }
+        if (limits.maxWorkingSeconds != null) {
+            const end = route.steps.find((s) => s.type === 'end');
+            const workingSeconds =
+                (end?.arrival ?? departureEpoch) - departureEpoch;
+            if (workingSeconds > limits.maxWorkingSeconds) return true;
+        }
+        return false;
     }
 }
