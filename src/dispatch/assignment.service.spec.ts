@@ -43,8 +43,22 @@ interface DbState {
      * the shifts and idle pairs in the fixture when it is not given.
      */
     drivers?: string[];
+    /**
+     * A driver's raw driving_limit_profile row, keyed by driver id. Absent
+     * for a driver means no profile at all — every column comes back null,
+     * same as the LEFT JOIN in the real query does.
+     */
+    drivingLimits?: Record<string, Partial<DrivingLimitProfileRow>>;
     /** SQL fragment that should throw, and the error to throw. */
     failOn?: { fragment: string; error: Error };
+}
+
+/** One driver's raw driving-limit columns, before resolveLimits applies the fallback. */
+interface DrivingLimitProfileRow {
+    maxWorkingSeconds: number | null;
+    maxDrivingSeconds: number | null;
+    maxDistanceM: number | null;
+    maxStops: number | null;
 }
 
 /** One row of the coverage query's result, as the pg driver hands it back. */
@@ -234,6 +248,29 @@ function makeDb(state: DbState) {
         if (sql.includes('FROM drivers d')) {
             return knownDrivers().map(floaterRow);
         }
+        if (sql.includes('FROM input_drivers idr')) {
+            // One row per input id, exactly like the real unnest($2)-driven
+            // query: an id with no fixture entry reads as an all-null
+            // profile, resolving to NO_LIMITS same as a driver with no
+            // profile linked at all.
+            const driverIds = (params[1] as string[]) ?? [];
+            return driverIds.map((driverId) => {
+                const profile = state.drivingLimits?.[driverId];
+                return {
+                    driver_id: driverId,
+                    driver_max_working_seconds:
+                        profile?.maxWorkingSeconds ?? null,
+                    driver_max_driving_seconds:
+                        profile?.maxDrivingSeconds ?? null,
+                    driver_max_distance_m: profile?.maxDistanceM ?? null,
+                    driver_max_stops: profile?.maxStops ?? null,
+                    org_max_working_seconds: null,
+                    org_max_driving_seconds: null,
+                    org_max_distance_m: null,
+                    org_max_stops: null,
+                };
+            });
+        }
         if (sql.includes('FROM warehouse w')) {
             return state.warehouse === undefined
                 ? [WAREHOUSE]
@@ -357,6 +394,7 @@ describe('AssignmentService', () => {
     const originalMode = process.env.ASSIGNMENT_MODE;
     const originalSpread = process.env.LOAD_SPREAD_ENABLED;
     const originalMatching = process.env.SERVICE_AREA_MATCHING;
+    const originalDrivingLimits = process.env.DRIVING_LIMITS;
 
     beforeEach(() => {
         // Only the clock is faked. Faking the microtask queue as well makes every
@@ -375,6 +413,9 @@ describe('AssignmentService', () => {
         // written before they existed are the ones that check it. The cases
         // that need matching on turn it on for themselves.
         delete process.env.SERVICE_AREA_MATCHING;
+        // Same reasoning as SERVICE_AREA_MATCHING: off by default so every
+        // test written before HIK-83 keeps its old, limit-free behaviour.
+        delete process.env.DRIVING_LIMITS;
     });
 
     afterEach(() => {
@@ -387,6 +428,9 @@ describe('AssignmentService', () => {
         if (originalMatching === undefined)
             delete process.env.SERVICE_AREA_MATCHING;
         else process.env.SERVICE_AREA_MATCHING = originalMatching;
+        if (originalDrivingLimits === undefined)
+            delete process.env.DRIVING_LIMITS;
+        else process.env.DRIVING_LIMITS = originalDrivingLimits;
     });
 
     describe('the feature flag', () => {
@@ -593,6 +637,65 @@ describe('AssignmentService', () => {
             );
             expect(idlePairQueries).toHaveLength(1);
             expect(idlePairQueries[0].sql).toContain('ANY($4::uuid[])');
+        });
+    });
+
+    describe('the driving-limits kill switch (HIK-83)', () => {
+        it('reads no driving-limit-profile table while it is off', async () => {
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(false);
+        });
+
+        it('reads it once it is on, so the assertion above means something', async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(true);
+        });
+
+        it("warns a dispatcher pin that breaches this driver's driving-time cap", async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { service } = build({
+                shifts: [EDITABLE_SHIFT],
+                drivingLimits: { 'driver-1': { maxDrivingSeconds: 1 } },
+            });
+
+            const { verdicts } = await service.assignToShift(
+                'org-1',
+                'shift-1',
+                ['pkg-1'],
+            );
+
+            // Wrong on purpose is still allowed: the pin goes through, but the
+            // dispatcher has to be told exactly why, in words that name the
+            // limit rather than just a generic deadline complaint.
+            expect(verdicts).toHaveLength(1);
+            expect(verdicts[0]?.packageId).toBe('pkg-1');
+            expect(verdicts[0]?.added).toBe(true);
+            expect(verdicts[0]?.warning).toContain('driving-time limit');
+        });
+
+        it("keeps a package off an auto-assign shift whose driver's cap is too tight", async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { service, log } = build({
+                shifts: [SHIFT, SHIFT_2],
+                drivingLimits: { 'driver-1': { maxDrivingSeconds: 1 } },
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            // shift-1's driver (driver-1) cannot take it at all; shift-2's
+            // driver (driver-2) has no profile, so NO_LIMITS lets it through.
+            expect(outcome.outcome).toBe('assigned');
+            expect(outcome.shift?.id).toBe('shift-2');
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(true);
         });
     });
 

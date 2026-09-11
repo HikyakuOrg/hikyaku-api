@@ -15,6 +15,8 @@
  * slack a few seconds later with real road distances.
  */
 
+import type { DrivingLimits } from './driving-limits';
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /**
@@ -147,6 +149,12 @@ export interface CandidateShift {
     depot: GeoPoint;
     /** Existing job steps in visiting order. */
     stops: RouteStop[];
+    /**
+     * This driver's resolved driving limits (HIK-82). Any of the four may be
+     * null, meaning no limit on that dimension — including all four, which is
+     * every caller's answer while DRIVING_LIMITS is off or nobody has set one.
+     */
+    limits: DrivingLimits;
 }
 
 /** The package being placed. */
@@ -160,7 +168,14 @@ export interface IncomingPackage {
     evictionCount: number;
 }
 
-export type InsertionFailure = 'weight' | 'max_stops' | 'deadline' | 'window';
+export type InsertionFailure =
+    | 'weight'
+    | 'max_stops'
+    | 'deadline'
+    | 'window'
+    | 'drive_time'
+    | 'distance'
+    | 'stop_limit';
 
 export interface InsertionSuccess {
     feasible: true;
@@ -176,6 +191,21 @@ export interface InsertionSuccess {
      * on the route has a binding deadline.
      */
     slackRatio: number;
+    /**
+     * Headroom against `limits.maxDrivingSeconds`, as a fraction of the limit
+     * remaining. Same GREY_BAND meaning as slackRatio: below it the estimate
+     * is too close to the driving-time cap to trust, and Infinity when there
+     * is no limit to be close to.
+     */
+    driveTimeSlackRatio: number;
+    /**
+     * Headroom against `limits.maxDistanceM`, as a fraction of the limit
+     * remaining, measured against the SAME pessimistic figure the distance
+     * gate itself compares — see the gate check in cheapestPosition for why
+     * that figure carries TIER1_SAFETY and totalDistanceM does not. Infinity
+     * when there is no distance limit.
+     */
+    distanceSlackRatio: number;
     /** Arrival epoch ms per job step, in the resulting visiting order. */
     arrivalsMs: number[];
     /**
@@ -197,9 +227,26 @@ export interface InsertionRejection {
     feasible: false;
     shiftId: string;
     reason: InsertionFailure;
+    /**
+     * The number that actually breached the limit, and the limit itself, for
+     * 'drive_time' | 'distance' | 'stop_limit'. Absent for the older reasons,
+     * none of which carry this kind of detail today. Seconds, metres or a
+     * stop count depending on `reason` — the caller already knows which, and
+     * is the one place that knows how to word it (see
+     * AssignmentService.warningFor).
+     */
+    detail?: { actual: number; limit: number };
 }
 
 export type InsertionResult = InsertionSuccess | InsertionRejection;
+
+/** One leg's real routed duration and distance, from a grey-band Valhalla call. */
+export interface MeasuredLeg {
+    /** Real routed travel time, seconds. */
+    seconds: number;
+    /** Real routed distance, metres. */
+    meters: number;
+}
 
 /** Everything the pure layer needs to know about "now" and "today". */
 export interface InsertionContext {
@@ -211,11 +258,11 @@ export interface InsertionContext {
      */
     shiftDayEndMs: number;
     /**
-     * Per-leg travel seconds measured by the router, keyed "fromLon,fromLat>toLon,toLat".
+     * Per-leg measurements from the router, keyed "fromLon,fromLat>toLon,toLat".
      * Populated only for a grey-band re-check; absent keys fall back to the
-     * haversine estimate.
+     * haversine estimate on both duration and distance.
      */
-    measuredLegs?: Readonly<Record<string, number>>;
+    measuredLegs?: Readonly<Record<string, MeasuredLeg>>;
 }
 
 // ── Geometry and time ────────────────────────────────────────────────────────
@@ -242,15 +289,22 @@ export function legKey(from: GeoPoint, to: GeoPoint): string {
 
 /**
  * Estimated road distance from `from` to `to`, in metres: haversine inflated
- * for road detour. This is the distance side of estimateLeg, pulled out on its
- * own because distance and drive-time diverge once a leg is grey-band-measured
- * — a measured leg replaces the TIME estimate with a real routing duration,
- * but buys no measured distance, so this stays the estimate on every leg
- * regardless of `measured`. Pessimistic on purpose, same as the time estimate:
- * DETOUR_FACTOR only ever inflates, and for a distance CAP the safe direction
- * is to read a little high.
+ * for road detour, or the real measured distance when the grey band has one.
+ *
+ * This is the honest estimate — the one ShiftPlanWriter persists as the
+ * shift's displayed distance (see HIK-81) — and it is deliberately NOT where
+ * the extra caution for the distance GATE lives. See gateLegMeters for that;
+ * stacking a second safety margin on top of DETOUR_FACTOR here would make the
+ * distance a dispatcher reads increasingly dishonest for the one thing it is
+ * shown for: how far this route will actually be.
  */
-export function estimateLegMeters(from: GeoPoint, to: GeoPoint): number {
+export function estimateLegMeters(
+    from: GeoPoint,
+    to: GeoPoint,
+    measured?: Readonly<Record<string, MeasuredLeg>>,
+): number {
+    const m = measured?.[legKey(from, to)];
+    if (m != null) return m.meters;
     return haversineMeters(from, to) * DETOUR_FACTOR;
 }
 
@@ -264,12 +318,40 @@ export function estimateLegMeters(from: GeoPoint, to: GeoPoint): number {
 export function estimateLeg(
     from: GeoPoint,
     to: GeoPoint,
-    measured?: Readonly<Record<string, number>>,
+    measured?: Readonly<Record<string, MeasuredLeg>>,
 ): number {
-    const measuredSeconds = measured?.[legKey(from, to)];
-    if (measuredSeconds != null) return measuredSeconds;
+    const m = measured?.[legKey(from, to)];
+    if (m != null) return m.seconds;
 
     return (estimateLegMeters(from, to) / AVG_SPEED_MPS) * TIER1_SAFETY;
+}
+
+/**
+ * Estimated road distance for the DISTANCE GATE specifically, in metres.
+ *
+ * Same DETOUR_FACTOR-inflated estimate as estimateLegMeters, further inflated
+ * by TIER1_SAFETY — the judgement call HIK-83 calls for, made yes, for
+ * consistency with how estimateLeg already treats time: a leg that has not
+ * been measured pays the same safety margin on both dimensions. A leg the
+ * grey band HAS measured bypasses the margin entirely, exactly as estimateLeg
+ * does for duration — a real routed distance needs no padding.
+ *
+ * Deliberately separate from estimateLegMeters rather than adding the margin
+ * there: that function's total is what gets persisted as the shift's
+ * displayed distance (HIK-81), and a false "too far" there only costs a
+ * dispatcher reading a slightly pessimistic figure, while a false "fits"
+ * against a hard cap is the failure mode this whole epic exists to close. The
+ * gate needs the extra caution more than the display needs the honesty, so
+ * the two read different numbers on purpose.
+ */
+function gateLegMeters(
+    from: GeoPoint,
+    to: GeoPoint,
+    measured?: Readonly<Record<string, MeasuredLeg>>,
+): number {
+    const m = measured?.[legKey(from, to)];
+    if (m != null) return m.meters;
+    return estimateLegMeters(from, to) * TIER1_SAFETY;
 }
 
 /**
@@ -300,6 +382,12 @@ interface Timing {
     returnLegDistanceM: number;
     /** Total route distance, metres, including the return leg. */
     totalDistanceM: number;
+    /**
+     * Total route distance for the distance GATE, metres: gateLegMeters
+     * summed the same way totalDistanceM is. Never persisted, never shown —
+     * see gateLegMeters for why it diverges from totalDistanceM.
+     */
+    gateDistanceM: number;
 }
 
 /**
@@ -317,20 +405,22 @@ function timeRoute(
     depot: GeoPoint,
     departureMs: number,
     order: readonly GeoPoint[],
-    measured?: Readonly<Record<string, number>>,
+    measured?: Readonly<Record<string, MeasuredLeg>>,
 ): Timing {
     const arrivalsMs: number[] = [];
     const distancesM: number[] = [];
     let cursorMs = departureMs;
     let driveSeconds = 0;
     let distanceM = 0;
+    let gateDistanceM = 0;
     let previous = depot;
 
     for (const stop of order) {
         const leg = estimateLeg(previous, stop, measured);
-        const legM = estimateLegMeters(previous, stop);
+        const legM = estimateLegMeters(previous, stop, measured);
         driveSeconds += leg;
         distanceM += legM;
+        gateDistanceM += gateLegMeters(previous, stop, measured);
         cursorMs += leg * 1000;
         arrivalsMs.push(cursorMs);
         distancesM.push(legM);
@@ -339,9 +429,10 @@ function timeRoute(
     }
 
     const legHome = estimateLeg(previous, depot, measured);
-    const legHomeM = estimateLegMeters(previous, depot);
+    const legHomeM = estimateLegMeters(previous, depot, measured);
     driveSeconds += legHome;
     distanceM += legHomeM;
+    gateDistanceM += gateLegMeters(previous, depot, measured);
 
     return {
         arrivalsMs,
@@ -350,6 +441,7 @@ function timeRoute(
         distancesM,
         returnLegDistanceM: legHomeM,
         totalDistanceM: distanceM,
+        gateDistanceM,
     };
 }
 
@@ -365,7 +457,7 @@ export function scheduleRoute(
     depot: GeoPoint,
     departureMs: number,
     order: readonly GeoPoint[],
-    measured?: Readonly<Record<string, number>>,
+    measured?: Readonly<Record<string, MeasuredLeg>>,
 ): {
     arrivalsMs: number[];
     distancesM: number[];
@@ -388,7 +480,7 @@ export function scheduleRoute(
 function driveSeconds(
     depot: GeoPoint,
     order: readonly GeoPoint[],
-    measured?: Readonly<Record<string, number>>,
+    measured?: Readonly<Record<string, MeasuredLeg>>,
 ): number {
     let total = 0;
     let previous = depot;
@@ -417,13 +509,24 @@ export function cheapestPosition(
     const measured = ctx.measuredLegs;
     const incoming: GeoPoint = { lon: pkg.lon, lat: pkg.lat };
     const baseline = driveSeconds(shift.depot, shift.stops, measured);
-    const windowEndMs = shift.departureMs + SHIFT_WINDOW_SECONDS * 1000;
+    const { limits } = shift;
+    // max_working_seconds narrows the window; it may only ever tighten
+    // SHIFT_WINDOW_SECONDS, never widen it, so a null or looser profile value
+    // leaves today's behaviour exactly as it was.
+    const windowEndMs =
+        shift.departureMs +
+        Math.min(
+            SHIFT_WINDOW_SECONDS,
+            limits.maxWorkingSeconds ?? Number.POSITIVE_INFINITY,
+        ) *
+            1000;
 
     let best: InsertionSuccess | null = null;
     // A rejection is only reported once every position has failed, and the last
     // reason seen is the most informative: 'window' beats 'deadline' only if
     // nothing ever got as far as a deadline check.
     let worstReason: InsertionFailure = 'deadline';
+    let worstDetail: { actual: number; limit: number } | undefined;
 
     for (let index = 0; index <= shift.stops.length; index++) {
         const points: GeoPoint[] = [];
@@ -457,6 +560,31 @@ export function cheapestPosition(
 
         if (timing.returnMs > windowEndMs) {
             worstReason = 'window';
+            worstDetail = undefined;
+            continue;
+        }
+
+        if (
+            limits.maxDrivingSeconds != null &&
+            timing.totalDriveSeconds > limits.maxDrivingSeconds
+        ) {
+            worstReason = 'drive_time';
+            worstDetail = {
+                actual: timing.totalDriveSeconds,
+                limit: limits.maxDrivingSeconds,
+            };
+            continue;
+        }
+
+        if (
+            limits.maxDistanceM != null &&
+            timing.gateDistanceM > limits.maxDistanceM
+        ) {
+            worstReason = 'distance';
+            worstDetail = {
+                actual: timing.gateDistanceM,
+                limit: limits.maxDistanceM,
+            };
             continue;
         }
 
@@ -479,6 +607,7 @@ export function cheapestPosition(
 
         if (breached) {
             worstReason = 'deadline';
+            worstDetail = undefined;
             continue;
         }
 
@@ -490,6 +619,17 @@ export function cheapestPosition(
                 index,
                 deltaSeconds,
                 slackRatio,
+                driveTimeSlackRatio:
+                    limits.maxDrivingSeconds != null
+                        ? (limits.maxDrivingSeconds -
+                              timing.totalDriveSeconds) /
+                          limits.maxDrivingSeconds
+                        : Number.POSITIVE_INFINITY,
+                distanceSlackRatio:
+                    limits.maxDistanceM != null
+                        ? (limits.maxDistanceM - timing.gateDistanceM) /
+                          limits.maxDistanceM
+                        : Number.POSITIVE_INFINITY,
                 arrivalsMs: timing.arrivalsMs,
                 distancesM: timing.distancesM,
                 returnLegDistanceM: timing.returnLegDistanceM,
@@ -499,7 +639,14 @@ export function cheapestPosition(
         }
     }
 
-    return best ?? { feasible: false, shiftId: shift.id, reason: worstReason };
+    return (
+        best ?? {
+            feasible: false,
+            shiftId: shift.id,
+            reason: worstReason,
+            detail: worstDetail,
+        }
+    );
 }
 
 /**
@@ -520,16 +667,46 @@ export function tryInsert(
         return { feasible: false, shiftId: shift.id, reason: 'weight' };
     }
 
-    if (shift.stops.length + 1 > MAX_STOPS) {
-        return { feasible: false, shiftId: shift.id, reason: 'max_stops' };
+    // max_stops may only tighten MAX_STOPS, never widen it — the CHECK
+    // constraint on driving_limit_profile already guarantees a profile value
+    // is never above 45, so this min is a defence in depth, not the only
+    // thing standing between a profile and a wider O(n^2) scan.
+    const effectiveMaxStops = Math.min(
+        MAX_STOPS,
+        shift.limits.maxStops ?? MAX_STOPS,
+    );
+    const resultingStops = shift.stops.length + 1;
+    if (resultingStops > effectiveMaxStops) {
+        // Distinguishing the two matters to a dispatcher: "this driver's own
+        // 25-stop policy" is actionable in a way "the system ceiling of 45"
+        // is not, and only one of them is ever a limit somebody chose.
+        return effectiveMaxStops < MAX_STOPS
+            ? {
+                  feasible: false,
+                  shiftId: shift.id,
+                  reason: 'stop_limit',
+                  detail: { actual: resultingStops, limit: effectiveMaxStops },
+              }
+            : { feasible: false, shiftId: shift.id, reason: 'max_stops' };
     }
 
     return cheapestPosition(shift, pkg, ctx);
 }
 
-/** True when the estimate landed too close to a promise to be trusted. */
+/**
+ * True when the estimate landed too close to a promise, a driving-time cap or
+ * a distance cap to be trusted. Any one of the three is enough: a route can
+ * sit safely inside its distance limit while its drive time is razor-thin, or
+ * the reverse, and each is its own reason to spend the one real routing call
+ * this decision gets.
+ */
 export function isGreyBand(result: InsertionResult): boolean {
-    return result.feasible && result.slackRatio < GREY_BAND;
+    return (
+        result.feasible &&
+        (result.slackRatio < GREY_BAND ||
+            result.driveTimeSlackRatio < GREY_BAND ||
+            result.distanceSlackRatio < GREY_BAND)
+    );
 }
 
 /**

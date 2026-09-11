@@ -24,10 +24,21 @@ import {
     type GeoPoint,
     type IncomingPackage,
     type InsertionContext,
+    type InsertionRejection,
     type InsertionResult,
     type InsertionSuccess,
+    type MeasuredLeg,
     type RouteStop,
 } from './insertion';
+import {
+    drivingLimitsEnabled,
+    NO_LIMITS,
+    noLimitsForDrivers,
+    resolveDrivingLimitsForDriver,
+    resolveDrivingLimitsForDrivers,
+    type DrivingLimits,
+    type DrivingLimitsQueryExecutor,
+} from './driving-limits';
 import {
     allDriversAsFloaters,
     allDriversAsFloatersForPoint,
@@ -997,6 +1008,10 @@ export class AssignmentService {
         const stops = row.route_id
             ? await this.loadStops([row.route_id])
             : new Map<string, RouteStop[]>();
+        const limits = await this.resolveLimitsFor(
+            organisationId,
+            row.driver_id,
+        );
 
         return {
             warehouseId: row.warehouse_id,
@@ -1020,6 +1035,7 @@ export class AssignmentService {
                           ),
                     depot,
                     stops: row.route_id ? (stops.get(row.route_id) ?? []) : [],
+                    limits,
                 },
                 profile: row.ors_vehicle_type ?? 'driving-car',
                 routeId: row.route_id,
@@ -1034,6 +1050,47 @@ export class AssignmentService {
                 vehicleSkillIds: [],
             },
         };
+    }
+
+    /**
+     * One driver's effective driving limits, or NO_LIMITS with no query at
+     * all when DRIVING_LIMITS is off (see driving-limits.ts) or the shift has
+     * no driver yet. Mirrors ShiftsService.resolveLimitsFor -- both read
+     * paths must agree with the gate Tier 1 actually enforces.
+     *
+     * Takes an executor because `openShift` calls this from inside its
+     * transaction and reads it through the same `runner` everything else
+     * there uses, rather than opening a second connection for one query.
+     */
+    private async resolveLimitsFor(
+        organisationId: string,
+        driverId: string | null,
+        executor: DrivingLimitsQueryExecutor = this.dataSource,
+    ): Promise<DrivingLimits> {
+        if (!driverId || !drivingLimitsEnabled()) return NO_LIMITS;
+        return resolveDrivingLimitsForDriver(
+            executor,
+            organisationId,
+            driverId,
+        );
+    }
+
+    /**
+     * Every listed driver's effective driving limits, in one round trip, or
+     * NO_LIMITS for all of them with no query when DRIVING_LIMITS is off.
+     * The batch form `loadCandidates` needs so a warehouse full of shifts
+     * costs one profile lookup, not one per candidate.
+     */
+    private async resolveLimitsForDrivers(
+        organisationId: string,
+        driverIds: readonly string[],
+    ): Promise<Map<string, DrivingLimits>> {
+        if (!drivingLimitsEnabled()) return noLimitsForDrivers(driverIds);
+        return resolveDrivingLimitsForDrivers(
+            this.dataSource,
+            organisationId,
+            driverIds,
+        );
     }
 
     private async loadPackagesForShift(
@@ -1061,14 +1118,36 @@ export class AssignmentService {
         );
     }
 
-    private warningFor(reason: string): string {
-        switch (reason) {
+    /** Seconds as a one-decimal figure of hours, for a driving-time warning. */
+    private formatHours(seconds: number): string {
+        return `${(seconds / 3600).toFixed(1)}h`;
+    }
+
+    /** Metres rounded to the nearest km, for a distance warning. */
+    private formatKm(meters: number): string {
+        return `${Math.round(meters / 1000)} km`;
+    }
+
+    private warningFor(rejection: InsertionRejection): string {
+        switch (rejection.reason) {
             case 'weight':
                 return 'over the vehicle capacity';
             case 'max_stops':
                 return 'past the stop limit for one shift';
             case 'window':
                 return 'past the end of the driving window';
+            case 'stop_limit':
+                return rejection.detail
+                    ? `past this driver's ${rejection.detail.limit}-stop limit`
+                    : "past this driver's stop limit";
+            case 'drive_time':
+                return rejection.detail
+                    ? `would drive ${this.formatHours(rejection.detail.actual)}, over this driver's ${this.formatHours(rejection.detail.limit)} driving-time limit`
+                    : "over this driver's driving-time limit";
+            case 'distance':
+                return rejection.detail
+                    ? `would drive ${this.formatKm(rejection.detail.actual)}, over this driver's ${this.formatKm(rejection.detail.limit)} distance limit`
+                    : "over this driver's distance limit";
             default:
                 return 'breaks a delivery deadline on this route';
         }
@@ -1088,7 +1167,7 @@ export class AssignmentService {
         outOfArea: boolean,
     ): string | null {
         const warnings: string[] = [];
-        if (!attempt.feasible) warnings.push(this.warningFor(attempt.reason));
+        if (!attempt.feasible) warnings.push(this.warningFor(attempt));
         if (outOfArea) warnings.push(OUT_OF_AREA_WARNING);
         return warnings.length === 0 ? null : warnings.join('; ');
     }
@@ -1973,6 +2052,11 @@ export class AssignmentService {
             runner,
             shiftId,
         );
+        const limits = await this.resolveLimitsFor(
+            organisationId,
+            pair.driver_id,
+            runner,
+        );
 
         return {
             shift: {
@@ -1984,6 +2068,7 @@ export class AssignmentService {
                 departureMs,
                 depot,
                 stops: [],
+                limits,
             },
             profile: pair.ors_vehicle_type ?? 'driving-car',
             routeId,
@@ -2110,6 +2195,14 @@ export class AssignmentService {
 
         const stopsByRoute = await this.loadStops(routeIds);
 
+        const driverIds = shiftRows
+            .map((r) => r.driver_id)
+            .filter((id): id is string => id !== null);
+        const limitsByDriver = await this.resolveLimitsForDrivers(
+            organisationId,
+            driverIds,
+        );
+
         const defaultDepartureMs = Math.max(
             now.getTime(),
             localHourMs(now, timezone, DEFAULT_DEPARTURE_HOUR),
@@ -2129,6 +2222,9 @@ export class AssignmentService {
                 stops: row.route_id
                     ? (stopsByRoute.get(row.route_id) ?? [])
                     : [],
+                limits: row.driver_id
+                    ? (limitsByDriver.get(row.driver_id) ?? NO_LIMITS)
+                    : NO_LIMITS,
             },
             profile: row.ors_vehicle_type ?? 'driving-car',
             routeId: row.route_id,
@@ -2238,7 +2334,7 @@ export class AssignmentService {
         candidate: Candidate,
         order: string[],
         pkg: IncomingPackage,
-    ): Promise<Record<string, number> | null> {
+    ): Promise<Record<string, MeasuredLeg> | null> {
         const byId = new Map(
             candidate.shift.stops.map((s) => [s.packageId, s]),
         );
@@ -2258,11 +2354,16 @@ export class AssignmentService {
                 candidate.profile,
                 points.map((p) => [p.lon, p.lat] as [number, number]),
             );
-            const measured: Record<string, number> = {};
+            const measured: Record<string, MeasuredLeg> = {};
             preview.legs.forEach((leg, i) => {
                 const from = points[i];
                 const to = points[i + 1];
-                if (from && to) measured[legKey(from, to)] = leg.duration;
+                if (from && to) {
+                    measured[legKey(from, to)] = {
+                        seconds: leg.duration,
+                        meters: leg.distance,
+                    };
+                }
             });
             return measured;
         } catch (err: unknown) {

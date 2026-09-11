@@ -17,6 +17,7 @@ import {
     pickVictims,
     scheduleRoute,
     SHIFT_WINDOW_SECONDS,
+    TIER1_SAFETY,
     TIME_PER_STOP,
     tryInsert,
     type CandidateShift,
@@ -24,6 +25,7 @@ import {
     type InsertionContext,
     type InsertionResult,
     type InsertionSuccess,
+    type MeasuredLeg,
     type RouteStop,
 } from './insertion';
 
@@ -60,6 +62,11 @@ function legMetres(km: number): number {
     return estimateLegMeters(DEPOT, east(km));
 }
 
+/** Metres the DISTANCE GATE estimates for a `km` leg: legMetres, further inflated by TIER1_SAFETY. */
+function gateMetres(km: number): number {
+    return legMetres(km) * TIER1_SAFETY;
+}
+
 const DEPARTURE = Date.parse('2026-09-01T08:00:00Z');
 const DAY_END = Date.parse('2026-09-01T23:59:59.999Z');
 
@@ -86,6 +93,13 @@ function stop(
     };
 }
 
+const NO_LIMITS: CandidateShift['limits'] = {
+    maxWorkingSeconds: null,
+    maxDrivingSeconds: null,
+    maxDistanceM: null,
+    maxStops: null,
+};
+
 function shift(overrides: Partial<CandidateShift> = {}): CandidateShift {
     return {
         id: 'shift-a',
@@ -96,8 +110,14 @@ function shift(overrides: Partial<CandidateShift> = {}): CandidateShift {
         departureMs: DEPARTURE,
         depot: DEPOT,
         stops: [],
+        limits: NO_LIMITS,
         ...overrides,
     };
+}
+
+/** A measured leg with both duration and distance, for grey-band tests. */
+function measuredLeg(seconds: number, meters: number): MeasuredLeg {
+    return { seconds, meters };
 }
 
 function pkg(overrides: Partial<IncomingPackage> = {}): IncomingPackage {
@@ -154,12 +174,12 @@ describe('estimateLeg', () => {
     });
 
     it('prefers a measured leg over the estimate', () => {
-        const measured = { [legKey(DEPOT, east(10))]: 42 };
+        const measured = { [legKey(DEPOT, east(10))]: measuredLeg(42, 9_000) };
         expect(estimateLeg(DEPOT, east(10), measured)).toBe(42);
     });
 
     it('falls back to the estimate for a leg the router did not cover', () => {
-        const measured = { [legKey(DEPOT, east(99))]: 42 };
+        const measured = { [legKey(DEPOT, east(99))]: measuredLeg(42, 9_000) };
         expect(estimateLeg(DEPOT, east(10), measured)).toBeGreaterThan(100);
     });
 });
@@ -250,6 +270,101 @@ describe('tryInsert gates', () => {
         expect(
             tryInsert(far, pkg({ lon: east(200).lon, weightG: 1 }), ctx()),
         ).toEqual({
+            feasible: false,
+            shiftId: 'shift-a',
+            reason: 'window',
+        });
+    });
+});
+
+describe('driving limits (HIK-83)', () => {
+    it("rejects once driving time exceeds this driver's own cap", () => {
+        // One leg out, one back; the cap sits below what a single leg alone
+        // already costs, so the round trip cannot help but breach it.
+        const limit = driveSeconds(50);
+        const limits = { ...NO_LIMITS, maxDrivingSeconds: limit };
+        const result = tryInsert(
+            shift({ limits }),
+            pkg({ lon: east(50).lon }),
+            ctx(),
+        );
+        if (result.feasible)
+            throw new Error('expected an infeasible insertion');
+        expect(result.reason).toBe('drive_time');
+        expect(result.detail?.limit).toBe(limit);
+        expect(result.detail?.actual).toBeGreaterThan(limit);
+    });
+
+    it('accepts a route whose driving time is within the cap', () => {
+        const limits = {
+            ...NO_LIMITS,
+            maxDrivingSeconds: 2 * driveSeconds(50) + 1,
+        };
+        const result = tryInsert(
+            shift({ limits }),
+            pkg({ lon: east(50).lon }),
+            ctx(),
+        );
+        expect(result.feasible).toBe(true);
+    });
+
+    it("rejects once route distance exceeds this driver's own cap", () => {
+        const limit = gateMetres(50);
+        const limits = { ...NO_LIMITS, maxDistanceM: limit };
+        const result = tryInsert(
+            shift({ limits }),
+            pkg({ lon: east(50).lon }),
+            ctx(),
+        );
+        if (result.feasible)
+            throw new Error('expected an infeasible insertion');
+        expect(result.reason).toBe('distance');
+        expect(result.detail?.limit).toBe(limit);
+        expect(result.detail?.actual).toBeGreaterThan(limit);
+    });
+
+    it('accepts a route whose distance is within the cap', () => {
+        const limits = {
+            ...NO_LIMITS,
+            maxDistanceM: 2 * gateMetres(50) + 1,
+        };
+        const result = tryInsert(
+            shift({ limits }),
+            pkg({ lon: east(50).lon }),
+            ctx(),
+        );
+        expect(result.feasible).toBe(true);
+    });
+
+    it("distinguishes a driver's own tightened stop cap from the system ceiling", () => {
+        const stops = ['a', 'b', 'c'].map((id) => stop({ packageId: id }));
+        const limits = { ...NO_LIMITS, maxStops: 3 };
+        const result = tryInsert(shift({ stops, limits }), pkg(), ctx());
+        expect(result).toEqual({
+            feasible: false,
+            shiftId: 'shift-a',
+            reason: 'stop_limit',
+            detail: { actual: 4, limit: 3 },
+        });
+    });
+
+    it("accepts the stop that brings the route up to a driver's tightened cap", () => {
+        const stops = ['a', 'b'].map((id) => stop({ packageId: id }));
+        const limits = { ...NO_LIMITS, maxStops: 3 };
+        const result = tryInsert(shift({ stops, limits }), pkg(), ctx());
+        expect(result.feasible).toBe(true);
+    });
+
+    it('narrows the shift window by maxWorkingSeconds', () => {
+        // 1000s of working time cannot fit a round trip to 50 km, even though
+        // the ordinary 12h SHIFT_WINDOW_SECONDS would.
+        const limits = { ...NO_LIMITS, maxWorkingSeconds: 1_000 };
+        const result = tryInsert(
+            shift({ limits }),
+            pkg({ lon: east(50).lon }),
+            ctx(),
+        );
+        expect(result).toEqual({
             feasible: false,
             shiftId: 'shift-a',
             reason: 'window',
@@ -427,8 +542,61 @@ describe('grey band', () => {
         expect(tryInsert(candidate, target, ctx()).feasible).toBe(false);
 
         const measured = {
-            [legKey(DEPOT, east(5))]: 300,
-            [legKey(east(5), DEPOT)]: 300,
+            [legKey(DEPOT, east(5))]: measuredLeg(300, legMetres(5)),
+            [legKey(east(5), DEPOT)]: measuredLeg(300, legMetres(5)),
+        };
+        expect(
+            tryInsert(candidate, target, ctx({ measuredLegs: measured }))
+                .feasible,
+        ).toBe(true);
+    });
+
+    it('flags an insertion whose driving-time slack is a thin fraction of the cap', () => {
+        const totalDrive = 2 * driveSeconds(5);
+        const limits = {
+            ...NO_LIMITS,
+            maxDrivingSeconds: Math.ceil(totalDrive * 1.05),
+        };
+        const result = expectFeasible(
+            tryInsert(shift({ limits }), pkg(), ctx()),
+        );
+        expect(result.driveTimeSlackRatio).toBeLessThan(GREY_BAND);
+        expect(isGreyBand(result)).toBe(true);
+    });
+
+    it('flags an insertion whose distance slack is a thin fraction of the cap', () => {
+        const totalGate = 2 * gateMetres(5);
+        const limits = {
+            ...NO_LIMITS,
+            maxDistanceM: Math.ceil(totalGate * 1.05),
+        };
+        const result = expectFeasible(
+            tryInsert(shift({ limits }), pkg(), ctx()),
+        );
+        expect(result.distanceSlackRatio).toBeLessThan(GREY_BAND);
+        expect(isGreyBand(result)).toBe(true);
+    });
+
+    it('lets a measured leg rescue a distance estimate that just missed', () => {
+        // The gate's pessimistic estimate breaches the cap; the real routed
+        // distance, measured, does not.
+        const limit = Math.round(gateMetres(5) * 1.9);
+        const candidate = shift({
+            limits: { ...NO_LIMITS, maxDistanceM: limit },
+        });
+        const target = pkg();
+
+        expect(tryInsert(candidate, target, ctx()).feasible).toBe(false);
+
+        const measured = {
+            [legKey(DEPOT, east(5))]: measuredLeg(
+                driveSeconds(5),
+                legMetres(5) * 0.5,
+            ),
+            [legKey(east(5), DEPOT)]: measuredLeg(
+                driveSeconds(5),
+                legMetres(5) * 0.5,
+            ),
         };
         expect(
             tryInsert(candidate, target, ctx({ measuredLegs: measured }))
@@ -447,7 +615,12 @@ describe('chooseBest', () => {
         index: 0,
         deltaSeconds,
         slackRatio: Number.POSITIVE_INFINITY,
+        driveTimeSlackRatio: Number.POSITIVE_INFINITY,
+        distanceSlackRatio: Number.POSITIVE_INFINITY,
         arrivalsMs: [DEPARTURE],
+        distancesM: [legMetres(5)],
+        returnLegDistanceM: legMetres(5),
+        totalDistanceM: legMetres(5) * 2,
         order: ['pkg-new'],
     });
 
@@ -799,6 +972,40 @@ describe('pickVictims', () => {
             'aaa',
         ]);
     });
+
+    it('evicts to relieve a distance breach, not just a weight one', () => {
+        // "victim" sits off to the north — off the incoming package's own
+        // path east, so serving both costs a real diagonal detour that
+        // serving the incoming package alone does not. The cap is set
+        // halfway between the two round-trip gate distances, so it always
+        // breaches with the victim aboard and never without it, regardless
+        // of the exact detour/safety constants in play.
+        const solo = scheduleRoute(DEPOT, DEPARTURE, [east(15)]).totalDistanceM;
+        const both = scheduleRoute(DEPOT, DEPARTURE, [
+            north(15),
+            east(15),
+        ]).totalDistanceM;
+        const limits = {
+            ...NO_LIMITS,
+            maxDistanceM: Math.round((TIER1_SAFETY * (solo + both)) / 2),
+        };
+        const full = shift({
+            limits,
+            stops: [stop({ packageId: 'victim', ...north(15) })],
+        });
+        const incomingFar = pkg({
+            ...east(15),
+            deadlineMs: DEPARTURE + 6 * 3_600_000,
+        });
+
+        const direct = tryInsert(full, incomingFar, ctx());
+        if (direct.feasible) throw new Error('expected a distance rejection');
+        expect(direct.reason).toBe('distance');
+
+        const plan = pickVictims(full, incomingFar, ctx());
+        expect(plan?.victimIds).toEqual(['victim']);
+        expect(plan?.insertion.feasible).toBe(true);
+    });
 });
 
 describe('the shift window', () => {
@@ -844,13 +1051,11 @@ describe('scheduleRoute', () => {
         );
     });
 
-    it('honours measured legs for time, but distance stays the haversine estimate regardless', () => {
-        const measured = { [legKey(DEPOT, east(4))]: 120 };
+    it('honours a measured leg for both time and distance', () => {
+        const measured = { [legKey(DEPOT, east(4))]: measuredLeg(120, 5_000) };
         const result = scheduleRoute(DEPOT, DEPARTURE, [east(4)], measured);
         expect(result.arrivalsMs[0]).toBe(DEPARTURE + 120_000);
-        // A measured DURATION buys nothing on the distance side: there is no
-        // measured distance to fall back to, only ever the estimate.
-        expect(result.distancesM[0]).toBeCloseTo(legMetres(4), 0);
+        expect(result.distancesM[0]).toBe(5_000);
     });
 
     it('accumulates distance per leg and includes the return leg in the total', () => {
