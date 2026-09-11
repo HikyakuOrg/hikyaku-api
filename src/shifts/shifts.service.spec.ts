@@ -5,6 +5,7 @@ import {
     NotFoundException,
 } from '@nestjs/common';
 import { ShiftsService } from './shifts.service';
+import { NO_LIMITS } from 'src/dispatch/driving-limits';
 
 const SHIFT_ROW = {
     id: 'shift-1',
@@ -34,7 +35,7 @@ interface State {
 function build(state: State = {}) {
     const log: { sql: string; params: unknown[] }[] = [];
 
-    const answer = (sql: string): unknown[] => {
+    const answer = (sql: string, params: unknown[]): unknown[] => {
         if (sql.includes('FROM warehouse WHERE id')) {
             return state.warehouse ?? [{ id: 'wh-1' }];
         }
@@ -58,13 +59,30 @@ function build(state: State = {}) {
         if (sql.includes('FROM vrp_solution s')) {
             return [{ route_id: 'route-1', solution_id: 'sol-1' }];
         }
+        if (sql.includes('driving_limit_profile')) {
+            // One all-null row per input driver id, matching the real
+            // query's unnest-driven contract — a driver with no profile in
+            // an org with no default.
+            const driverIds = (params[1] as string[] | undefined) ?? [];
+            return driverIds.map((driverId) => ({
+                driver_id: driverId,
+                driver_max_working_seconds: null,
+                driver_max_driving_seconds: null,
+                driver_max_distance_m: null,
+                driver_max_stops: null,
+                org_max_working_seconds: null,
+                org_max_driving_seconds: null,
+                org_max_distance_m: null,
+                org_max_stops: null,
+            }));
+        }
         return [];
     };
 
     const query = jest.fn((sql: string, params: unknown[] = []) => {
         log.push({ sql, params });
         try {
-            return Promise.resolve(answer(sql));
+            return Promise.resolve(answer(sql, params));
         } catch (err) {
             // answer() only ever throws state.insertError, which is typed Error.
             return Promise.reject(err as Error);
@@ -388,6 +406,7 @@ describe('ShiftsService', () => {
                 stopCount: 3,
                 revision: 5,
                 updatedAt: '2026-09-01T09:00:00.000Z',
+                drivingLimits: NO_LIMITS,
             });
         });
 
@@ -403,6 +422,36 @@ describe('ShiftsService', () => {
             });
             const shift = await service.get('org-1', 'shift-1');
             expect(shift.scheduledStart).toBe('2026-09-01T22:00:00.000Z');
+        });
+
+        it('resolves nothing at all when DRIVING_LIMITS is off, the default', async () => {
+            const { service, log } = build();
+            const before = log.length;
+            const shift = await service.get('org-1', 'shift-1');
+            expect(shift.drivingLimits).toEqual(NO_LIMITS);
+            // No new query beyond the shift load itself: the profile tables
+            // are not read at all while the flag is off.
+            expect(log.length).toBe(before + 1);
+        });
+
+        it('resolves the driver’s real limits once DRIVING_LIMITS is on', async () => {
+            const original = process.env.DRIVING_LIMITS;
+            process.env.DRIVING_LIMITS = 'on';
+            try {
+                const { service, log } = build();
+                log.length = 0;
+                // The driving-limits query returns nothing for this driver,
+                // which resolves to NO_LIMITS — the point here is that the
+                // query fires at all once the flag is on.
+                const shift = await service.get('org-1', 'shift-1');
+                expect(shift.drivingLimits).toEqual(NO_LIMITS);
+                expect(
+                    log.some((q) => q.sql.includes('driving_limit_profile')),
+                ).toBe(true);
+            } finally {
+                if (original === undefined) delete process.env.DRIVING_LIMITS;
+                else process.env.DRIVING_LIMITS = original;
+            }
         });
     });
 });

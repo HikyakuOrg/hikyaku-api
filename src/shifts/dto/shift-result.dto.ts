@@ -2,6 +2,28 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /** Response schemas for the shift endpoints. */
 
+/**
+ * This shift driver's effective driving limits, resolved per HIK-82: the
+ * driver's own profile, then the org default, dimension by dimension. Every
+ * field null means DRIVING_LIMITS is off, or nobody has set a limit on any
+ * dimension — the dashboard cannot tell those two apart from this alone, and
+ * does not need to: both mean "show the figure with nothing to compare it
+ * to". Seconds and metres throughout; kilometres are a display concern only.
+ */
+export class DrivingLimitsDto {
+    @ApiProperty({ type: Number, nullable: true })
+    maxWorkingSeconds: number | null;
+
+    @ApiProperty({ type: Number, nullable: true })
+    maxDrivingSeconds: number | null;
+
+    @ApiProperty({ type: Number, nullable: true })
+    maxDistanceM: number | null;
+
+    @ApiProperty({ type: Number, nullable: true })
+    maxStops: number | null;
+}
+
 /** A shift — one `vrp_optimization` row plus its resolved plan. */
 export class ShiftDto {
     @ApiProperty({ format: 'uuid', description: 'vrp_optimization.id.' })
@@ -52,6 +74,9 @@ export class ShiftDto {
 
     @ApiProperty({ format: 'date-time' })
     updatedAt: string;
+
+    @ApiProperty({ type: DrivingLimitsDto })
+    drivingLimits: DrivingLimitsDto;
 }
 
 /**
