@@ -1899,6 +1899,260 @@
         ]
       }
     },
+    "/api/v1/skills": {
+      "post": {
+        "operationId": "SkillsController_create",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSkillDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A skill with this name already exists in the organisation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Add a skill to the organisation catalog.",
+        "tags": [
+          "skills"
+        ]
+      },
+      "get": {
+        "operationId": "SkillsController_list",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "includeArchived",
+            "required": false,
+            "in": "query",
+            "description": "Include retired skills. Defaults to false.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SkillDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List the organisation skill catalog, newest first.",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
+    "/api/v1/skills/{id}/archive": {
+      "post": {
+        "description": "Idempotent. Archived skills cannot be newly assigned to a vehicle or required on a package, but existing assignments and historical routes keep referencing them — there is no hard delete.",
+        "operationId": "SkillsController_archive",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No skill with this id in the organisation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Retire a skill.",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
     "/api/v1/issuing/cards": {
       "post": {
         "description": "Restricted by Stripe to fuel merchant categories, so anything else is auto-declined. A Stripe cardholder is created for the driver on first issue, using their assigned warehouse as the billing address. Requires the organisation to have completed onboarding with the card_issuing capability active.",
@@ -4463,6 +4717,10 @@
       "description": "Package creation, and the shift assignment it triggers."
     },
     {
+      "name": "skills",
+      "description": "Organisation skill catalog, matched by the optimiser as a hard constraint between packages and vehicles."
+    },
+    {
       "name": "shifts",
       "description": "Shift lifecycle and hand edits to a shift’s package set."
     },
@@ -4801,6 +5059,42 @@
           "covered"
         ]
       },
+      "CoverageSkillsDto": {
+        "type": "object",
+        "properties": {
+          "requiredSkillIds": {
+            "description": "The package's required skills (package_skills.skill_id).",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "missingSkillIds": {
+            "description": "The subset of requiredSkillIds that NO vehicle at this warehouse holds at all — the specific \"no vehicle holds skill X\" reason. A skill can be missing here even when `satisfied` below also fails for a different one, or when every required skill exists somewhere in the fleet but never all on the same vehicle.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "matchingVehicleCount": {
+            "type": "number",
+            "description": "Vehicles at this warehouse holding every required skill at once. Zero means no single vehicle can take this package regardless of territory, even if every individual skill exists somewhere in the fleet.",
+            "example": 0
+          },
+          "satisfied": {
+            "type": "boolean",
+            "description": "requiredSkillIds is empty, or matchingVehicleCount is greater than zero. False is the skills-specific unassigned reason this endpoint exists to surface."
+          }
+        },
+        "required": [
+          "requiredSkillIds",
+          "missingSkillIds",
+          "matchingVehicleCount",
+          "satisfied"
+        ]
+      },
       "CoverageDiagnosticDto": {
         "type": "object",
         "properties": {
@@ -4877,6 +5171,16 @@
                 "$ref": "#/components/schemas/CoverageAssignmentDto"
               }
             ]
+          },
+          "skills": {
+            "nullable": true,
+            "description": "Null for the coordinate form (there is no package to check requirements for), for a package with no skill requirement, and whenever `resolution` is not `evaluated`. Present and `satisfied: false` is the skills-specific unassigned reason this endpoint exists to surface, independent of the territory/driver coverage above.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CoverageSkillsDto"
+              }
+            ]
           }
         },
         "required": [
@@ -4890,7 +5194,8 @@
           "organisationAreaCount",
           "areas",
           "drivers",
-          "assignment"
+          "assignment",
+          "skills"
         ]
       },
       "GeoJsonPointDto": {
@@ -5714,6 +6019,14 @@
             "type": "boolean",
             "default": true,
             "description": "Run assignment immediately after creation. The mobile create-shift wizard MUST send false: it creates packages then hands their ids to POST /api/v1/optimisation/adhoc, which rejects a package that already belongs to an optimisation."
+          },
+          "skillIds": {
+            "description": "Required skills (skills.id) this delivery needs, from the caller's organisation catalog. An unknown, archived, or another organisation's id is rejected with 400. The optimiser only routes this package onto a vehicle holding every one of them (see vehicle_skills) — a hard constraint, mirroring VROOM. Omitted or empty means no skill requirement.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         },
         "required": [
@@ -5768,6 +6081,14 @@
           "status": {
             "type": "string",
             "description": "Latest package_timeline status enum, e.g. PENDING, ASSIGNED."
+          },
+          "skillIds": {
+            "description": "Required skills (skills.id) this delivery needs. Empty means no skill requirement.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         },
         "required": [
@@ -5780,7 +6101,8 @@
           "toCustomerId",
           "deliveryNotes",
           "deadlineAt",
-          "status"
+          "status",
+          "skillIds"
         ]
       },
       "AssignedShiftDto": {
@@ -5956,6 +6278,52 @@
         },
         "required": [
           "results"
+        ]
+      },
+      "CreateSkillDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Catalog label, e.g. \"Fragile Handling\" or \"Requires Liftgate\". Unique per organisation.",
+            "example": "Requires Liftgate",
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "SkillDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "organisationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "archivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Set when the skill is retired. Archived skills cannot be newly assigned to a vehicle or required on a package, but existing assignments and historical routes keep referencing them."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "organisationId",
+          "name",
+          "createdAt"
         ]
       },
       "IssueCardDto": {
