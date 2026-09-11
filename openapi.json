@@ -208,6 +208,121 @@
         ]
       }
     },
+    "/api/v1/dispatch/driving-limits/summary": {
+      "get": {
+        "description": "Over the last N days, the distribution of what shifts actually ran (working hours, driving hours, distance, stop count), and, against a PROPOSED set of caps passed as query parameters, how many of those shifts would have breached each one and which packages sit on the breaching portion of the route.\n\nThe proposed limits are query parameters, never the configured `driving_limit_profile` rows, which is what makes this a planning tool rather than a report: a dispatcher can ask \"what would 200 km have done to last month\" without saving anything.\n\nDriving-hours figures are an ESTIMATE (elapsed time minus total service time), not VROOM’s own measured travel time — see `drivingSecondsIsEstimated` on the response for why.",
+        "operationId": "DrivingLimitsController_summary",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "days",
+            "required": false,
+            "in": "query",
+            "description": "How many days back to look, 1 to 30. Defaults to 30: a driving limit is chosen once and left mostly alone, so a representative month is the useful window, unlike a rollout rate that is watched daily.",
+            "schema": {
+              "example": 30,
+              "type": "number"
+            }
+          },
+          {
+            "name": "maxWorkingSeconds",
+            "required": false,
+            "in": "query",
+            "description": "Proposed cap on elapsed departure-to-return time, seconds. Omit to not test this dimension.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "maxDrivingSeconds",
+            "required": false,
+            "in": "query",
+            "description": "Proposed cap on travel-only time, seconds. Omit to not test this dimension.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "maxDistanceM",
+            "required": false,
+            "in": "query",
+            "description": "Proposed cap on total route distance, METRES. Omit to not test this dimension.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "maxStops",
+            "required": false,
+            "in": "query",
+            "description": "Proposed cap on job stop count. Omit to not test this dimension.",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The realised distribution, the proposed limits echoed back, and the shifts (if any were proposed) that would have breached them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrivingLimitsSummaryDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`days` is not a whole number between 1 and 30, or a proposed limit is not a positive whole number.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What would a proposed set of driving limits have done to this fleet?",
+        "tags": [
+          "dispatch"
+        ]
+      }
+    },
     "/geocode/search": {
       "get": {
         "operationId": "GeocodeController_search",
@@ -1896,260 +2011,6 @@
         ],
         "tags": [
           "packages"
-        ]
-      }
-    },
-    "/api/v1/skills": {
-      "post": {
-        "operationId": "SkillsController_create",
-        "parameters": [
-          {
-            "name": "X-Organisation-Slug",
-            "in": "header",
-            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "example": "acme-logistics"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateSkillDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillDto"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing, malformed or expired bearer token.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "A skill with this name already exists in the organisation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Add a skill to the organisation catalog.",
-        "tags": [
-          "skills"
-        ]
-      },
-      "get": {
-        "operationId": "SkillsController_list",
-        "parameters": [
-          {
-            "name": "X-Organisation-Slug",
-            "in": "header",
-            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "example": "acme-logistics"
-            }
-          },
-          {
-            "name": "includeArchived",
-            "required": false,
-            "in": "query",
-            "description": "Include retired skills. Defaults to false.",
-            "schema": {
-              "type": "boolean"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/SkillDto"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing, malformed or expired bearer token.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "List the organisation skill catalog, newest first.",
-        "tags": [
-          "skills"
-        ]
-      }
-    },
-    "/api/v1/skills/{id}/archive": {
-      "post": {
-        "description": "Idempotent. Archived skills cannot be newly assigned to a vehicle or required on a package, but existing assignments and historical routes keep referencing them — there is no hard delete.",
-        "operationId": "SkillsController_archive",
-        "parameters": [
-          {
-            "name": "X-Organisation-Slug",
-            "in": "header",
-            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "example": "acme-logistics"
-            }
-          },
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "format": "uuid",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillDto"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing, malformed or expired bearer token.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No skill with this id in the organisation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Retire a skill.",
-        "tags": [
-          "skills"
         ]
       }
     },
@@ -5306,6 +5167,239 @@
           "skills"
         ]
       },
+      "DrivingLimitDistributionStatsDto": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "description": "Realised shifts this dimension was computed over."
+          },
+          "min": {
+            "type": "number",
+            "description": "The best day."
+          },
+          "p50": {
+            "type": "number",
+            "description": "The median day."
+          },
+          "p90": {
+            "type": "number",
+            "description": "The 90th percentile — a sane starting cap sits above this, not above the median, or one day in ten already breaches it before the flag is even switched on."
+          },
+          "max": {
+            "type": "number",
+            "description": "The worst day in the window."
+          }
+        },
+        "required": [
+          "count",
+          "min",
+          "p50",
+          "p90",
+          "max"
+        ]
+      },
+      "DrivingLimitDistributionDto": {
+        "type": "object",
+        "properties": {
+          "workingSeconds": {
+            "$ref": "#/components/schemas/DrivingLimitDistributionStatsDto"
+          },
+          "drivingSeconds": {
+            "description": "ESTIMATED, not measured — see `drivingSecondsIsEstimated` on the parent response.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DrivingLimitDistributionStatsDto"
+              }
+            ]
+          },
+          "distanceM": {
+            "$ref": "#/components/schemas/DrivingLimitDistributionStatsDto"
+          },
+          "stopCount": {
+            "$ref": "#/components/schemas/DrivingLimitDistributionStatsDto"
+          }
+        },
+        "required": [
+          "workingSeconds",
+          "drivingSeconds",
+          "distanceM",
+          "stopCount"
+        ]
+      },
+      "ProposedDrivingLimitsDto": {
+        "type": "object",
+        "properties": {
+          "maxWorkingSeconds": {
+            "type": "number",
+            "nullable": true,
+            "description": "Proposed cap on elapsed departure-to-return time, seconds."
+          },
+          "maxDrivingSeconds": {
+            "type": "number",
+            "nullable": true,
+            "description": "Proposed cap on travel-only time, seconds."
+          },
+          "maxDistanceM": {
+            "type": "number",
+            "nullable": true,
+            "description": "Proposed cap on total route distance, metres."
+          },
+          "maxStops": {
+            "type": "number",
+            "nullable": true,
+            "description": "Proposed cap on job stop count."
+          }
+        },
+        "required": [
+          "maxWorkingSeconds",
+          "maxDrivingSeconds",
+          "maxDistanceM",
+          "maxStops"
+        ]
+      },
+      "DrivingLimitDimensionBreachDto": {
+        "type": "object",
+        "properties": {
+          "dimension": {
+            "type": "string",
+            "enum": [
+              "working",
+              "driving",
+              "distance",
+              "stops"
+            ],
+            "description": "`working`: elapsed departure-to-return time. `driving`: travel-only time, ESTIMATED as elapsed time minus total service time (see the top-level `drivingSecondsIsEstimated` note — this codebase does not persist VROOM’s own travel-time figure on the path most shifts take). `distance`: total route distance. `stops`: job stop count."
+          },
+          "actual": {
+            "type": "number",
+            "description": "What this shift actually measured on this dimension."
+          },
+          "limit": {
+            "type": "number",
+            "description": "The proposed cap it exceeded."
+          },
+          "affectedStopCount": {
+            "type": "number",
+            "description": "Job stops on the part of the route past the point the cumulative figure first crosses the cap — the honest proxy for how much work would need re-placing were this cap enforced today. Not a claim about which stops an actual re-solve would drop."
+          },
+          "affectedPackageIds": {
+            "description": "packages.id for each of the affectedStopCount stops above.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "dimension",
+          "actual",
+          "limit",
+          "affectedStopCount",
+          "affectedPackageIds"
+        ]
+      },
+      "DrivingLimitBreachingShiftDto": {
+        "type": "object",
+        "properties": {
+          "shiftId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "vrp_optimization.id."
+          },
+          "driverId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "shiftDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DrivingLimitDimensionBreachDto"
+            }
+          }
+        },
+        "required": [
+          "shiftId",
+          "driverId",
+          "shiftDate",
+          "dimensions"
+        ]
+      },
+      "DrivingLimitsSummaryDto": {
+        "type": "object",
+        "properties": {
+          "windowDays": {
+            "type": "number",
+            "description": "How many days back the figures cover.",
+            "example": 30
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The start of that window, so the figures can be quoted."
+          },
+          "drivingLimitsEnabled": {
+            "type": "boolean",
+            "description": "Whether DRIVING_LIMITS is switched on right now, so \"we have not turned it on yet\" is distinguishable from \"we turned it on and nothing breached\". Process-wide, not per organisation."
+          },
+          "shiftCount": {
+            "type": "number",
+            "description": "Realised shifts (status dispatched or completed) considered in the window. Zero means the distribution and breach list below are both empty for lack of data, not because nothing would breach."
+          },
+          "drivingSecondsIsEstimated": {
+            "type": "boolean",
+            "description": "True for every response: `driving` breaches and the driving-hours distribution are computed as elapsed time minus total service time, not from a measured travel-time figure. `ShiftPlanWriter`, the write path every Tier 1 placement and every continuous replan uses, never persists VROOM’s own travel-time column, so that figure is null for effectively every shift under the \"instant\" assignment mode this codebase runs. The estimate is exact unless a delivery deadline made the vehicle wait, which reads as extra driving here."
+          },
+          "distribution": {
+            "nullable": true,
+            "description": "Null when shiftCount is zero — nothing to summarise yet.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DrivingLimitDistributionDto"
+              }
+            ]
+          },
+          "proposedLimits": {
+            "$ref": "#/components/schemas/ProposedDrivingLimitsDto"
+          },
+          "breachingShifts": {
+            "description": "Every realised shift breaching at least one proposed cap, most recent shift_date first. Empty when no cap was proposed at all, which is a different answer from \"none breached\" — see `proposedLimits`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DrivingLimitBreachingShiftDto"
+            }
+          },
+          "totalBreachingShifts": {
+            "type": "number",
+            "description": "breachingShifts.length, for a client that only needs the count."
+          },
+          "explanation": {
+            "type": "string",
+            "description": "One sentence a dispatcher can act on, derived entirely from the fields above.",
+            "example": "30 realised shift(s) over the last 30 day(s); a 200,000 m distance cap would have breached 4 of them (11 packages on the affected portion of those routes). DRIVING_LIMITS is currently off."
+          }
+        },
+        "required": [
+          "windowDays",
+          "since",
+          "drivingLimitsEnabled",
+          "shiftCount",
+          "drivingSecondsIsEstimated",
+          "distribution",
+          "proposedLimits",
+          "breachingShifts",
+          "totalBreachingShifts",
+          "explanation"
+        ]
+      },
       "GeoJsonPointDto": {
         "type": "object",
         "properties": {
@@ -6392,52 +6486,6 @@
         },
         "required": [
           "results"
-        ]
-      },
-      "CreateSkillDto": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Catalog label, e.g. \"Fragile Handling\" or \"Requires Liftgate\". Unique per organisation.",
-            "example": "Requires Liftgate",
-            "maxLength": 120
-          }
-        },
-        "required": [
-          "name"
-        ]
-      },
-      "SkillDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "organisationId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "name": {
-            "type": "string"
-          },
-          "archivedAt": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true,
-            "description": "Set when the skill is retired. Archived skills cannot be newly assigned to a vehicle or required on a package, but existing assignments and historical routes keep referencing them."
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "id",
-          "organisationId",
-          "name",
-          "createdAt"
         ]
       },
       "IssueCardDto": {
@@ -7917,6 +7965,33 @@
           "shiftDate"
         ]
       },
+      "DrivingLimitsDto": {
+        "type": "object",
+        "properties": {
+          "maxWorkingSeconds": {
+            "type": "number",
+            "nullable": true
+          },
+          "maxDrivingSeconds": {
+            "type": "number",
+            "nullable": true
+          },
+          "maxDistanceM": {
+            "type": "number",
+            "nullable": true
+          },
+          "maxStops": {
+            "type": "number",
+            "nullable": true
+          }
+        },
+        "required": [
+          "maxWorkingSeconds",
+          "maxDrivingSeconds",
+          "maxDistanceM",
+          "maxStops"
+        ]
+      },
       "ShiftDto": {
         "type": "object",
         "properties": {
@@ -7980,6 +8055,9 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "drivingLimits": {
+            "$ref": "#/components/schemas/DrivingLimitsDto"
           }
         },
         "required": [
@@ -7994,7 +8072,8 @@
           "routeId",
           "stopCount",
           "revision",
-          "updatedAt"
+          "updatedAt",
+          "drivingLimits"
         ]
       },
       "ShiftVersionDto": {
