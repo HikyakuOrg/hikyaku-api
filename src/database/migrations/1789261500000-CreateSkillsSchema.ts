@@ -2,8 +2,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-export class CreateSkillsSchema1789261200000 implements MigrationInterface {
-    name = 'CreateSkillsSchema1789261200000';
+export class CreateSkillsSchema1789261500000 implements MigrationInterface {
+    name = 'CreateSkillsSchema1789261500000';
 
     private read(file: string): string {
         return readFileSync(join(__dirname, file), 'utf8').trim();
@@ -11,7 +11,7 @@ export class CreateSkillsSchema1789261200000 implements MigrationInterface {
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query(
-            this.read('1789261200000-create_skills_schema.sql'),
+            this.read('1789261500000-create_skills_schema.sql'),
         );
     }
 
