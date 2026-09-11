@@ -11,6 +11,12 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { AssignmentService } from 'src/dispatch/assignment.service';
 import { ShiftPlanWriter } from 'src/dispatch/shift-plan.writer';
+import {
+    drivingLimitsEnabled,
+    NO_LIMITS,
+    resolveDrivingLimitsForDriver,
+    type DrivingLimits,
+} from 'src/dispatch/driving-limits';
 import type {
     AddPackagesToShiftDto,
     CreateShiftDto,
@@ -221,8 +227,35 @@ export class ShiftsService {
         };
     }
 
+    /**
+     * The single funnel every mutation endpoint reads its response back
+     * through, which is why the resolved driving limits (HIK-82) are attached
+     * here rather than in each caller.
+     */
     async get(organisationId: string, id: string): Promise<ShiftDto> {
-        return this.toDto(await this.load(organisationId, id));
+        const row = await this.load(organisationId, id);
+        const limits = await this.resolveLimitsFor(
+            organisationId,
+            row.driver_id,
+        );
+        return this.toDto(row, limits);
+    }
+
+    /**
+     * This shift's effective driving limits, or NO_LIMITS with no query at
+     * all when DRIVING_LIMITS is off (see driving-limits.ts) or the shift has
+     * no driver yet.
+     */
+    private async resolveLimitsFor(
+        organisationId: string,
+        driverId: string | null,
+    ): Promise<DrivingLimits> {
+        if (!driverId || !drivingLimitsEnabled()) return NO_LIMITS;
+        return resolveDrivingLimitsForDriver(
+            this.dataSource,
+            organisationId,
+            driverId,
+        );
     }
 
     /**
@@ -340,7 +373,7 @@ export class ShiftsService {
         return row;
     }
 
-    private toDto(row: ShiftRow): ShiftDto {
+    private toDto(row: ShiftRow, drivingLimits: DrivingLimits): ShiftDto {
         return {
             id: row.id,
             status: row.status as ShiftDto['status'],
@@ -356,6 +389,7 @@ export class ShiftsService {
             stopCount: Number(row.stop_count),
             revision: Number(row.revision),
             updatedAt: new Date(row.updated_at).toISOString(),
+            drivingLimits,
         };
     }
 }
