@@ -79,6 +79,28 @@ describe('VroomService', () => {
         );
     });
 
+    it('passes job and vehicle skills through untouched', async () => {
+        // This service has no opinion on skills — SkillIndex resolves the
+        // request-scoped integers before a request ever reaches here, and
+        // this client's only job is to forward whatever VroomRequest it is
+        // given, unchanged, the same as every other field.
+        mockFetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ code: 0, routes: [] }),
+        });
+
+        const withSkills: VroomRequest = {
+            jobs: [{ ...request.jobs[0], skills: [1, 2] }],
+            vehicles: [{ ...request.vehicles[0], skills: [1] }],
+        };
+
+        await service.solve(withSkills);
+
+        expect(mockFetch.mock.calls[0][1]!.body).toBe(
+            JSON.stringify({ ...withSkills, options: { c: false } }),
+        );
+    });
+
     it('falls back to localhost when VROOM_URL is unset', async () => {
         delete process.env.VROOM_URL;
         mockFetch.mockResolvedValueOnce({
