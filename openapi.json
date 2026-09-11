@@ -4663,6 +4663,114 @@
           "vin"
         ]
       }
+    },
+    "/api/v1/integrations/orders": {
+      "post": {
+        "description": "Record-only for now: validates and durably stores the event, keyed by (organisation, platform, Idempotency-Key). It does not create a customer or package — see HIK-99.",
+        "operationId": "IntegrationsController_recordOrder",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Caller-chosen key, unique per organisation and platform. A retry with the same key and the same order replays the original result; the same key with a different order is rejected as a conflict.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderEventDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Idempotent replay: this Idempotency-Key already recorded this order, and the original row is returned unchanged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordedOrderEventDto"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordedOrderEventDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This Idempotency-Key was already used for a different order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Record an external order event.",
+        "tags": [
+          "integrations"
+        ]
+      }
     }
   },
   "info": {
@@ -5702,10 +5810,15 @@
             "description": "Linked Stripe customer on the organisation’s connected account. Null until the organisation enables payments, and null if the best-effort Stripe sync failed.",
             "example": "cus_QhX1a2B3c4D5e6"
           },
-          "shopify_customer_id": {
+          "external_platform": {
             "type": "string",
             "nullable": true,
-            "description": "Set only for customers created from a Shopify order."
+            "description": "Lowercase slug of the external storefront this customer was created from (e.g. \"shopify\"). Null unless external_customer_id is also set."
+          },
+          "external_customer_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "This customer’s id in the external platform’s system. Null unless external_platform is also set."
           },
           "customer_name": {
             "type": "string",
@@ -5778,7 +5891,8 @@
           "id",
           "organisation_id",
           "stripe_customer_id",
-          "shopify_customer_id",
+          "external_platform",
+          "external_customer_id",
           "customer_name",
           "customer_phone",
           "customer_email",
@@ -8326,6 +8440,377 @@
           "valid",
           "components",
           "errors"
+        ]
+      },
+      "OrderEventInfoDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The connector-assigned id for this event. Shopify uses its webhook delivery id, which also doubles as the Idempotency-Key header value."
+          },
+          "type": {
+            "type": "string",
+            "description": "Event type, e.g. \"order.paid\". An open string, not a closed enum, so a connector can introduce a new event type without a hikyaku-api change.",
+            "example": "order.paid"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "api_version": {
+            "type": "string",
+            "description": "The source platform's API version string."
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "occurred_at",
+          "api_version"
+        ]
+      },
+      "OrderEventSourceDto": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Lowercase connector slug (e.g. \"shopify\"). An open, validated string — never a closed enum. hikyaku-api never learns a platform name as code; every future connector needs zero hikyaku-api changes to add one.",
+            "example": "shopify"
+          },
+          "shop_domain": {
+            "type": "string",
+            "nullable": true,
+            "description": "The storefront's own domain, when the platform has one."
+          },
+          "app_version": {
+            "type": "string",
+            "description": "The connector app's own version string."
+          }
+        },
+        "required": [
+          "platform",
+          "app_version"
+        ]
+      },
+      "OrderLineItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "variant_title": {
+            "type": "string",
+            "nullable": true
+          },
+          "sku": {
+            "type": "string",
+            "nullable": true
+          },
+          "quantity": {
+            "type": "number"
+          },
+          "price": {
+            "type": "string",
+            "description": "Decimal string, matching the source currency."
+          },
+          "grams": {
+            "type": "number"
+          },
+          "requires_shipping": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "variant_title",
+          "sku",
+          "quantity",
+          "price",
+          "grams",
+          "requires_shipping"
+        ]
+      },
+      "OrderInfoDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The order's id in the source platform's system. Shopify sends its GraphQL global id here."
+          },
+          "legacy_id": {
+            "type": "number",
+            "description": "The order's numeric/legacy id in the source platform, where one exists."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-facing order name/number, e.g. \"#1001\"."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency code."
+          },
+          "financial_status": {
+            "type": "string",
+            "nullable": true
+          },
+          "fulfillment_status": {
+            "type": "string",
+            "nullable": true
+          },
+          "total_price": {
+            "type": "string",
+            "description": "Decimal string, matching `currency`."
+          },
+          "subtotal_price": {
+            "type": "string",
+            "nullable": true
+          },
+          "total_shipping": {
+            "type": "string",
+            "description": "Decimal string, matching `currency`."
+          },
+          "total_tax": {
+            "type": "string",
+            "nullable": true
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "total_weight_grams": {
+            "type": "number",
+            "nullable": true
+          },
+          "line_items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderLineItemDto"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "legacy_id",
+          "name",
+          "created_at",
+          "processed_at",
+          "currency",
+          "financial_status",
+          "fulfillment_status",
+          "total_price",
+          "subtotal_price",
+          "total_shipping",
+          "total_tax",
+          "note",
+          "tags",
+          "total_weight_grams",
+          "line_items"
+        ]
+      },
+      "OrderEventCustomerDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "nullable": true,
+            "description": "The customer's id in the source platform's system."
+          },
+          "first_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "last_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "nullable": true
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "first_name",
+          "last_name",
+          "email",
+          "phone"
+        ]
+      },
+      "OrderDeliveryAddressDto": {
+        "type": "object",
+        "properties": {
+          "line1": {
+            "type": "string",
+            "nullable": true
+          },
+          "line2": {
+            "type": "string",
+            "nullable": true
+          },
+          "city": {
+            "type": "string",
+            "nullable": true
+          },
+          "province": {
+            "type": "string",
+            "nullable": true
+          },
+          "province_code": {
+            "type": "string",
+            "nullable": true
+          },
+          "postcode": {
+            "type": "string",
+            "nullable": true
+          },
+          "country": {
+            "type": "string",
+            "nullable": true
+          },
+          "country_code": {
+            "type": "string",
+            "nullable": true
+          },
+          "company": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "line1",
+          "line2",
+          "city",
+          "province",
+          "province_code",
+          "postcode",
+          "country",
+          "country_code",
+          "company"
+        ]
+      },
+      "OrderDeliveryDto": {
+        "type": "object",
+        "properties": {
+          "required": {
+            "type": "boolean",
+            "description": "Whether this order needs physical delivery at all — false for a fully digital/no-shipping order."
+          },
+          "recipient_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "nullable": true
+          },
+          "address": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OrderDeliveryAddressDto"
+              }
+            ]
+          },
+          "latitude": {
+            "type": "number",
+            "nullable": true,
+            "minimum": -90,
+            "maximum": 90
+          },
+          "longitude": {
+            "type": "number",
+            "nullable": true,
+            "minimum": -180,
+            "maximum": 180
+          },
+          "shipping_method": {
+            "type": "string",
+            "nullable": true
+          },
+          "instructions": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "required",
+          "recipient_name",
+          "phone",
+          "email",
+          "address",
+          "latitude",
+          "longitude",
+          "shipping_method",
+          "instructions"
+        ]
+      },
+      "OrderEventDto": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/OrderEventInfoDto"
+          },
+          "source": {
+            "$ref": "#/components/schemas/OrderEventSourceDto"
+          },
+          "order": {
+            "$ref": "#/components/schemas/OrderInfoDto"
+          },
+          "customer": {
+            "$ref": "#/components/schemas/OrderEventCustomerDto"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/OrderDeliveryDto"
+          }
+        },
+        "required": [
+          "event",
+          "source",
+          "order",
+          "customer",
+          "delivery"
+        ]
+      },
+      "RecordedOrderEventDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The integration_order_event row id."
+          }
+        },
+        "required": [
+          "id"
         ]
       }
     }

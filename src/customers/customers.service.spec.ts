@@ -104,7 +104,7 @@ describe('CustomersService', () => {
             expect(dataSource.query).toHaveBeenCalledTimes(1); // no follow-up UPDATE attempted
         });
 
-        it('never issues a shopify_customer_id update', async () => {
+        it('never issues an external_customer_id update', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-3' }]);
 
             await service.upsertFromBooking(
@@ -115,7 +115,7 @@ describe('CustomersService', () => {
             );
 
             for (const [sql] of dataSource.query.mock.calls) {
-                expect(sql).not.toContain('shopify_customer_id');
+                expect(sql).not.toContain('external_customer_id');
             }
         });
 
@@ -175,11 +175,11 @@ describe('CustomersService', () => {
         });
     });
 
-    describe('upsertFromShopifyOrder', () => {
+    describe('upsertFromExternalOrder', () => {
         it('targets the phone tier when phone is present, and never touches Stripe', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-4' }]);
 
-            const result = await service.upsertFromShopifyOrder(
+            const result = await service.upsertFromExternalOrder(
                 'org-1',
                 {
                     name: 'Jane Doe',
@@ -201,7 +201,7 @@ describe('CustomersService', () => {
         it('falls back to the email tier, scoped to phone-less rows, when phone is absent', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-5' }]);
 
-            await service.upsertFromShopifyOrder(
+            await service.upsertFromExternalOrder(
                 'org-1',
                 {
                     name: 'Jane Doe',
@@ -229,7 +229,7 @@ describe('CustomersService', () => {
         it('falls back to the name tier, scoped to phone-less and email-less rows, when both are absent', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-6' }]);
 
-            await service.upsertFromShopifyOrder(
+            await service.upsertFromExternalOrder(
                 'org-1',
                 { name: 'Jane Doe', phone: null, email: null, address },
                 null,
@@ -241,27 +241,33 @@ describe('CustomersService', () => {
             );
         });
 
-        it('sets shopify_customer_id via a follow-up update when provided', async () => {
+        it('sets external_platform and external_customer_id via a follow-up update when provided', async () => {
             dataSource.query
                 .mockResolvedValueOnce([{ id: 'cust-7' }]) // upsert
-                .mockResolvedValueOnce([]); // shopify_customer_id update
+                .mockResolvedValueOnce([]); // external id update
 
-            await service.upsertFromShopifyOrder(
+            await service.upsertFromExternalOrder(
                 'org-1',
                 { name: 'Jane Doe', phone: '+61400000000', address },
-                'shopify-cust-999',
+                { platform: 'shopify', externalCustomerId: 'shopify-cust-999' },
             );
 
             expect(dataSource.query).toHaveBeenCalledTimes(2);
             const [updateSql, updateParams] = dataSource.query.mock.calls[1];
-            expect(updateSql).toContain('SET shopify_customer_id = $1');
-            expect(updateParams).toEqual(['shopify-cust-999', 'cust-7']);
+            expect(updateSql).toContain(
+                'SET external_platform = $1, external_customer_id = $2',
+            );
+            expect(updateParams).toEqual([
+                'shopify',
+                'shopify-cust-999',
+                'cust-7',
+            ]);
         });
 
-        it('skips the follow-up update when no shopify customer id is given', async () => {
+        it('skips the follow-up update when no external identity is given', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-8' }]);
 
-            await service.upsertFromShopifyOrder(
+            await service.upsertFromExternalOrder(
                 'org-1',
                 { name: 'Jane Doe', phone: '+61400000000', address },
                 null,
@@ -273,7 +279,7 @@ describe('CustomersService', () => {
         it('passes geocode provenance through and preserves it via COALESCE on conflict', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-9' }]);
 
-            await service.upsertFromShopifyOrder(
+            await service.upsertFromExternalOrder(
                 'org-1',
                 {
                     name: 'Jane Doe',
@@ -305,10 +311,10 @@ describe('CustomersService', () => {
             );
         });
 
-        it('persists a Shopify unit when supplied (line2/company fold-in)', async () => {
+        it('persists a supplied unit when provided (line2/company fold-in)', async () => {
             dataSource.query.mockResolvedValueOnce([{ id: 'cust-12' }]);
 
-            await service.upsertFromShopifyOrder(
+            await service.upsertFromExternalOrder(
                 'org-1',
                 {
                     name: 'Jane Doe',
@@ -329,7 +335,8 @@ describe('CustomersService', () => {
             id: 'cust-13',
             organisation_id: 'org-1',
             stripe_customer_id: null,
-            shopify_customer_id: null,
+            external_platform: null,
+            external_customer_id: null,
             customer_name: 'Jane Doe',
             customer_phone: '+61400000000',
             customer_email: 'jane@example.com',
