@@ -155,6 +155,53 @@ export class CoverageAssignmentDto {
     recordedOutcome: CoverageOutcome | null;
 }
 
+/**
+ * Whether a vehicle at the warehouse can actually carry this package, on
+ * skills alone — the VROOM hard constraint mirrored server-side: a package
+ * only routes onto a vehicle holding every one of its required skills. A
+ * completely separate axis from the driver/territory coverage above; a
+ * package can be geographically covered and still unassignable because no
+ * vehicle at the warehouse has the right equipment, or vice versa.
+ */
+export class CoverageSkillsDto {
+    @ApiProperty({
+        type: [String],
+        format: 'uuid',
+        description: "The package's required skills (package_skills.skill_id).",
+    })
+    requiredSkillIds: string[];
+
+    @ApiProperty({
+        type: [String],
+        format: 'uuid',
+        description:
+            'The subset of requiredSkillIds that NO vehicle at this warehouse ' +
+            'holds at all — the specific "no vehicle holds skill X" reason. A ' +
+            'skill can be missing here even when `satisfied` below also fails ' +
+            'for a different one, or when every required skill exists ' +
+            'somewhere in the fleet but never all on the same vehicle.',
+    })
+    missingSkillIds: string[];
+
+    @ApiProperty({
+        description:
+            'Vehicles at this warehouse holding every required skill at once. ' +
+            'Zero means no single vehicle can take this package regardless of ' +
+            'territory, even if every individual skill exists somewhere in the ' +
+            'fleet.',
+        example: 0,
+    })
+    matchingVehicleCount: number;
+
+    @ApiProperty({
+        description:
+            'requiredSkillIds is empty, or matchingVehicleCount is greater ' +
+            'than zero. False is the skills-specific unassigned reason this ' +
+            'endpoint exists to surface.',
+    })
+    satisfied: boolean;
+}
+
 /** 200 body of GET /api/v1/dispatch/coverage. */
 export class CoverageDiagnosticDto {
     @ApiProperty({
@@ -262,6 +309,19 @@ export class CoverageDiagnosticDto {
             'got it and whether coverage explains that.',
     })
     assignment: CoverageAssignmentDto | null;
+
+    @ApiProperty({
+        type: CoverageSkillsDto,
+        nullable: true,
+        description:
+            'Null for the coordinate form (there is no package to check ' +
+            'requirements for), for a package with no skill requirement, and ' +
+            'whenever `resolution` is not `evaluated`. Present and `satisfied: ' +
+            'false` is the skills-specific unassigned reason this endpoint ' +
+            'exists to surface, independent of the territory/driver coverage ' +
+            'above.',
+    })
+    skills: CoverageSkillsDto | null;
 }
 
 /**
