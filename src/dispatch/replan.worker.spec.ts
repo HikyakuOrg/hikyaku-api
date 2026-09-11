@@ -281,6 +281,28 @@ describe('ReplanWorker', () => {
             ]);
         });
 
+        it('maps skills to request-scoped integers shared by the vehicle and its jobs', async () => {
+            const { worker, vroom } = build({
+                shift: { ...SHIFT, skill_ids: ['skill-liftgate'] },
+                packages: [
+                    { ...PACKAGES[0], skill_ids: ['skill-liftgate'] },
+                    { ...PACKAGES[1], skill_ids: [] },
+                ],
+            });
+            await worker.replanShift('shift-1');
+
+            const request = vroom.solve.mock.calls[0][0];
+            expect(request.vehicles[0].skills).toEqual([1]);
+            // pkg-a (job 1) requires the skill the vehicle holds — same
+            // integer as the vehicle's own `skills` array, above.
+            expect(request.jobs.find((j) => j.id === 1)?.skills).toEqual([1]);
+            // pkg-b (job 2) requires nothing: VROOM's own default, not an
+            // empty array.
+            expect(
+                request.jobs.find((j) => j.id === 2)?.skills,
+            ).toBeUndefined();
+        });
+
         it('writes the order VROOM returned, not the order it was given', async () => {
             const { worker, log } = build();
             await worker.replanShift('shift-1');

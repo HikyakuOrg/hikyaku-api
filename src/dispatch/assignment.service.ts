@@ -96,6 +96,12 @@ interface PackageRow {
     scheduled_arrival: string | null;
     lon: number | null;
     lat: number | null;
+    /**
+     * package_skills.skill_id this package requires. Optional: only
+     * `loadPackage` (Tier 1's own lookup) selects it — `loadPackagesForShift`
+     * shares this row shape for the dispatcher pin path, which does not.
+     */
+    skill_ids?: string[] | null;
 }
 
 interface WarehouseRow {
@@ -116,6 +122,8 @@ interface ShiftRow {
     ors_vehicle_type: string | null;
     route_id: string | null;
     solution_id: string | null;
+    /** vehicle_skills.skill_id this shift's vehicle holds. */
+    skill_ids: string[] | null;
 }
 
 interface StopRow {
@@ -137,6 +145,8 @@ interface IdlePairRow {
     vehicle_id: string;
     vehicle_gross_limits: string | number | null;
     ors_vehicle_type: string | null;
+    /** vehicle_skills.skill_id this vehicle holds. */
+    skill_ids: string[] | null;
 }
 
 /** Just enough of a package to ask who covers where it is going. */
@@ -155,6 +165,12 @@ interface Candidate {
     solutionId: string | null;
     shiftDate: string;
     scheduledStart: string | null;
+    /**
+     * vehicle_skills.skill_id this candidate's vehicle holds. Read once, by
+     * `filterBySkills`, to drop a candidate before it is considered at all —
+     * see that method. Nothing downstream re-checks it.
+     */
+    vehicleSkillIds: string[];
 }
 
 /**
@@ -221,6 +237,13 @@ interface AssignmentPlan {
      * a real coverage query decided it, or the reverse.
      */
     serviceAreaMatching: boolean;
+    /**
+     * skills.id this package requires. Empty means no requirement, in which
+     * case `filterBySkills` and `openShift`'s skills clause are both no-ops —
+     * every existing behaviour is unchanged for the common case of a package
+     * with no skill.
+     */
+    requiredSkillIds: string[];
 }
 
 /**
@@ -1003,6 +1026,12 @@ export class AssignmentService {
                 solutionId: row.solution_id,
                 shiftDate: row.shift_date,
                 scheduledStart: row.scheduled_start,
+                // Never read on this path: a dispatcher pin (assignToShift)
+                // is not run through filterBySkills, the same deliberate
+                // override that already applies to territory (see
+                // OUT_OF_AREA_WARNING) — a human is allowed to be wrong on
+                // purpose here.
+                vehicleSkillIds: [],
             },
         };
     }
@@ -1204,17 +1233,26 @@ export class AssignmentService {
             allowEviction,
             coverage,
             serviceAreaMatching,
+            requiredSkillIds: pkgRow.skill_ids ?? [],
         };
 
         for (let attempt = 0; attempt <= MAX_REVISION_RETRIES; attempt++) {
             // ── PHASE A: no lock, no writes ──────────────────────────────────
-            const candidates = await this.loadCandidates(
+            const loaded = await this.loadCandidates(
                 organisationId,
                 warehouse.id,
                 shiftDate,
                 depot,
                 now,
                 warehouse.timezone,
+            );
+            // Hard constraint, filtered once here so every downstream step —
+            // decide()'s territory split, commitDecision()'s step 5 eviction,
+            // and the final 'no_free_driver_vehicle' reason — already sees
+            // only candidates that could actually carry this package.
+            const candidates = this.filterBySkills(
+                loaded,
+                plan.requiredSkillIds,
             );
 
             const decision = await this.decide(candidates, pkg, ctx, coverage);
@@ -1826,30 +1864,56 @@ export class AssignmentService {
         plan: AssignmentPlan,
         driverIds?: readonly string[],
     ): Promise<Candidate | null | 'allowance_exhausted'> {
-        const { organisationId, warehouse, shiftDate, depot } = plan;
+        const {
+            organisationId,
+            warehouse,
+            shiftDate,
+            depot,
+            requiredSkillIds,
+        } = plan;
         const warehouseId = warehouse.id;
 
         if (driverIds && driverIds.length === 0) return null;
 
-        const restrictToDrivers = driverIds
-            ? 'AND dva.driver_id = ANY($4::uuid[])'
-            : '';
-        const params: unknown[] = [warehouseId, organisationId, shiftDate];
-        if (driverIds) params.push(driverIds);
+        const params: unknown[] = [
+            warehouseId,
+            organisationId,
+            shiftDate,
+            driverIds ?? null,
+            requiredSkillIds,
+        ];
 
         const pairs = (await runner.query(
             `SELECT dva.driver_id,
                     dva.vehicle_id,
                     v.vehicle_gross_limits,
-                    vt.ors_vehicle_type
+                    vt.ors_vehicle_type,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM driver_vehicle_assignment dva
                JOIN vehicles     v  ON v.id  = dva.vehicle_id AND v.is_deleted = false
                JOIN vehicle_type vt ON vt.id = v.vehicle_type
                JOIN drivers      d  ON d.id  = dva.driver_id
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(vs.skill_id) AS skill_ids
+                      FROM vehicle_skills vs
+                     WHERE vs.vehicle_id = v.id
+               ) sk ON true
               WHERE v.warehouse_id   = $1
                 AND d.warehouse_id   = $1
                 AND v.organisation_id = $2
-                ${restrictToDrivers}
+                AND ($4::uuid[] IS NULL OR dva.driver_id = ANY($4::uuid[]))
+                -- Hard constraint: this vehicle must hold EVERY required
+                -- skill. Vacuously true when $5 is empty — unnest() produces
+                -- no rows to fail the inner NOT EXISTS on — so a package with
+                -- no requirement filters nothing, same as filterBySkills.
+                AND NOT EXISTS (
+                    SELECT 1 FROM unnest($5::uuid[]) req(skill_id)
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM vehicle_skills hold
+                          WHERE hold.vehicle_id = v.id
+                            AND hold.skill_id   = req.skill_id
+                     )
+                )
                 AND NOT EXISTS (
                     SELECT 1 FROM vrp_optimization o
                      WHERE o.shift_date = $3::date
@@ -1926,6 +1990,7 @@ export class AssignmentService {
             solutionId,
             shiftDate,
             scheduledStart: null,
+            vehicleSkillIds: pair.skill_ids ?? [],
         };
     }
 
@@ -1945,11 +2010,17 @@ export class AssignmentService {
                     pd.weight_kg,
                     pdw.scheduled_arrival,
                     ST_X(c.customer_location::geometry) AS lon,
-                    ST_Y(c.customer_location::geometry) AS lat
+                    ST_Y(c.customer_location::geometry) AS lat,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM packages p
                LEFT JOIN package_dimensions      pd  ON pd.package_id  = p.id
                LEFT JOIN package_delivery_window pdw ON pdw.package_id = p.id
                LEFT JOIN customer                c   ON c.id = p.to_customer
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(ps.skill_id) AS skill_ids
+                      FROM package_skills ps
+                     WHERE ps.package_id = p.id
+               ) sk ON true
               WHERE p.id = $1 AND p.organisation_id = $2`,
             [packageId, organisationId],
         );
@@ -1998,7 +2069,8 @@ export class AssignmentService {
                     veh.vehicle_gross_limits,
                     vt.ors_vehicle_type,
                     route.route_id,
-                    route.solution_id
+                    route.solution_id,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM vrp_optimization v
                JOIN vehicles     veh ON veh.id = v.vehicle_id AND veh.is_deleted = false
                JOIN vehicle_type vt  ON vt.id  = veh.vehicle_type
@@ -2013,6 +2085,11 @@ export class AssignmentService {
                      ORDER BY r.id
                      LIMIT 1
                ) route ON true
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(vs.skill_id) AS skill_ids
+                      FROM vehicle_skills vs
+                     WHERE vs.vehicle_id = veh.id
+               ) sk ON true
               WHERE v.warehouse_id    = $1
                 AND v.organisation_id = $2
                 AND v.shift_date      = $3::date
@@ -2058,7 +2135,31 @@ export class AssignmentService {
             solutionId: row.solution_id,
             shiftDate: row.shift_date,
             scheduledStart: row.scheduled_start,
+            vehicleSkillIds: row.skill_ids ?? [],
         }));
+    }
+
+    /**
+     * Hard constraint, mirroring VROOM: a candidate whose vehicle lacks any
+     * skill the package requires is not a fallback option either — it is
+     * dropped before territory is even considered. A shift that cannot
+     * physically carry this delivery is not "a driver who doesn't cover the
+     * address" (step 3 of the class comment), it is not a candidate at all,
+     * so this runs before `decide()` ever sees the list.
+     *
+     * The common case, a package with no required skill, filters nothing:
+     * every existing candidate and every existing test is unaffected.
+     */
+    private filterBySkills(
+        candidates: Candidate[],
+        requiredSkillIds: readonly string[],
+    ): Candidate[] {
+        if (requiredSkillIds.length === 0) return candidates;
+        return candidates.filter((candidate) =>
+            requiredSkillIds.every((id) =>
+                candidate.vehicleSkillIds.includes(id),
+            ),
+        );
     }
 
     /**

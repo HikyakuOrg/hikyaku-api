@@ -201,6 +201,74 @@ describe('DatabaseService', () => {
             expect(result.vehicleMap[1]).toBe('veh-1');
         });
 
+        it('maps skill_ids to request-scoped integers shared by jobs and vehicles', async () => {
+            const today = new Date();
+            const runner = makeRunner(
+                jest
+                    .fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-1',
+                            tracking_number: 'TRK001',
+                            created_at: today,
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: 2,
+                            scheduled_arrival: null,
+                            customer_lon: 151.3,
+                            customer_lat: -33.9,
+                            skill_ids: ['skill-liftgate'],
+                        },
+                    ])
+                    .mockResolvedValueOnce([
+                        { ...ASSIGNMENT_ROW, skill_ids: ['skill-liftgate'] },
+                    ])
+                    .mockResolvedValueOnce([]), // no pinned packages
+            );
+
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
+
+            // Same integer on both sides — that agreement is the whole point
+            // of registering vehicles and packages on one shared SkillIndex
+            // before either array is built.
+            expect(result.request.vehicles[0].skills).toEqual([1]);
+            expect(result.request.jobs[0].skills).toEqual([1]);
+        });
+
+        it('leaves skills undefined for a job/vehicle with no skill_ids, matching VROOM default', async () => {
+            const today = new Date();
+            const runner = makeRunner(
+                jest
+                    .fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-1',
+                            tracking_number: 'TRK001',
+                            created_at: today,
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: 2,
+                            scheduled_arrival: null,
+                            customer_lon: 151.3,
+                            customer_lat: -33.9,
+                        },
+                    ])
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]),
+            );
+
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
+
+            expect(result.request.vehicles[0].skills).toBeUndefined();
+            expect(result.request.jobs[0].skills).toBeUndefined();
+        });
+
         it('maps ors_vehicle_type to a Valhalla costing profile', async () => {
             const today = new Date();
             const runner = makeRunner(
@@ -595,6 +663,34 @@ describe('DatabaseService', () => {
                 expect(pinned.request.vehicles).toHaveLength(1);
                 expect(pinned.request.vehicles[0].profile).toBe('truck');
                 expect(pinned.scheduledStart).toBeInstanceOf(Date);
+            });
+
+            it('maps a pinned route’s skill_ids to its OWN request-scoped index', async () => {
+                // Each pinned group is solved as its own VROOM request, so its
+                // skill index must not be shared with the main solve's — a
+                // job here and a job in the main request can legitimately get
+                // the same integer for two DIFFERENT skills.
+                const runner = makeRunner(
+                    jest
+                        .fn()
+                        .mockResolvedValueOnce([NORMAL_PACKAGE])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([
+                            {
+                                ...PINNED_ROW,
+                                skill_ids: ['skill-fragile'],
+                                vehicle_skill_ids: ['skill-fragile'],
+                            },
+                        ]),
+                );
+
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                );
+
+                const pinned = result.pinnedRoutes[0];
+                expect(pinned.request.vehicles[0].skills).toEqual([1]);
+                expect(pinned.request.jobs[0].skills).toEqual([1]);
             });
 
             it('groups multiple pinned packages sharing a driver/vehicle pair into one route', async () => {

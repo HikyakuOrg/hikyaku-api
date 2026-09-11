@@ -69,6 +69,11 @@ export function buildOpenApiConfig() {
                 'Package creation, and the shift assignment it triggers.',
             )
             .addTag(
+                'skills',
+                'Organisation skill catalog, matched by the optimiser as a hard ' +
+                    'constraint between packages and vehicles.',
+            )
+            .addTag(
                 'shifts',
                 'Shift lifecycle and hand edits to a shift’s package set.',
             )

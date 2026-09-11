@@ -23,6 +23,7 @@ import type {
     CoverageDriverDto,
     CoverageFallbackPackageDto,
     CoverageOutcomeCountsDto,
+    CoverageSkillsDto,
     CoverageSummaryDto,
 } from './dto/coverage-diagnostic.dto';
 
@@ -55,6 +56,13 @@ interface PackageRow {
     driver_id: string | null;
     shift_status: string | null;
     recorded_outcome: string | null;
+    skill_ids: string[] | null;
+}
+
+/** One row of the skills-satisfaction query. */
+interface SkillsCoverageRow {
+    missing_skill_ids: string[] | null;
+    matching_vehicle_count: number | string;
 }
 
 interface AreaDetailRow {
@@ -279,6 +287,7 @@ export class CoverageDiagnosticsService {
             request.includeGeometry,
             base,
             assignment,
+            pkg.skill_ids ?? [],
         );
     }
 
@@ -300,6 +309,9 @@ export class CoverageDiagnosticsService {
             request.includeGeometry,
             { packageId: null, trackingNumber: null, warehouseId },
             null,
+            // No package in the coordinate form, so there is nothing to check
+            // skill requirements against.
+            [],
         );
     }
 
@@ -362,14 +374,20 @@ export class CoverageDiagnosticsService {
             warehouseId: string | null;
         },
         assignment: CoverageAssignmentDto | null,
+        requiredSkillIds: readonly string[],
     ): Promise<CoverageDiagnosticDto> {
         const query = { organisationId, warehouseId };
 
-        const [coverage, areaCoverage, organisationAreaCount] =
+        const [coverage, areaCoverage, organisationAreaCount, skills] =
             await Promise.all([
                 coveringDriversForPoint(this.dataSource, query, point),
                 coveringAreasForPoint(this.dataSource, query, point),
                 this.countLiveAreas(organisationId),
+                this.resolveSkills(
+                    organisationId,
+                    warehouseId,
+                    requiredSkillIds,
+                ),
             ]);
 
         const areas = await this.describeAreas(
@@ -409,6 +427,7 @@ export class CoverageDiagnosticsService {
                 explicitCount: coverage.explicitDriverIds.length,
                 floaterCount: coverage.floaterDriverIds.length,
                 assignment: resolved,
+                skills,
             }),
             point: { lon: point.lon, lat: point.lat },
             warehouseId: base.warehouseId ?? warehouseId,
@@ -419,6 +438,7 @@ export class CoverageDiagnosticsService {
             areas,
             drivers,
             assignment: resolved,
+            skills,
         };
     }
 
@@ -445,6 +465,7 @@ export class CoverageDiagnosticsService {
                 explicitCount: 0,
                 floaterCount: 0,
                 assignment,
+                skills: null,
             }),
             point: base.point,
             warehouseId: base.warehouseId,
@@ -460,6 +481,9 @@ export class CoverageDiagnosticsService {
             assignment: assignment
                 ? { ...assignment, matchedBy: 'unassigned', covered: false }
                 : null,
+            // No warehouse was resolved (or no geocode, so nothing to route to
+            // it), so there is no vehicle fleet to check skills against.
+            skills: null,
         };
     }
 
@@ -493,13 +517,19 @@ export class CoverageDiagnosticsService {
                     extensions.st_y(c.customer_location::extensions.geometry) AS lat,
                     v.driver_id,
                     v.status AS shift_status,
-                    pa.coverage_outcome AS recorded_outcome
+                    pa.coverage_outcome AS recorded_outcome,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM packages p
                LEFT JOIN customer c ON c.id = p.to_customer
                LEFT JOIN package_assignment pa ON pa.package_id = p.id
                LEFT JOIN vrp_optimization v
                       ON v.id              = p.optimisation_id
                      AND v.organisation_id = p.organisation_id
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(ps.skill_id) AS skill_ids
+                      FROM package_skills ps
+                     WHERE ps.package_id = p.id
+               ) sk ON true
               WHERE p.id = $1::uuid AND p.organisation_id = $2::uuid`,
             [packageId, organisationId],
         );
@@ -600,6 +630,81 @@ export class CoverageDiagnosticsService {
             [organisationId],
         );
         return Number(rows[0]?.count ?? 0);
+    }
+
+    /**
+     * Can any vehicle at this warehouse actually carry this package, on
+     * skills alone?
+     *
+     * A completely separate axis from the territory/driver coverage the rest
+     * of this class computes: VROOM matches skills as a hard constraint
+     * between a job and a vehicle, independent of geography, so a package can
+     * be in the middle of a fully staffed territory and still be
+     * unassignable because no van at the depot carries the right equipment.
+     * See CreateSkillsSchema1789261200000 and the VROOM translation layer
+     * (HIK-92) that this mirrors.
+     *
+     * `null` when there is nothing to check: no required skills (the common
+     * case — most packages carry none), which is also true for the
+     * coordinate form, since there is no package to require anything.
+     *
+     * The single query answers both parts of the diagnosis at once:
+     * `missingSkillIds` is a required skill literally nobody at the
+     * warehouse holds, and `matchingVehicleCount` is vehicles holding EVERY
+     * required skill together — the actual VROOM test, since needing skills
+     * A and B satisfied by two different vehicles does not help a delivery
+     * that visits one van.
+     */
+    private async resolveSkills(
+        organisationId: string,
+        warehouseId: string,
+        requiredSkillIds: readonly string[],
+    ): Promise<CoverageSkillsDto | null> {
+        if (requiredSkillIds.length === 0) return null;
+
+        const rows: SkillsCoverageRow[] = await this.dataSource.query(
+            `WITH warehouse_vehicles AS (
+                 SELECT id FROM vehicles
+                  WHERE organisation_id = $1::uuid
+                    AND warehouse_id    = $2::uuid
+                    AND is_deleted      = false
+             ),
+             required AS (
+                 SELECT skill_id FROM unnest($3::uuid[]) AS skill_id
+             ),
+             held AS (
+                 SELECT wv.id AS vehicle_id, vs.skill_id
+                   FROM warehouse_vehicles wv
+                   JOIN vehicle_skills vs ON vs.vehicle_id = wv.id
+                  WHERE vs.skill_id = ANY($3::uuid[])
+             )
+             SELECT
+                 (SELECT array_agg(r.skill_id)
+                    FROM required r
+                   WHERE NOT EXISTS (
+                             SELECT 1 FROM held h WHERE h.skill_id = r.skill_id
+                         )) AS missing_skill_ids,
+                 (SELECT count(*)
+                    FROM warehouse_vehicles wv
+                   WHERE NOT EXISTS (
+                             SELECT 1 FROM required r
+                              WHERE NOT EXISTS (
+                                        SELECT 1 FROM held h
+                                         WHERE h.vehicle_id = wv.id
+                                           AND h.skill_id   = r.skill_id
+                                    )
+                         ))::int AS matching_vehicle_count`,
+            [organisationId, warehouseId, requiredSkillIds],
+        );
+
+        const row = rows[0];
+        const matchingVehicleCount = Number(row?.matching_vehicle_count ?? 0);
+        return {
+            requiredSkillIds: [...requiredSkillIds],
+            missingSkillIds: row?.missing_skill_ids ?? [],
+            matchingVehicleCount,
+            satisfied: matchingVehicleCount > 0,
+        };
     }
 
     /**
@@ -823,6 +928,7 @@ interface ExplanationInput {
     explicitCount: number;
     floaterCount: number;
     assignment: CoverageAssignmentDto | null;
+    skills: CoverageSkillsDto | null;
 }
 
 /**
@@ -878,7 +984,38 @@ export function explain(input: ExplanationInput): string {
         parts.push(assignmentSentence(input.assignment));
     }
 
+    if (input.skills) {
+        parts.push(skillsSentence(input.skills));
+    }
+
     return parts.join(' ');
+}
+
+/**
+ * The skills half of the sentence — a separate clause rather than folded
+ * into the territory one above, because it is a genuinely independent
+ * reason a package can be unassignable: a fully covered address with the
+ * wrong equipment at the depot.
+ */
+function skillsSentence(skills: CoverageSkillsDto): string {
+    if (skills.satisfied) {
+        const count =
+            skills.matchingVehicleCount === 1
+                ? '1 vehicle holds'
+                : `${skills.matchingVehicleCount} vehicles hold`;
+        return `On skills: ${count} every skill this package requires.`;
+    }
+    if (skills.missingSkillIds.length > 0) {
+        const noun = skills.missingSkillIds.length === 1 ? 'skill' : 'skills';
+        return (
+            `On skills: no vehicle at this warehouse holds required ${noun} ` +
+            `${skills.missingSkillIds.join(', ')}.`
+        );
+    }
+    return (
+        'On skills: every required skill exists somewhere in the fleet at ' +
+        'this warehouse, but no single vehicle holds all of them together.'
+    );
 }
 
 /**

@@ -50,6 +50,15 @@ export class PackageDto {
             'Latest package_timeline status enum, e.g. PENDING, ASSIGNED.',
     })
     status: string;
+
+    @ApiProperty({
+        type: [String],
+        format: 'uuid',
+        description:
+            'Required skills (skills.id) this delivery needs. Empty means no ' +
+            'skill requirement.',
+    })
+    skillIds: string[];
 }
 
 /** The shift a package landed on. */

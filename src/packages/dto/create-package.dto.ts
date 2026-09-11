@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import {
     ArrayMaxSize,
     ArrayMinSize,
+    ArrayUnique,
     IsArray,
     IsBoolean,
     IsISO8601,
@@ -130,6 +131,24 @@ export class CreatePackageDto {
     @IsOptional()
     @IsBoolean()
     autoAssign?: boolean;
+
+    @ApiPropertyOptional({
+        type: [String],
+        format: 'uuid',
+        description:
+            "Required skills (skills.id) this delivery needs, from the caller's " +
+            'organisation catalog. An unknown, archived, or another ' +
+            "organisation's id is rejected with 400. The optimiser only routes " +
+            'this package onto a vehicle holding every one of them (see ' +
+            'vehicle_skills) — a hard constraint, mirroring VROOM. Omitted or ' +
+            'empty means no skill requirement.',
+    })
+    @IsOptional()
+    @IsArray()
+    @ArrayMaxSize(20)
+    @ArrayUnique()
+    @IsUUID('4', { each: true })
+    skillIds?: string[];
 }
 
 /**

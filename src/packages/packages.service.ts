@@ -11,6 +11,7 @@ import {
     AssignmentService,
     type AssignmentOutcome,
 } from 'src/dispatch/assignment.service';
+import { SkillsService } from 'src/skills/skills.service';
 import type {
     BulkCreatePackagesDto,
     CreatePackageDto,
@@ -38,6 +39,8 @@ export interface PackageSpec {
     deadlineAt?: string | null;
     /** Planned collection time, when the caller has one. */
     scheduledDeparture?: string | null;
+    /** skills.id this delivery requires. Validated against the org catalog. */
+    skillIds?: string[];
 }
 
 interface PackageRow {
@@ -51,6 +54,7 @@ interface PackageRow {
     delivery_notes: string | null;
     scheduled_arrival: string | null;
     status: string | null;
+    skill_ids: string[] | null;
 }
 
 const skipped = (reason: string): AssignmentOutcomeDto => ({
@@ -81,6 +85,7 @@ export class PackagesService {
     constructor(
         @InjectDataSource() private readonly dataSource: DataSource,
         private readonly assignment: AssignmentService,
+        private readonly skills: SkillsService,
     ) {}
 
     async create(
@@ -88,6 +93,7 @@ export class PackagesService {
         dto: CreatePackageDto,
     ): Promise<{ result: CreatePackageResultDto; replayed: boolean }> {
         await this.validateReferences(organisationId, dto);
+        await this.skills.validateSkillIds(organisationId, dto.skillIds ?? []);
 
         // Idempotent replay. Both clients retry on a flaky connection, and a
         // duplicate package is a duplicate parcel on a van.
@@ -297,6 +303,18 @@ export class PackagesService {
                 `SELECT insert_package_timeline($1::uuid, 'PENDING')`,
                 [id],
             );
+
+            // skillIds was already validated against this organisation's
+            // active catalog in create()/createBulk() before this transaction
+            // opened, so this is a plain link write. unnest turns the array
+            // into one INSERT rather than a query per skill.
+            if (spec.skillIds && spec.skillIds.length > 0) {
+                await runner.query(
+                    `INSERT INTO package_skills (package_id, skill_id, organisation_id)
+                     SELECT $1, skill_id, $3 FROM unnest($2::uuid[]) AS skill_id`,
+                    [id, spec.skillIds, organisationId],
+                );
+            }
         }
 
         return ids;
@@ -374,7 +392,8 @@ export class PackagesService {
                    p.to_customer,
                    p.delivery_notes,
                    pdw.scheduled_arrival,
-                   latest.enums AS status
+                   latest.enums AS status,
+                   COALESCE(sk.skill_ids, '{}') AS skill_ids
               FROM packages p
               LEFT JOIN package_delivery_window pdw ON pdw.package_id = p.id
               LEFT JOIN LATERAL (
@@ -384,7 +403,12 @@ export class PackagesService {
                     WHERE pt.package_id = p.id
                     ORDER BY pt.created_at DESC, pt.id DESC
                     LIMIT 1
-              ) latest ON true`;
+              ) latest ON true
+              LEFT JOIN LATERAL (
+                   SELECT array_agg(psk.skill_id) AS skill_ids
+                     FROM package_skills psk
+                    WHERE psk.package_id = p.id
+              ) sk ON true`;
     }
 
     // ── Mapping ──────────────────────────────────────────────────────────────
@@ -402,6 +426,7 @@ export class PackagesService {
             widthCm: dto.dimensions.widthCm,
             heightCm: dto.dimensions.heightCm,
             deadlineAt: dto.deadlineAt ?? null,
+            skillIds: dto.skillIds,
         };
     }
 
@@ -419,6 +444,7 @@ export class PackagesService {
                 ? new Date(row.scheduled_arrival).toISOString()
                 : null,
             status: row.status ?? 'PENDING',
+            skillIds: row.skill_ids ?? [],
         };
     }
 
