@@ -18,7 +18,7 @@ import {
     legKey,
     loadPenaltySeconds,
     pickVictims,
-    scheduleArrivals,
+    scheduleRoute,
     tryInsert,
     type CandidateShift,
     type GeoPoint,
@@ -895,7 +895,7 @@ export class AssignmentService {
             reason,
         );
 
-        const arrivals = scheduleArrivals(
+        const routed = scheduleRoute(
             candidate.shift.depot,
             candidate.shift.departureMs,
             candidate.shift.stops.map((s) => ({ lon: s.lon, lat: s.lat })),
@@ -913,9 +913,14 @@ export class AssignmentService {
                 packageId: s.packageId,
                 lon: s.lon,
                 lat: s.lat,
-                arrivalMs: arrivals[i],
+                arrivalMs: routed.arrivalsMs[i],
                 weightG: s.weightG,
+                distanceM: routed.distancesM[i],
             })),
+            // A hand edit re-schedules the fixed order Tier 1's own estimator,
+            // never a router — same as the automatic insertion path.
+            returnLegDistanceM: routed.returnLegDistanceM,
+            distanceSource: 'estimated',
             reason,
         });
 
@@ -1778,6 +1783,7 @@ export class AssignmentService {
                 lat: existing?.lat ?? pkg.lat,
                 arrivalMs: insertion.arrivalsMs[i],
                 weightG: existing?.weightG ?? pkg.weightG,
+                distanceM: insertion.distancesM[i],
                 ...(packageId === pkg.id ? { coverageOutcome } : {}),
             };
         });
@@ -1793,6 +1799,8 @@ export class AssignmentService {
             driverId: candidate.shift.driverId ?? '',
             vehicleId: candidate.shift.vehicleId ?? '',
             stops,
+            returnLegDistanceM: insertion.returnLegDistanceM,
+            distanceSource: 'estimated',
             reason,
         });
 

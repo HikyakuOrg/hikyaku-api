@@ -12,6 +12,13 @@ export interface PlanStop {
     /** Grams. Stored on the step as `load` so the dashboard can show it. */
     weightG: number;
     /**
+     * Metres of the leg ARRIVING at this stop — not a running total, and not
+     * the leg leaving it. Null only when the writer genuinely has no distance
+     * for this leg (see PlanWrite.distanceSource); never a silent zero, which
+     * would read as "no detour" rather than "unknown".
+     */
+    distanceM: number | null;
+    /**
      * How this package's driver related to who covers its address, for the ONE
      * stop this write is placing. Left undefined for every other stop on the
      * route, and by every caller that is rewriting a plan rather than making a
@@ -35,6 +42,22 @@ export interface PlanWrite {
     driverId: string;
     vehicleId: string;
     stops: PlanStop[];
+    /**
+     * Metres of the closing leg from the last stop back to the depot. No job
+     * step owns this leg, which is why it rides on the plan rather than on a
+     * stop. Null under the same "genuinely unknown" rule as PlanStop.distanceM.
+     */
+    returnLegDistanceM: number | null;
+    /**
+     * Which tier produced every distance figure on this write. 'estimated' is
+     * Tier 1's haversine-times-DETOUR_FACTOR guess; 'measured' is Tier 2's real
+     * VROOM road distance. Null when distanceM/returnLegDistanceM are null —
+     * there is nothing to attribute a source to. A dispatcher reading a route's
+     * distance needs to know which kind of number they are looking at: an
+     * estimate Tier 2 will revise within seconds reads very differently from a
+     * confirmed measurement, especially once it is being compared to a limit.
+     */
+    distanceSource: 'estimated' | 'measured' | null;
     /** Why the plan changed; recorded on the revision snapshot. */
     reason: string;
 }
@@ -157,6 +180,7 @@ export class ShiftPlanWriter {
         }
 
         await this.insertSteps(runner, plan);
+        await this.updateRouteDistance(runner, plan);
 
         if (plan.stops.length > 0) {
             await this.writeEtas(runner, plan.stops);
@@ -352,6 +376,7 @@ export class ShiftPlanWriter {
             lat: number;
             arrival: number;
             load: number[] | null;
+            distanceM: number | null;
         }[] = [];
 
         let cumulativeLoad = 0;
@@ -363,6 +388,8 @@ export class ShiftPlanWriter {
             lat: plan.depot.lat,
             arrival: 0,
             load: [0],
+            // No leg precedes the start step.
+            distanceM: 0,
         });
 
         plan.stops.forEach((stop, i) => {
@@ -378,6 +405,8 @@ export class ShiftPlanWriter {
                     Math.round((stop.arrivalMs - plan.departureMs) / 1000),
                 ),
                 load: [cumulativeLoad],
+                distanceM:
+                    stop.distanceM == null ? null : Math.round(stop.distanceM),
             });
         });
 
@@ -400,16 +429,21 @@ export class ShiftPlanWriter {
             lat: plan.depot.lat,
             arrival: lastArrival,
             load: [cumulativeLoad],
+            // The return leg belongs to no job step, so it lands here.
+            distanceM:
+                plan.returnLegDistanceM == null
+                    ? null
+                    : Math.round(plan.returnLegDistanceM),
         });
 
-        const PARAMS_PER_ROW = 8;
+        const PARAMS_PER_ROW = 9;
         const placeholders = rows
             .map((_, i) => {
                 const b = i * PARAMS_PER_ROW;
                 return (
                     `($${b + 1},$${b + 2},$${b + 3},$${b + 4},` +
                     `ST_SetSRID(ST_Point($${b + 5},$${b + 6}),4326),` +
-                    `$${b + 7},$${b + 8})`
+                    `$${b + 7},$${b + 8},$${b + 9})`
                 );
             })
             .join(', ');
@@ -423,13 +457,14 @@ export class ShiftPlanWriter {
             r.lat,
             r.arrival,
             r.load,
+            r.distanceM,
         ]);
 
         // package_id is set in a second pass rather than inline: the job rows and
         // the depot rows would otherwise need different placeholder shapes.
         await runner.query(
             `INSERT INTO vrp_route_step
-                 (route_id, step_index, type, solution_id, location, arrival, load)
+                 (route_id, step_index, type, solution_id, location, arrival, load, distance_m)
              VALUES ${placeholders}`,
             params,
         );
@@ -449,6 +484,46 @@ export class ShiftPlanWriter {
                 ],
             );
         }
+    }
+
+    /**
+     * Sums the just-written step distances onto vrp_route.distance_m.
+     *
+     * Derived from the parts rather than taking an explicit total from the
+     * caller: the sum telescopes back to exactly the figure Tier 2 got from
+     * VROOM (each per-step distance is already that cumulative total
+     * differenced against the previous step), so there is no independent
+     * number that could drift from it, and one fewer field for a caller to
+     * get wrong.
+     *
+     * Null, not zero, the moment ANY leg is unknown — see PlanStop.distanceM.
+     * A partial sum would read as "the route is this short", which is worse
+     * than "the route's length isn't known this time".
+     */
+    private async updateRouteDistance(
+        runner: QueryRunner,
+        plan: PlanWrite,
+    ): Promise<void> {
+        const anyMissing =
+            plan.stops.some((s) => s.distanceM == null) ||
+            plan.returnLegDistanceM == null;
+
+        const totalM = anyMissing
+            ? null
+            : Math.round(
+                  plan.stops.reduce(
+                      (sum, s) => sum + (s.distanceM as number),
+                      0,
+                  ) + (plan.returnLegDistanceM as number),
+              );
+
+        await runner.query(
+            `UPDATE vrp_route
+                SET distance_m = $2,
+                    distance_source = $3
+              WHERE id = $1`,
+            [plan.routeId, totalM, totalM == null ? null : plan.distanceSource],
+        );
     }
 
     /**

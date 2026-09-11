@@ -4,6 +4,7 @@ import {
     cheapestPosition,
     effectiveDeadline,
     estimateLeg,
+    estimateLegMeters,
     GREY_BAND,
     haversineMeters,
     isEvictable,
@@ -14,7 +15,7 @@ import {
     MAX_EVICTIONS,
     MAX_STOPS,
     pickVictims,
-    scheduleArrivals,
+    scheduleRoute,
     SHIFT_WINDOW_SECONDS,
     TIME_PER_STOP,
     tryInsert,
@@ -52,6 +53,11 @@ function north(km: number): { lon: number; lat: number } {
 /** Seconds Tier 1 budgets to drive `km`, by its own estimator. */
 function driveSeconds(km: number): number {
     return estimateLeg(DEPOT, east(km));
+}
+
+/** Metres Tier 1 estimates for a `km` leg: haversine inflated by DETOUR_FACTOR. */
+function legMetres(km: number): number {
+    return estimateLegMeters(DEPOT, east(km));
 }
 
 const DEPARTURE = Date.parse('2026-09-01T08:00:00Z');
@@ -814,29 +820,52 @@ describe('the shift window', () => {
     });
 });
 
-describe('scheduleArrivals', () => {
+describe('scheduleRoute', () => {
     it('returns nothing for an empty route', () => {
-        expect(scheduleArrivals(DEPOT, DEPARTURE, [])).toEqual([]);
+        const result = scheduleRoute(DEPOT, DEPARTURE, []);
+        expect(result.arrivalsMs).toEqual([]);
+        expect(result.distancesM).toEqual([]);
+        expect(result.returnLegDistanceM).toBe(0);
+        expect(result.totalDistanceM).toBe(0);
     });
 
     it('walks a fixed order, adding service time between stops', () => {
-        const arrivals = scheduleArrivals(DEPOT, DEPARTURE, [east(4), east(8)]);
-        expect(arrivals[0]).toBeCloseTo(DEPARTURE + driveSeconds(4) * 1000, -2);
-        expect(arrivals[1]).toBeCloseTo(
-            arrivals[0] + (TIME_PER_STOP + driveSeconds(4)) * 1000,
+        const { arrivalsMs } = scheduleRoute(DEPOT, DEPARTURE, [
+            east(4),
+            east(8),
+        ]);
+        expect(arrivalsMs[0]).toBeCloseTo(
+            DEPARTURE + driveSeconds(4) * 1000,
+            -2,
+        );
+        expect(arrivalsMs[1]).toBeCloseTo(
+            arrivalsMs[0] + (TIME_PER_STOP + driveSeconds(4)) * 1000,
             -2,
         );
     });
 
-    it('honours measured legs, so a rewrite after a removal uses real numbers when it has them', () => {
+    it('honours measured legs for time, but distance stays the haversine estimate regardless', () => {
         const measured = { [legKey(DEPOT, east(4))]: 120 };
-        const arrivals = scheduleArrivals(
-            DEPOT,
-            DEPARTURE,
-            [east(4)],
-            measured,
+        const result = scheduleRoute(DEPOT, DEPARTURE, [east(4)], measured);
+        expect(result.arrivalsMs[0]).toBe(DEPARTURE + 120_000);
+        // A measured DURATION buys nothing on the distance side: there is no
+        // measured distance to fall back to, only ever the estimate.
+        expect(result.distancesM[0]).toBeCloseTo(legMetres(4), 0);
+    });
+
+    it('accumulates distance per leg and includes the return leg in the total', () => {
+        const result = scheduleRoute(DEPOT, DEPARTURE, [east(4), east(8)]);
+        expect(result.distancesM[0]).toBeCloseTo(legMetres(4), 0);
+        // east(4) -> east(8) is another 4 km leg.
+        expect(result.distancesM[1]).toBeCloseTo(legMetres(4), 0);
+        // The return leg is the full 8 km back to the depot.
+        expect(result.returnLegDistanceM).toBeCloseTo(legMetres(8), 0);
+        expect(result.totalDistanceM).toBeCloseTo(
+            result.distancesM[0] +
+                result.distancesM[1] +
+                result.returnLegDistanceM,
+            0,
         );
-        expect(arrivals[0]).toBe(DEPARTURE + 120_000);
     });
 });
 

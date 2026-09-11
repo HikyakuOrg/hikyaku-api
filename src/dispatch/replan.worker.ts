@@ -346,7 +346,29 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             const stops: PlanStop[] = [];
             const packageById = new Map(routable.map((p) => [p.id, p]));
 
+            // VROOM's step.distance is CUMULATIVE since route departure, not
+            // the incremental leg — confirmed against a live solve, and
+            // documented as "cumulated travel distance upon arrival at this
+            // step" in VROOM's own API docs. previousDistanceM tracks the
+            // running total so each row gets the leg landing on IT, matching
+            // vrp_route_step.distance_m's contract. It turns undefined (the
+            // -g flag off, or a step with no location) the moment any step is
+            // missing distance, which propagates every later leg to null
+            // rather than silently measuring from a wrong baseline.
+            let previousDistanceM: number | undefined = 0;
+            let returnLegDistanceM: number | null = null;
+
             for (const step of route?.steps ?? []) {
+                const legDistanceM =
+                    step.distance == null || previousDistanceM == null
+                        ? null
+                        : step.distance - previousDistanceM;
+                previousDistanceM = step.distance;
+
+                if (step.type === 'end') {
+                    returnLegDistanceM = legDistanceM;
+                }
+
                 if (step.type !== 'job' || step.id == null) continue;
                 const packageId = jobPackage[step.id];
                 const pkg = packageId ? packageById.get(packageId) : undefined;
@@ -359,6 +381,7 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                     // time_window is present, which it always is here.
                     arrivalMs: (step.arrival ?? departureEpoch) * 1000,
                     weightG: this.weightGrams(pkg.weight_kg),
+                    distanceM: legDistanceM,
                 });
             }
 
@@ -395,6 +418,8 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                     driverId: shift.driver_id,
                     vehicleId: shift.vehicle_id,
                     stops,
+                    returnLegDistanceM,
+                    distanceSource: 'measured',
                     reason: 'replan',
                 });
                 await runner.commitTransaction();
