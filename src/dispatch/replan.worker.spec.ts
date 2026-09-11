@@ -293,6 +293,82 @@ describe('ReplanWorker', () => {
             expect(etas?.params[2]).toBe('pkg-a');
         });
 
+        it('diffs VROOM’s cumulative step distances into the leg landing on each row', async () => {
+            // VROOM's step.distance is cumulative since route departure, not
+            // the incremental leg — confirmed against a live solve. 0 (start)
+            // -> 8000 (pkg-b) -> 15000 (pkg-a) -> 20000 (end) means the legs
+            // are 8000, 7000 and a 5000 m return, not the raw cumulative
+            // figures.
+            const { worker, vroom, log } = build();
+            vroom.solve.mockResolvedValue({
+                code: 0,
+                routes: [
+                    {
+                        vehicle: 1,
+                        steps: [
+                            {
+                                type: 'start',
+                                arrival: NOW.getTime() / 1000,
+                                distance: 0,
+                            },
+                            {
+                                type: 'job',
+                                id: 2,
+                                arrival: NOW.getTime() / 1000 + 300,
+                                distance: 8000,
+                            },
+                            {
+                                type: 'job',
+                                id: 1,
+                                arrival: NOW.getTime() / 1000 + 1500,
+                                distance: 15000,
+                            },
+                            {
+                                type: 'end',
+                                arrival: NOW.getTime() / 1000 + 2000,
+                                distance: 20000,
+                            },
+                        ],
+                    },
+                ],
+                unassigned: [],
+            });
+
+            await worker.replanShift('shift-1');
+
+            const steps = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
+            const params = steps?.params ?? [];
+            expect(params[8]).toBe(0); // start: no leg precedes it
+            expect(params[17]).toBe(8_000); // leg into pkg-b, solved first
+            expect(params[26]).toBe(7_000); // leg into pkg-a
+            expect(params[35]).toBe(5_000); // the return leg, on the end row
+
+            const routeUpdate = log.find((q) =>
+                q.sql.includes('SET distance_m'),
+            );
+            expect(routeUpdate?.params).toEqual([
+                'route-1',
+                20_000,
+                'measured',
+            ]);
+        });
+
+        it('writes a null distance rather than a wrong one when VROOM omits it', async () => {
+            // The -g flag (or geometry: true server-side) is what makes
+            // distance appear at all. If it were ever off, every step here
+            // has no `distance` field, and the plan must read back null
+            // rather than a silently-zeroed figure.
+            const { worker, log } = build();
+            await worker.replanShift('shift-1');
+
+            const routeUpdate = log.find((q) =>
+                q.sql.includes('SET distance_m'),
+            );
+            expect(routeUpdate?.params).toEqual(['route-1', null, null]);
+        });
+
         it('snapshots the plan it replaces', async () => {
             const { worker, log } = build();
             await worker.replanShift('shift-1');

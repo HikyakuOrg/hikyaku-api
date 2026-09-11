@@ -178,6 +178,17 @@ export interface InsertionSuccess {
     slackRatio: number;
     /** Arrival epoch ms per job step, in the resulting visiting order. */
     arrivalsMs: number[];
+    /**
+     * Metres of the leg ARRIVING at each job step, in the resulting visiting
+     * order — parallel to arrivalsMs, not a running total. The haversine
+     * estimate times DETOUR_FACTOR, same as the time side; never a real
+     * measured distance, since Tier 1 never calls a router for this.
+     */
+    distancesM: number[];
+    /** Metres of the closing leg from the last stop back to the depot. */
+    returnLegDistanceM: number;
+    /** Total route distance, metres, including the return leg. */
+    totalDistanceM: number;
     /** The resulting visiting order, including the inserted package. */
     order: string[];
 }
@@ -230,6 +241,20 @@ export function legKey(from: GeoPoint, to: GeoPoint): string {
 }
 
 /**
+ * Estimated road distance from `from` to `to`, in metres: haversine inflated
+ * for road detour. This is the distance side of estimateLeg, pulled out on its
+ * own because distance and drive-time diverge once a leg is grey-band-measured
+ * — a measured leg replaces the TIME estimate with a real routing duration,
+ * but buys no measured distance, so this stays the estimate on every leg
+ * regardless of `measured`. Pessimistic on purpose, same as the time estimate:
+ * DETOUR_FACTOR only ever inflates, and for a distance CAP the safe direction
+ * is to read a little high.
+ */
+export function estimateLegMeters(from: GeoPoint, to: GeoPoint): number {
+    return haversineMeters(from, to) * DETOUR_FACTOR;
+}
+
+/**
  * Estimated driving seconds from `from` to `to`.
  *
  * A measured leg always wins — that is what the grey-band Valhalla call buys.
@@ -244,8 +269,7 @@ export function estimateLeg(
     const measuredSeconds = measured?.[legKey(from, to)];
     if (measuredSeconds != null) return measuredSeconds;
 
-    const metres = haversineMeters(from, to) * DETOUR_FACTOR;
-    return (metres / AVG_SPEED_MPS) * TIER1_SAFETY;
+    return (estimateLegMeters(from, to) / AVG_SPEED_MPS) * TIER1_SAFETY;
 }
 
 /**
@@ -270,12 +294,24 @@ interface Timing {
     arrivalsMs: number[];
     returnMs: number;
     totalDriveSeconds: number;
+    /** Metres of the leg arriving at each stop, parallel to arrivalsMs. */
+    distancesM: number[];
+    /** Metres of the closing leg from the last stop back to the depot. */
+    returnLegDistanceM: number;
+    /** Total route distance, metres, including the return leg. */
+    totalDistanceM: number;
 }
 
 /**
- * Walks a visiting order from the depot and back, returning the arrival time at
- * each stop. Service time is spent AT a stop, so it lands between arriving at
- * stop i and departing for stop i+1.
+ * Walks a visiting order from the depot and back, returning the arrival time
+ * and distance at each stop. Service time is spent AT a stop, so it lands
+ * between arriving at stop i and departing for stop i+1.
+ *
+ * Distance rides the same traversal as time rather than a second pass over
+ * the route: both are pure functions of the same from/to pairs, and computing
+ * them together is what keeps this free of a second O(n) walk on Tier 1's
+ * insertion hot path (see cheapestPosition, which calls this once per
+ * candidate position).
  */
 function timeRoute(
     depot: GeoPoint,
@@ -284,44 +320,65 @@ function timeRoute(
     measured?: Readonly<Record<string, number>>,
 ): Timing {
     const arrivalsMs: number[] = [];
+    const distancesM: number[] = [];
     let cursorMs = departureMs;
     let driveSeconds = 0;
+    let distanceM = 0;
     let previous = depot;
 
     for (const stop of order) {
         const leg = estimateLeg(previous, stop, measured);
+        const legM = estimateLegMeters(previous, stop);
         driveSeconds += leg;
+        distanceM += legM;
         cursorMs += leg * 1000;
         arrivalsMs.push(cursorMs);
+        distancesM.push(legM);
         cursorMs += TIME_PER_STOP * 1000;
         previous = stop;
     }
 
     const legHome = estimateLeg(previous, depot, measured);
+    const legHomeM = estimateLegMeters(previous, depot);
     driveSeconds += legHome;
+    distanceM += legHomeM;
 
     return {
         arrivalsMs,
         returnMs: cursorMs + legHome * 1000,
         totalDriveSeconds: driveSeconds,
+        distancesM,
+        returnLegDistanceM: legHomeM,
+        totalDistanceM: distanceM,
     };
 }
 
 /**
- * Arrival time at each point of a fixed visiting order, epoch ms.
+ * Arrival time and distance at each point of a fixed visiting order.
  *
  * The dispatcher-override and manual-removal paths do not choose an order — a
  * human already did, or the order simply survives a deletion — but they still
- * have to rewrite every ETA on the route, because removing stop 2 moves stops
- * 3..n earlier.
+ * have to rewrite every ETA (and now every distance) on the route, because
+ * removing stop 2 moves stops 3..n earlier.
  */
-export function scheduleArrivals(
+export function scheduleRoute(
     depot: GeoPoint,
     departureMs: number,
     order: readonly GeoPoint[],
     measured?: Readonly<Record<string, number>>,
-): number[] {
-    return timeRoute(depot, departureMs, order, measured).arrivalsMs;
+): {
+    arrivalsMs: number[];
+    distancesM: number[];
+    returnLegDistanceM: number;
+    totalDistanceM: number;
+} {
+    const timing = timeRoute(depot, departureMs, order, measured);
+    return {
+        arrivalsMs: timing.arrivalsMs,
+        distancesM: timing.distancesM,
+        returnLegDistanceM: timing.returnLegDistanceM,
+        totalDistanceM: timing.totalDistanceM,
+    };
 }
 
 /**
@@ -434,6 +491,9 @@ export function cheapestPosition(
                 deltaSeconds,
                 slackRatio,
                 arrivalsMs: timing.arrivalsMs,
+                distancesM: timing.distancesM,
+                returnLegDistanceM: timing.returnLegDistanceM,
+                totalDistanceM: timing.totalDistanceM,
                 order: ids,
             };
         }
