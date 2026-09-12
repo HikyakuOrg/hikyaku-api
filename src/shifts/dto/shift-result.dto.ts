@@ -77,6 +77,14 @@ export class ShiftDto {
 
     @ApiProperty({ type: DrivingLimitsDto })
     drivingLimits: DrivingLimitsDto;
+
+    @ApiProperty({
+        description:
+            'Whether DRIVING_LIMITS is on for this process. Lets a client ' +
+            'tell "off" apart from "on, nothing configured" without a second ' +
+            'call to the diagnostics summary endpoint.',
+    })
+    drivingLimitsEnabled: boolean;
 }
 
 /**

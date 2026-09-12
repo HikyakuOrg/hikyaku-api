@@ -8,12 +8,24 @@ import {
     Param,
     ParseUUIDPipe,
     Post,
+    Query,
     Req,
     UseGuards,
 } from '@nestjs/common';
-import { ApiBody, ApiResponse, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import {
+    ApiBody,
+    ApiOperation,
+    ApiQuery,
+    ApiResponse,
+    ApiTags,
+    ApiBearerAuth,
+} from '@nestjs/swagger';
 import { ApiErrorDto } from 'src/common/swagger/api-error.dto';
-import { ApiGuardErrors } from 'src/common/swagger/api-errors.decorator';
+import {
+    ApiBadRequest,
+    ApiGuardErrors,
+    ApiNotFound,
+} from 'src/common/swagger/api-errors.decorator';
 import { ApiOrganisationSlugHeader } from 'src/common/swagger/tenant-header.decorator';
 import { PermissionGuard } from 'src/auth/guards/permission.guard';
 import { RequirePermission } from 'src/auth/decorators/required-permission.decorator';
@@ -63,6 +75,58 @@ export class ShiftsController {
         @Req() req: Request & { organisationId: string; user: { id: string } },
     ): Promise<ShiftDto> {
         return this.shifts.create(req.organisationId, dto);
+    }
+
+    @Get()
+    @RequirePermission('shifts.view')
+    @ApiOperation({
+        summary: 'List shifts with a shiftDate in a range, for the calendar.',
+        description:
+            'Resolves every listed shift’s driving limits in one round trip ' +
+            'rather than one query per shift.',
+    })
+    @ApiQuery({
+        name: 'from',
+        required: true,
+        type: String,
+        format: 'date',
+        example: '2026-09-01',
+        description: 'Inclusive start of the shiftDate range (YYYY-MM-DD).',
+    })
+    @ApiQuery({
+        name: 'to',
+        required: true,
+        type: String,
+        format: 'date',
+        example: '2026-09-07',
+        description: 'Inclusive end of the shiftDate range (YYYY-MM-DD).',
+    })
+    @ApiResponse({
+        status: 200,
+        description: 'Shifts ordered by shiftDate, then scheduledStart.',
+        type: [ShiftDto],
+    })
+    @ApiBadRequest(
+        '`from` or `to` is missing, not YYYY-MM-DD, or `from` is after `to`.',
+    )
+    list(
+        @Query('from') from: string | undefined,
+        @Query('to') to: string | undefined,
+        @Req() req: Request & { organisationId: string },
+    ): Promise<ShiftDto[]> {
+        return this.shifts.list(req.organisationId, from, to);
+    }
+
+    @Get(':id')
+    @RequirePermission('shifts.view')
+    @ApiOperation({ summary: 'Fetch one shift by id.' })
+    @ApiResponse({ status: 200, type: ShiftDto })
+    @ApiNotFound('No shift with this id in the organisation.')
+    get(
+        @Param('id', ParseUUIDPipe) id: string,
+        @Req() req: Request & { organisationId: string },
+    ): Promise<ShiftDto> {
+        return this.shifts.get(req.organisationId, id);
     }
 
     @Get(':id/version')

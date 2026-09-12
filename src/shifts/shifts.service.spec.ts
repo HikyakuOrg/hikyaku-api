@@ -4,7 +4,7 @@ import {
     HttpStatus,
     NotFoundException,
 } from '@nestjs/common';
-import { ShiftsService } from './shifts.service';
+import { ShiftsService, parseDateRange } from './shifts.service';
 import { NO_LIMITS } from 'src/dispatch/driving-limits';
 
 const SHIFT_ROW = {
@@ -28,6 +28,7 @@ interface State {
     vehicle?: unknown[];
     clash?: unknown[];
     shift?: unknown[];
+    shiftRange?: unknown[];
     insertError?: Error;
     lockedStatus?: string;
 }
@@ -54,6 +55,8 @@ function build(state: State = {}) {
         if (sql.includes('SELECT status FROM vrp_optimization')) {
             return [{ status: state.lockedStatus ?? 'planned' }];
         }
+        if (sql.includes('v.shift_date >='))
+            return state.shiftRange ?? [SHIFT_ROW];
         if (sql.includes('FROM vrp_optimization v'))
             return state.shift ?? [SHIFT_ROW];
         if (sql.includes('FROM vrp_solution s')) {
@@ -407,7 +410,15 @@ describe('ShiftsService', () => {
                 revision: 5,
                 updatedAt: '2026-09-01T09:00:00.000Z',
                 drivingLimits: NO_LIMITS,
+                drivingLimitsEnabled: false,
             });
+        });
+
+        it('404s for a shift in another organisation', async () => {
+            const { service } = build({ shift: [] });
+            await expect(
+                service.get('org-1', 'shift-1'),
+            ).rejects.toBeInstanceOf(NotFoundException);
         });
 
         it('renders a scheduled start as ISO 8601', async () => {
@@ -452,6 +463,133 @@ describe('ShiftsService', () => {
                 if (original === undefined) delete process.env.DRIVING_LIMITS;
                 else process.env.DRIVING_LIMITS = original;
             }
+        });
+    });
+
+    describe('list', () => {
+        it('maps every row in the range to the wire shape, ordered as given', async () => {
+            const { service } = build({
+                shiftRange: [
+                    SHIFT_ROW,
+                    { ...SHIFT_ROW, id: 'shift-2', driver_id: 'driver-2' },
+                ],
+            });
+            const shifts = await service.list(
+                'org-1',
+                '2026-09-01',
+                '2026-09-30',
+            );
+            expect(shifts.map((s) => s.id)).toEqual(['shift-1', 'shift-2']);
+            expect(shifts[0].drivingLimits).toEqual(NO_LIMITS);
+        });
+
+        it('resolves every driver’s limits in one round trip, not one per shift', async () => {
+            const original = process.env.DRIVING_LIMITS;
+            process.env.DRIVING_LIMITS = 'on';
+            try {
+                const { service, log } = build({
+                    shiftRange: [
+                        SHIFT_ROW,
+                        { ...SHIFT_ROW, id: 'shift-2', driver_id: 'driver-2' },
+                    ],
+                });
+                log.length = 0;
+                await service.list('org-1', '2026-09-01', '2026-09-30');
+
+                const limitsQueries = log.filter((q) =>
+                    q.sql.includes('driving_limit_profile'),
+                );
+                expect(limitsQueries).toHaveLength(1);
+                expect(limitsQueries[0].params[1]).toEqual([
+                    'driver-1',
+                    'driver-2',
+                ]);
+            } finally {
+                if (original === undefined) delete process.env.DRIVING_LIMITS;
+                else process.env.DRIVING_LIMITS = original;
+            }
+        });
+
+        it('never queries the profile tables while DRIVING_LIMITS is off', async () => {
+            const { service, log } = build({
+                shiftRange: [SHIFT_ROW],
+            });
+            await service.list('org-1', '2026-09-01', '2026-09-30');
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(false);
+        });
+
+        it('gives an unassigned shift NO_LIMITS without asking the driver query for it', async () => {
+            const original = process.env.DRIVING_LIMITS;
+            process.env.DRIVING_LIMITS = 'on';
+            try {
+                const { service, log } = build({
+                    shiftRange: [{ ...SHIFT_ROW, driver_id: null }],
+                });
+                log.length = 0;
+                const shifts = await service.list(
+                    'org-1',
+                    '2026-09-01',
+                    '2026-09-30',
+                );
+                expect(shifts[0].drivingLimits).toEqual(NO_LIMITS);
+                expect(
+                    log.some((q) => q.sql.includes('driving_limit_profile')),
+                ).toBe(false);
+            } finally {
+                if (original === undefined) delete process.env.DRIVING_LIMITS;
+                else process.env.DRIVING_LIMITS = original;
+            }
+        });
+
+        it('rejects a missing or malformed range before touching the database', async () => {
+            const { service, log } = build();
+            await expect(
+                service.list('org-1', undefined, '2026-09-30'),
+            ).rejects.toBeInstanceOf(BadRequestException);
+            await expect(
+                service.list('org-1', '2026-09-30', '2026-09-01'),
+            ).rejects.toBeInstanceOf(BadRequestException);
+            expect(log).toHaveLength(0);
+        });
+    });
+
+    describe('parseDateRange', () => {
+        it('accepts an inclusive from/to pair', () => {
+            expect(parseDateRange('2026-09-01', '2026-09-30')).toEqual({
+                from: '2026-09-01',
+                to: '2026-09-30',
+            });
+        });
+
+        it('accepts from equal to to', () => {
+            expect(parseDateRange('2026-09-01', '2026-09-01')).toEqual({
+                from: '2026-09-01',
+                to: '2026-09-01',
+            });
+        });
+
+        it.each([
+            [undefined, '2026-09-30'],
+            ['2026-09-01', undefined],
+            [undefined, undefined],
+        ])('rejects a missing bound (%s, %s)', (from, to) => {
+            expect(() => parseDateRange(from, to)).toThrow(BadRequestException);
+        });
+
+        it.each([
+            ['2026/09/01', '2026-09-30'],
+            ['2026-09-01', '30 Sep 2026'],
+            ['not-a-date', '2026-09-30'],
+        ])('rejects a bound not in YYYY-MM-DD (%s, %s)', (from, to) => {
+            expect(() => parseDateRange(from, to)).toThrow(BadRequestException);
+        });
+
+        it('rejects from after to', () => {
+            expect(() => parseDateRange('2026-09-30', '2026-09-01')).toThrow(
+                BadRequestException,
+            );
         });
     });
 });

@@ -12,6 +12,7 @@ import { DataSource } from 'typeorm';
 import { AssignmentService } from 'src/dispatch/assignment.service';
 import { ShiftPlanWriter } from 'src/dispatch/shift-plan.writer';
 import {
+    driverLimitsOrDefaultForDrivers,
     drivingLimitsEnabled,
     NO_LIMITS,
     resolveDrivingLimitsForDriver,
@@ -242,6 +243,38 @@ export class ShiftsService {
     }
 
     /**
+     * Every shift with a `shiftDate` in `[from, to]`, both inclusive, for the
+     * calendar view. One driving-limits round trip for the whole page rather
+     * than one per shift, which is why this does not just call `get` per row.
+     */
+    async list(
+        organisationId: string,
+        from: string | undefined,
+        to: string | undefined,
+    ): Promise<ShiftDto[]> {
+        const range = parseDateRange(from, to);
+        const rows = await this.loadRange(organisationId, range);
+
+        const driverIds = rows
+            .map((row) => row.driver_id)
+            .filter((id): id is string => id != null);
+        const limits = await driverLimitsOrDefaultForDrivers(
+            this.dataSource,
+            organisationId,
+            driverIds,
+        );
+
+        return rows.map((row) =>
+            this.toDto(
+                row,
+                row.driver_id
+                    ? (limits.get(row.driver_id) ?? NO_LIMITS)
+                    : NO_LIMITS,
+            ),
+        );
+    }
+
+    /**
      * This shift's effective driving limits, or NO_LIMITS with no query at
      * all when DRIVING_LIMITS is off (see driving-limits.ts) or the shift has
      * no driver yet.
@@ -339,38 +372,61 @@ export class ShiftsService {
         };
     }
 
+    /**
+     * The columns and route join every shift read shares. `load` and
+     * `loadRange` differ only in their WHERE/ORDER clause, so this is the one
+     * place that join is written down.
+     */
+    private static readonly SHIFT_SELECT_SQL = `
+        SELECT v.id,
+               v.status,
+               v.organisation_id,
+               v.warehouse_id,
+               v.driver_id,
+               v.vehicle_id,
+               v.shift_date,
+               v.scheduled_start,
+               v.revision,
+               v.updated_at,
+               route.route_id,
+               COALESCE(route.stop_count, 0) AS stop_count
+          FROM vrp_optimization v
+          LEFT JOIN LATERAL (
+               SELECT r.id AS route_id,
+                      (SELECT count(*)
+                         FROM vrp_route_step rs
+                        WHERE rs.route_id = r.id AND rs.type = 'job') AS stop_count
+                 FROM vrp_solution s
+                 JOIN vrp_route    r ON r.solution_id = s.id
+                WHERE s.optimization_id = v.id
+                ORDER BY r.id
+                LIMIT 1
+          ) route ON true
+    `;
+
     private async load(organisationId: string, id: string): Promise<ShiftRow> {
         const rows: ShiftRow[] = await this.dataSource.query(
-            `SELECT v.id,
-                    v.status,
-                    v.organisation_id,
-                    v.warehouse_id,
-                    v.driver_id,
-                    v.vehicle_id,
-                    v.shift_date,
-                    v.scheduled_start,
-                    v.revision,
-                    v.updated_at,
-                    route.route_id,
-                    COALESCE(route.stop_count, 0) AS stop_count
-               FROM vrp_optimization v
-               LEFT JOIN LATERAL (
-                    SELECT r.id AS route_id,
-                           (SELECT count(*)
-                              FROM vrp_route_step rs
-                             WHERE rs.route_id = r.id AND rs.type = 'job') AS stop_count
-                      FROM vrp_solution s
-                      JOIN vrp_route    r ON r.solution_id = s.id
-                     WHERE s.optimization_id = v.id
-                     ORDER BY r.id
-                     LIMIT 1
-               ) route ON true
+            `${ShiftsService.SHIFT_SELECT_SQL}
               WHERE v.id = $1 AND v.organisation_id = $2`,
             [id, organisationId],
         );
         const row = rows[0];
         if (!row) throw new NotFoundException('Shift not found.');
         return row;
+    }
+
+    private async loadRange(
+        organisationId: string,
+        range: DateRange,
+    ): Promise<ShiftRow[]> {
+        return this.dataSource.query(
+            `${ShiftsService.SHIFT_SELECT_SQL}
+              WHERE v.organisation_id = $1
+                AND v.shift_date >= $2::date
+                AND v.shift_date <= $3::date
+              ORDER BY v.shift_date, v.scheduled_start`,
+            [organisationId, range.from, range.to],
+        );
     }
 
     private toDto(row: ShiftRow, drivingLimits: DrivingLimits): ShiftDto {
@@ -390,6 +446,42 @@ export class ShiftsService {
             revision: Number(row.revision),
             updatedAt: new Date(row.updated_at).toISOString(),
             drivingLimits,
+            drivingLimitsEnabled: drivingLimitsEnabled(),
         };
     }
+}
+
+/** An inclusive `shiftDate` range, both ends YYYY-MM-DD. */
+interface DateRange {
+    from: string;
+    to: string;
+}
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * `from`/`to` off the query string for `GET /api/v1/shifts`, checked the
+ * same way `parseWindowDays` checks `days` on the driving-limits summary
+ * endpoint: a pure function so the rule is unit-testable without a database,
+ * and a `BadRequestException` a caller can act on rather than a raw
+ * Postgres date-parse error.
+ */
+export function parseDateRange(
+    from: string | undefined,
+    to: string | undefined,
+): DateRange {
+    if (!from || !to) {
+        throw new BadRequestException(
+            'Both from and to are required, as YYYY-MM-DD.',
+        );
+    }
+    if (!DATE_ONLY.test(from) || !DATE_ONLY.test(to)) {
+        throw new BadRequestException(
+            `from and to must be YYYY-MM-DD, not "${from}"/"${to}".`,
+        );
+    }
+    if (from > to) {
+        throw new BadRequestException('from must not be after to.');
+    }
+    return { from, to };
 }
