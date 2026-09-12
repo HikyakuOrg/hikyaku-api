@@ -4082,6 +4082,184 @@
         "tags": [
           "shifts"
         ]
+      },
+      "get": {
+        "description": "Resolves every listed shift’s driving limits in one round trip rather than one query per shift.",
+        "operationId": "ShiftsController_list",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "to",
+            "required": true,
+            "in": "query",
+            "description": "Inclusive end of the shiftDate range (YYYY-MM-DD).",
+            "schema": {
+              "format": "date",
+              "example": "2026-09-07",
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": true,
+            "in": "query",
+            "description": "Inclusive start of the shiftDate range (YYYY-MM-DD).",
+            "schema": {
+              "format": "date",
+              "example": "2026-09-01",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shifts ordered by shiftDate, then scheduledStart.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ShiftDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`from` or `to` is missing, not YYYY-MM-DD, or `from` is after `to`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List shifts with a shiftDate in a range, for the calendar.",
+        "tags": [
+          "shifts"
+        ]
+      }
+    },
+    "/api/v1/shifts/{id}": {
+      "get": {
+        "operationId": "ShiftsController_get",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShiftDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No shift with this id in the organisation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Fetch one shift by id.",
+        "tags": [
+          "shifts"
+        ]
       }
     },
     "/api/v1/shifts/{id}/version": {
@@ -8058,6 +8236,10 @@
           },
           "drivingLimits": {
             "$ref": "#/components/schemas/DrivingLimitsDto"
+          },
+          "drivingLimitsEnabled": {
+            "type": "boolean",
+            "description": "Whether DRIVING_LIMITS is on for this process. Lets a client tell \"off\" apart from \"on, nothing configured\" without a second call to the diagnostics summary endpoint."
           }
         },
         "required": [
@@ -8073,7 +8255,8 @@
           "stopCount",
           "revision",
           "updatedAt",
-          "drivingLimits"
+          "drivingLimits",
+          "drivingLimitsEnabled"
         ]
       },
       "ShiftVersionDto": {
