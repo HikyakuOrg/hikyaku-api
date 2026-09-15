@@ -69,6 +69,8 @@ interface DbState {
     outcomeCounts?: Record<string, unknown>[];
     /** Rows the summary's fallback sample answers with. */
     fallbackRows?: Record<string, unknown>[];
+    /** Row the skills-satisfaction query answers with. */
+    skillsRow?: Record<string, unknown>;
 }
 
 interface Call {
@@ -98,6 +100,17 @@ function fakeDataSource(state: DbState): {
         }
         if (sql === COVERING_AREAS_SQL) {
             return Promise.resolve(state.areaRows ?? []);
+        }
+        // Matched before 'FROM warehouse' below: this statement's own
+        // `held AS (... FROM warehouse_vehicles wv ...)` clause contains that
+        // substring too, since it starts with "warehouse".
+        if (sql.includes('WITH warehouse_vehicles')) {
+            return Promise.resolve([
+                state.skillsRow ?? {
+                    missing_skill_ids: null,
+                    matching_vehicle_count: 0,
+                },
+            ]);
         }
         if (sql.includes('FROM packages p')) {
             return Promise.resolve(
@@ -747,6 +760,112 @@ describe('geometry', () => {
     });
 });
 
+// ── Skills: a separate axis from territory/driver coverage ──────────────────
+
+describe('skills', () => {
+    it('is null when the package requires no skills', async () => {
+        const { subject, calls } = service({ package: GEOCODED_PACKAGE });
+
+        const result = await subject.explain(ORG, { packageId: PACKAGE });
+
+        expect(result.skills).toBeNull();
+        expect(calls.some((c) => c.sql.includes('warehouse_vehicles'))).toBe(
+            false,
+        );
+    });
+
+    it('is null for the coordinate form, which has no package to check', async () => {
+        const { subject, calls } = service({
+            warehouses: [{ id: WAREHOUSE }],
+        });
+
+        const result = await subject.explain(ORG, {
+            lon: '103.85',
+            lat: '1.29',
+        });
+
+        expect(result.skills).toBeNull();
+        expect(calls.some((c) => c.sql.includes('warehouse_vehicles'))).toBe(
+            false,
+        );
+    });
+
+    it('reports the specific skill nobody at the warehouse holds', async () => {
+        const { subject } = service({
+            package: { ...GEOCODED_PACKAGE, skill_ids: ['skill-a'] },
+            skillsRow: {
+                missing_skill_ids: ['skill-a'],
+                matching_vehicle_count: 0,
+            },
+        });
+
+        const result = await subject.explain(ORG, { packageId: PACKAGE });
+
+        expect(result.skills).toEqual({
+            requiredSkillIds: ['skill-a'],
+            missingSkillIds: ['skill-a'],
+            matchingVehicleCount: 0,
+            satisfied: false,
+        });
+        expect(result.explanation).toContain(
+            'no vehicle at this warehouse holds required skill skill-a',
+        );
+    });
+
+    it('is satisfied when a vehicle holds every required skill', async () => {
+        const { subject } = service({
+            package: {
+                ...GEOCODED_PACKAGE,
+                skill_ids: ['skill-a', 'skill-b'],
+            },
+            skillsRow: { missing_skill_ids: [], matching_vehicle_count: 2 },
+        });
+
+        const result = await subject.explain(ORG, { packageId: PACKAGE });
+
+        expect(result.skills).toMatchObject({
+            matchingVehicleCount: 2,
+            satisfied: true,
+        });
+        expect(result.explanation).toContain('2 vehicles hold every skill');
+    });
+
+    it('distinguishes "exists somewhere" from "held together by one vehicle"', async () => {
+        // Both skill-a and skill-b exist in the fleet, just never on the same
+        // van — the actual VROOM test, not "does each skill exist".
+        const { subject } = service({
+            package: {
+                ...GEOCODED_PACKAGE,
+                skill_ids: ['skill-a', 'skill-b'],
+            },
+            skillsRow: { missing_skill_ids: [], matching_vehicle_count: 0 },
+        });
+
+        const result = await subject.explain(ORG, { packageId: PACKAGE });
+
+        expect(result.skills).toMatchObject({
+            missingSkillIds: [],
+            matchingVehicleCount: 0,
+            satisfied: false,
+        });
+        expect(result.explanation).toContain(
+            'no single vehicle holds all of them together',
+        );
+    });
+
+    it('scopes the check to the package’s own organisation, warehouse and required skills', async () => {
+        const { subject, calls } = service({
+            package: { ...GEOCODED_PACKAGE, skill_ids: ['skill-a'] },
+            skillsRow: { missing_skill_ids: [], matching_vehicle_count: 1 },
+        });
+
+        await subject.explain(ORG, { packageId: PACKAGE });
+
+        const call = calls.find((c) => c.sql.includes('warehouse_vehicles'));
+        expect(call?.params).toEqual([ORG, WAREHOUSE, ['skill-a']]);
+    });
+});
+
 // ── The three states the boolean exists to separate ──────────────────────────
 
 describe('explain', () => {
@@ -757,6 +876,7 @@ describe('explain', () => {
         explicitCount: 0,
         floaterCount: 0,
         assignment: null,
+        skills: null,
     };
 
     it('says nothing is configured when the organisation has no territories', () => {

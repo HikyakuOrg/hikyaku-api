@@ -46,9 +46,21 @@ export class CustomerDto implements CustomerRow {
     @ApiProperty({
         type: String,
         nullable: true,
-        description: 'Set only for customers created from a Shopify order.',
+        description:
+            'Lowercase slug of the external storefront this customer was ' +
+            'created from (e.g. "shopify"). Null unless external_customer_id ' +
+            'is also set.',
     })
-    shopify_customer_id: string | null;
+    external_platform: string | null;
+
+    @ApiProperty({
+        type: String,
+        nullable: true,
+        description:
+            'This customer’s id in the external platform’s system. Null ' +
+            'unless external_platform is also set.',
+    })
+    external_customer_id: string | null;
 
     @ApiProperty({
         description: 'Empty string when the column is null, never null itself.',

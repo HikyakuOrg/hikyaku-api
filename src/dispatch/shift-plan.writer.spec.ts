@@ -25,6 +25,8 @@ function plan(overrides: Partial<PlanWrite> = {}): PlanWrite {
         driverId: 'driver-1',
         vehicleId: 'vehicle-1',
         reason: 'assign',
+        returnLegDistanceM: 1_500,
+        distanceSource: 'estimated',
         stops: [
             {
                 packageId: 'pkg-a',
@@ -32,6 +34,7 @@ function plan(overrides: Partial<PlanWrite> = {}): PlanWrite {
                 lat: 0,
                 arrivalMs: DEPARTURE + 600_000,
                 weightG: 2_000,
+                distanceM: 1_000,
             },
             {
                 packageId: 'pkg-b',
@@ -39,6 +42,7 @@ function plan(overrides: Partial<PlanWrite> = {}): PlanWrite {
                 lat: 0,
                 arrivalMs: DEPARTURE + 1_800_000,
                 weightG: 3_000,
+                distanceM: 2_000,
             },
         ],
         ...overrides,
@@ -120,11 +124,11 @@ describe('ShiftPlanWriter', () => {
                 q.sql.includes('INSERT INTO vrp_route_step'),
             );
             const params = steps?.params ?? [];
-            // Four rows of eight params: start, two jobs, end.
-            expect(params).toHaveLength(32);
+            // Four rows of nine params: start, two jobs, end.
+            expect(params).toHaveLength(36);
             expect(params[2]).toBe('start');
-            expect(params[10]).toBe('job');
-            expect(params[26]).toBe('end');
+            expect(params[11]).toBe('job');
+            expect(params[29]).toBe('end');
         });
 
         it('stores arrivals as seconds from departure, the convention everything else reads', async () => {
@@ -136,8 +140,8 @@ describe('ShiftPlanWriter', () => {
             );
             const params = steps?.params ?? [];
             expect(params[6]).toBe(0); // start
-            expect(params[14]).toBe(600); // first job, ten minutes out
-            expect(params[22]).toBe(1800); // second job
+            expect(params[15]).toBe(600); // first job, ten minutes out
+            expect(params[24]).toBe(1800); // second job
         });
 
         it('accumulates the load along the route', async () => {
@@ -149,8 +153,76 @@ describe('ShiftPlanWriter', () => {
             );
             const params = steps?.params ?? [];
             expect(params[7]).toEqual([0]);
-            expect(params[15]).toEqual([2_000]);
-            expect(params[23]).toEqual([5_000]);
+            expect(params[16]).toEqual([2_000]);
+            expect(params[25]).toEqual([5_000]);
+        });
+
+        it('writes the leg-into-this-step distance on each row, and the return leg on the end step', async () => {
+            // The landmine the ticket calls out by name: the depot start step
+            // has no leg into it, each job row gets the leg landing on IT (not
+            // the one leaving it), and the closing leg back to the depot
+            // belongs to the end row, which no PlanStop owns.
+            const { runner, log } = makeRunner();
+            await writer.writePlan(runner, plan());
+
+            const steps = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
+            const params = steps?.params ?? [];
+            expect(params[8]).toBe(0); // start: no leg precedes it
+            expect(params[17]).toBe(1_000); // leg into pkg-a
+            expect(params[26]).toBe(2_000); // leg into pkg-b
+            expect(params[35]).toBe(1_500); // the return leg, on the end row
+        });
+
+        it('writes null distances rather than coercing an unknown leg to zero', async () => {
+            const { runner, log } = makeRunner();
+            const [first, second] = plan().stops;
+            await writer.writePlan(
+                runner,
+                plan({
+                    stops: [{ ...first, distanceM: null }, second],
+                    returnLegDistanceM: null,
+                }),
+            );
+
+            const steps = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
+            const params = steps?.params ?? [];
+            expect(params[17]).toBeNull();
+            expect(params[35]).toBeNull();
+        });
+
+        it('sums the step distances onto vrp_route.distance_m, with the tier that produced them', async () => {
+            const { runner, log } = makeRunner();
+            await writer.writePlan(runner, plan());
+
+            const routeUpdate = log.find((q) =>
+                q.sql.includes('SET distance_m'),
+            );
+            // 1_000 (pkg-a) + 2_000 (pkg-b) + 1_500 (return leg).
+            expect(routeUpdate?.params).toEqual([
+                'route-1',
+                4_500,
+                'estimated',
+            ]);
+        });
+
+        it('falls back to a null total the moment any one leg is unknown', async () => {
+            const { runner, log } = makeRunner();
+            const [first, second] = plan().stops;
+            await writer.writePlan(
+                runner,
+                plan({ stops: [first, { ...second, distanceM: null }] }),
+            );
+
+            const routeUpdate = log.find((q) =>
+                q.sql.includes('SET distance_m'),
+            );
+            // A partial sum would read as "the route is this short", which is
+            // worse than admitting the length isn't known this time.
+            expect(routeUpdate?.params).toEqual(['route-1', null, null]);
         });
 
         it('writes an empty route as just the two depot steps', async () => {
@@ -160,7 +232,7 @@ describe('ShiftPlanWriter', () => {
             const steps = log.find((q) =>
                 q.sql.includes('INSERT INTO vrp_route_step'),
             );
-            expect(steps?.params).toHaveLength(16);
+            expect(steps?.params).toHaveLength(18);
             expect(
                 log.some((q) =>
                     q.sql.includes('INSERT INTO package_assignment'),

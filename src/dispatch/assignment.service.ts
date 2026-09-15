@@ -18,16 +18,27 @@ import {
     legKey,
     loadPenaltySeconds,
     pickVictims,
-    scheduleArrivals,
+    scheduleRoute,
     tryInsert,
     type CandidateShift,
     type GeoPoint,
     type IncomingPackage,
     type InsertionContext,
+    type InsertionRejection,
     type InsertionResult,
     type InsertionSuccess,
+    type MeasuredLeg,
     type RouteStop,
 } from './insertion';
+import {
+    drivingLimitsEnabled,
+    NO_LIMITS,
+    noLimitsForDrivers,
+    resolveDrivingLimitsForDriver,
+    resolveDrivingLimitsForDrivers,
+    type DrivingLimits,
+    type DrivingLimitsQueryExecutor,
+} from './driving-limits';
 import {
     allDriversAsFloaters,
     allDriversAsFloatersForPoint,
@@ -96,6 +107,12 @@ interface PackageRow {
     scheduled_arrival: string | null;
     lon: number | null;
     lat: number | null;
+    /**
+     * package_skills.skill_id this package requires. Optional: only
+     * `loadPackage` (Tier 1's own lookup) selects it — `loadPackagesForShift`
+     * shares this row shape for the dispatcher pin path, which does not.
+     */
+    skill_ids?: string[] | null;
 }
 
 interface WarehouseRow {
@@ -116,6 +133,8 @@ interface ShiftRow {
     ors_vehicle_type: string | null;
     route_id: string | null;
     solution_id: string | null;
+    /** vehicle_skills.skill_id this shift's vehicle holds. */
+    skill_ids: string[] | null;
 }
 
 interface StopRow {
@@ -137,6 +156,8 @@ interface IdlePairRow {
     vehicle_id: string;
     vehicle_gross_limits: string | number | null;
     ors_vehicle_type: string | null;
+    /** vehicle_skills.skill_id this vehicle holds. */
+    skill_ids: string[] | null;
 }
 
 /** Just enough of a package to ask who covers where it is going. */
@@ -155,6 +176,12 @@ interface Candidate {
     solutionId: string | null;
     shiftDate: string;
     scheduledStart: string | null;
+    /**
+     * vehicle_skills.skill_id this candidate's vehicle holds. Read once, by
+     * `filterBySkills`, to drop a candidate before it is considered at all —
+     * see that method. Nothing downstream re-checks it.
+     */
+    vehicleSkillIds: string[];
 }
 
 /**
@@ -221,6 +248,13 @@ interface AssignmentPlan {
      * a real coverage query decided it, or the reverse.
      */
     serviceAreaMatching: boolean;
+    /**
+     * skills.id this package requires. Empty means no requirement, in which
+     * case `filterBySkills` and `openShift`'s skills clause are both no-ops —
+     * every existing behaviour is unchanged for the common case of a package
+     * with no skill.
+     */
+    requiredSkillIds: string[];
 }
 
 /**
@@ -872,7 +906,7 @@ export class AssignmentService {
             reason,
         );
 
-        const arrivals = scheduleArrivals(
+        const routed = scheduleRoute(
             candidate.shift.depot,
             candidate.shift.departureMs,
             candidate.shift.stops.map((s) => ({ lon: s.lon, lat: s.lat })),
@@ -890,9 +924,14 @@ export class AssignmentService {
                 packageId: s.packageId,
                 lon: s.lon,
                 lat: s.lat,
-                arrivalMs: arrivals[i],
+                arrivalMs: routed.arrivalsMs[i],
                 weightG: s.weightG,
+                distanceM: routed.distancesM[i],
             })),
+            // A hand edit re-schedules the fixed order Tier 1's own estimator,
+            // never a router — same as the automatic insertion path.
+            returnLegDistanceM: routed.returnLegDistanceM,
+            distanceSource: 'estimated',
             reason,
         });
 
@@ -969,6 +1008,10 @@ export class AssignmentService {
         const stops = row.route_id
             ? await this.loadStops([row.route_id])
             : new Map<string, RouteStop[]>();
+        const limits = await this.resolveLimitsFor(
+            organisationId,
+            row.driver_id,
+        );
 
         return {
             warehouseId: row.warehouse_id,
@@ -992,14 +1035,62 @@ export class AssignmentService {
                           ),
                     depot,
                     stops: row.route_id ? (stops.get(row.route_id) ?? []) : [],
+                    limits,
                 },
                 profile: row.ors_vehicle_type ?? 'driving-car',
                 routeId: row.route_id,
                 solutionId: row.solution_id,
                 shiftDate: row.shift_date,
                 scheduledStart: row.scheduled_start,
+                // Never read on this path: a dispatcher pin (assignToShift)
+                // is not run through filterBySkills, the same deliberate
+                // override that already applies to territory (see
+                // OUT_OF_AREA_WARNING) — a human is allowed to be wrong on
+                // purpose here.
+                vehicleSkillIds: [],
             },
         };
+    }
+
+    /**
+     * One driver's effective driving limits, or NO_LIMITS with no query at
+     * all when DRIVING_LIMITS is off (see driving-limits.ts) or the shift has
+     * no driver yet. Mirrors ShiftsService.resolveLimitsFor -- both read
+     * paths must agree with the gate Tier 1 actually enforces.
+     *
+     * Takes an executor because `openShift` calls this from inside its
+     * transaction and reads it through the same `runner` everything else
+     * there uses, rather than opening a second connection for one query.
+     */
+    private async resolveLimitsFor(
+        organisationId: string,
+        driverId: string | null,
+        executor: DrivingLimitsQueryExecutor = this.dataSource,
+    ): Promise<DrivingLimits> {
+        if (!driverId || !drivingLimitsEnabled()) return NO_LIMITS;
+        return resolveDrivingLimitsForDriver(
+            executor,
+            organisationId,
+            driverId,
+        );
+    }
+
+    /**
+     * Every listed driver's effective driving limits, in one round trip, or
+     * NO_LIMITS for all of them with no query when DRIVING_LIMITS is off.
+     * The batch form `loadCandidates` needs so a warehouse full of shifts
+     * costs one profile lookup, not one per candidate.
+     */
+    private async resolveLimitsForDrivers(
+        organisationId: string,
+        driverIds: readonly string[],
+    ): Promise<Map<string, DrivingLimits>> {
+        if (!drivingLimitsEnabled()) return noLimitsForDrivers(driverIds);
+        return resolveDrivingLimitsForDrivers(
+            this.dataSource,
+            organisationId,
+            driverIds,
+        );
     }
 
     private async loadPackagesForShift(
@@ -1027,14 +1118,36 @@ export class AssignmentService {
         );
     }
 
-    private warningFor(reason: string): string {
-        switch (reason) {
+    /** Seconds as a one-decimal figure of hours, for a driving-time warning. */
+    private formatHours(seconds: number): string {
+        return `${(seconds / 3600).toFixed(1)}h`;
+    }
+
+    /** Metres rounded to the nearest km, for a distance warning. */
+    private formatKm(meters: number): string {
+        return `${Math.round(meters / 1000)} km`;
+    }
+
+    private warningFor(rejection: InsertionRejection): string {
+        switch (rejection.reason) {
             case 'weight':
                 return 'over the vehicle capacity';
             case 'max_stops':
                 return 'past the stop limit for one shift';
             case 'window':
                 return 'past the end of the driving window';
+            case 'stop_limit':
+                return rejection.detail
+                    ? `past this driver's ${rejection.detail.limit}-stop limit`
+                    : "past this driver's stop limit";
+            case 'drive_time':
+                return rejection.detail
+                    ? `would drive ${this.formatHours(rejection.detail.actual)}, over this driver's ${this.formatHours(rejection.detail.limit)} driving-time limit`
+                    : "over this driver's driving-time limit";
+            case 'distance':
+                return rejection.detail
+                    ? `would drive ${this.formatKm(rejection.detail.actual)}, over this driver's ${this.formatKm(rejection.detail.limit)} distance limit`
+                    : "over this driver's distance limit";
             default:
                 return 'breaks a delivery deadline on this route';
         }
@@ -1054,7 +1167,7 @@ export class AssignmentService {
         outOfArea: boolean,
     ): string | null {
         const warnings: string[] = [];
-        if (!attempt.feasible) warnings.push(this.warningFor(attempt.reason));
+        if (!attempt.feasible) warnings.push(this.warningFor(attempt));
         if (outOfArea) warnings.push(OUT_OF_AREA_WARNING);
         return warnings.length === 0 ? null : warnings.join('; ');
     }
@@ -1199,17 +1312,26 @@ export class AssignmentService {
             allowEviction,
             coverage,
             serviceAreaMatching,
+            requiredSkillIds: pkgRow.skill_ids ?? [],
         };
 
         for (let attempt = 0; attempt <= MAX_REVISION_RETRIES; attempt++) {
             // ── PHASE A: no lock, no writes ──────────────────────────────────
-            const candidates = await this.loadCandidates(
+            const loaded = await this.loadCandidates(
                 organisationId,
                 warehouse.id,
                 shiftDate,
                 depot,
                 now,
                 warehouse.timezone,
+            );
+            // Hard constraint, filtered once here so every downstream step —
+            // decide()'s territory split, commitDecision()'s step 5 eviction,
+            // and the final 'no_free_driver_vehicle' reason — already sees
+            // only candidates that could actually carry this package.
+            const candidates = this.filterBySkills(
+                loaded,
+                plan.requiredSkillIds,
             );
 
             const decision = await this.decide(candidates, pkg, ctx, coverage);
@@ -1740,6 +1862,7 @@ export class AssignmentService {
                 lat: existing?.lat ?? pkg.lat,
                 arrivalMs: insertion.arrivalsMs[i],
                 weightG: existing?.weightG ?? pkg.weightG,
+                distanceM: insertion.distancesM[i],
                 ...(packageId === pkg.id ? { coverageOutcome } : {}),
             };
         });
@@ -1755,6 +1878,8 @@ export class AssignmentService {
             driverId: candidate.shift.driverId ?? '',
             vehicleId: candidate.shift.vehicleId ?? '',
             stops,
+            returnLegDistanceM: insertion.returnLegDistanceM,
+            distanceSource: 'estimated',
             reason,
         });
 
@@ -1818,30 +1943,56 @@ export class AssignmentService {
         plan: AssignmentPlan,
         driverIds?: readonly string[],
     ): Promise<Candidate | null | 'allowance_exhausted'> {
-        const { organisationId, warehouse, shiftDate, depot } = plan;
+        const {
+            organisationId,
+            warehouse,
+            shiftDate,
+            depot,
+            requiredSkillIds,
+        } = plan;
         const warehouseId = warehouse.id;
 
         if (driverIds && driverIds.length === 0) return null;
 
-        const restrictToDrivers = driverIds
-            ? 'AND dva.driver_id = ANY($4::uuid[])'
-            : '';
-        const params: unknown[] = [warehouseId, organisationId, shiftDate];
-        if (driverIds) params.push(driverIds);
+        const params: unknown[] = [
+            warehouseId,
+            organisationId,
+            shiftDate,
+            driverIds ?? null,
+            requiredSkillIds,
+        ];
 
         const pairs = (await runner.query(
             `SELECT dva.driver_id,
                     dva.vehicle_id,
                     v.vehicle_gross_limits,
-                    vt.ors_vehicle_type
+                    vt.ors_vehicle_type,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM driver_vehicle_assignment dva
                JOIN vehicles     v  ON v.id  = dva.vehicle_id AND v.is_deleted = false
                JOIN vehicle_type vt ON vt.id = v.vehicle_type
                JOIN drivers      d  ON d.id  = dva.driver_id
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(vs.skill_id) AS skill_ids
+                      FROM vehicle_skills vs
+                     WHERE vs.vehicle_id = v.id
+               ) sk ON true
               WHERE v.warehouse_id   = $1
                 AND d.warehouse_id   = $1
                 AND v.organisation_id = $2
-                ${restrictToDrivers}
+                AND ($4::uuid[] IS NULL OR dva.driver_id = ANY($4::uuid[]))
+                -- Hard constraint: this vehicle must hold EVERY required
+                -- skill. Vacuously true when $5 is empty — unnest() produces
+                -- no rows to fail the inner NOT EXISTS on — so a package with
+                -- no requirement filters nothing, same as filterBySkills.
+                AND NOT EXISTS (
+                    SELECT 1 FROM unnest($5::uuid[]) req(skill_id)
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM vehicle_skills hold
+                          WHERE hold.vehicle_id = v.id
+                            AND hold.skill_id   = req.skill_id
+                     )
+                )
                 AND NOT EXISTS (
                     SELECT 1 FROM vrp_optimization o
                      WHERE o.shift_date = $3::date
@@ -1901,6 +2052,11 @@ export class AssignmentService {
             runner,
             shiftId,
         );
+        const limits = await this.resolveLimitsFor(
+            organisationId,
+            pair.driver_id,
+            runner,
+        );
 
         return {
             shift: {
@@ -1912,12 +2068,14 @@ export class AssignmentService {
                 departureMs,
                 depot,
                 stops: [],
+                limits,
             },
             profile: pair.ors_vehicle_type ?? 'driving-car',
             routeId,
             solutionId,
             shiftDate,
             scheduledStart: null,
+            vehicleSkillIds: pair.skill_ids ?? [],
         };
     }
 
@@ -1937,11 +2095,17 @@ export class AssignmentService {
                     pd.weight_kg,
                     pdw.scheduled_arrival,
                     ST_X(c.customer_location::geometry) AS lon,
-                    ST_Y(c.customer_location::geometry) AS lat
+                    ST_Y(c.customer_location::geometry) AS lat,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM packages p
                LEFT JOIN package_dimensions      pd  ON pd.package_id  = p.id
                LEFT JOIN package_delivery_window pdw ON pdw.package_id = p.id
                LEFT JOIN customer                c   ON c.id = p.to_customer
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(ps.skill_id) AS skill_ids
+                      FROM package_skills ps
+                     WHERE ps.package_id = p.id
+               ) sk ON true
               WHERE p.id = $1 AND p.organisation_id = $2`,
             [packageId, organisationId],
         );
@@ -1990,7 +2154,8 @@ export class AssignmentService {
                     veh.vehicle_gross_limits,
                     vt.ors_vehicle_type,
                     route.route_id,
-                    route.solution_id
+                    route.solution_id,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM vrp_optimization v
                JOIN vehicles     veh ON veh.id = v.vehicle_id AND veh.is_deleted = false
                JOIN vehicle_type vt  ON vt.id  = veh.vehicle_type
@@ -2005,6 +2170,11 @@ export class AssignmentService {
                      ORDER BY r.id
                      LIMIT 1
                ) route ON true
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(vs.skill_id) AS skill_ids
+                      FROM vehicle_skills vs
+                     WHERE vs.vehicle_id = veh.id
+               ) sk ON true
               WHERE v.warehouse_id    = $1
                 AND v.organisation_id = $2
                 AND v.shift_date      = $3::date
@@ -2025,6 +2195,14 @@ export class AssignmentService {
 
         const stopsByRoute = await this.loadStops(routeIds);
 
+        const driverIds = shiftRows
+            .map((r) => r.driver_id)
+            .filter((id): id is string => id !== null);
+        const limitsByDriver = await this.resolveLimitsForDrivers(
+            organisationId,
+            driverIds,
+        );
+
         const defaultDepartureMs = Math.max(
             now.getTime(),
             localHourMs(now, timezone, DEFAULT_DEPARTURE_HOUR),
@@ -2044,13 +2222,40 @@ export class AssignmentService {
                 stops: row.route_id
                     ? (stopsByRoute.get(row.route_id) ?? [])
                     : [],
+                limits: row.driver_id
+                    ? (limitsByDriver.get(row.driver_id) ?? NO_LIMITS)
+                    : NO_LIMITS,
             },
             profile: row.ors_vehicle_type ?? 'driving-car',
             routeId: row.route_id,
             solutionId: row.solution_id,
             shiftDate: row.shift_date,
             scheduledStart: row.scheduled_start,
+            vehicleSkillIds: row.skill_ids ?? [],
         }));
+    }
+
+    /**
+     * Hard constraint, mirroring VROOM: a candidate whose vehicle lacks any
+     * skill the package requires is not a fallback option either — it is
+     * dropped before territory is even considered. A shift that cannot
+     * physically carry this delivery is not "a driver who doesn't cover the
+     * address" (step 3 of the class comment), it is not a candidate at all,
+     * so this runs before `decide()` ever sees the list.
+     *
+     * The common case, a package with no required skill, filters nothing:
+     * every existing candidate and every existing test is unaffected.
+     */
+    private filterBySkills(
+        candidates: Candidate[],
+        requiredSkillIds: readonly string[],
+    ): Candidate[] {
+        if (requiredSkillIds.length === 0) return candidates;
+        return candidates.filter((candidate) =>
+            requiredSkillIds.every((id) =>
+                candidate.vehicleSkillIds.includes(id),
+            ),
+        );
     }
 
     /**
@@ -2129,7 +2334,7 @@ export class AssignmentService {
         candidate: Candidate,
         order: string[],
         pkg: IncomingPackage,
-    ): Promise<Record<string, number> | null> {
+    ): Promise<Record<string, MeasuredLeg> | null> {
         const byId = new Map(
             candidate.shift.stops.map((s) => [s.packageId, s]),
         );
@@ -2149,11 +2354,16 @@ export class AssignmentService {
                 candidate.profile,
                 points.map((p) => [p.lon, p.lat] as [number, number]),
             );
-            const measured: Record<string, number> = {};
+            const measured: Record<string, MeasuredLeg> = {};
             preview.legs.forEach((leg, i) => {
                 const from = points[i];
                 const to = points[i + 1];
-                if (from && to) measured[legKey(from, to)] = leg.duration;
+                if (from && to) {
+                    measured[legKey(from, to)] = {
+                        seconds: leg.duration,
+                        meters: leg.distance,
+                    };
+                }
             });
             return measured;
         } catch (err: unknown) {

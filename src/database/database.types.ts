@@ -21,6 +21,8 @@ export interface PackageRow {
     customer_lon: number | null;
     /** ST_Y(c.customer_location) */
     customer_lat: number | null;
+    /** package_skills.skill_id this package requires. */
+    skill_ids: string[];
 }
 
 /**
@@ -35,6 +37,8 @@ export interface AssignmentRow {
     warehouse_lon: number | null;
     /** ST_Y(w.warehouse_location) from the vehicle's warehouse */
     warehouse_lat: number | null;
+    /** vehicle_skills.skill_id this vehicle holds. */
+    skill_ids: string[];
 }
 
 /**
@@ -51,6 +55,10 @@ export interface PinnedPackageRow {
     scheduled_arrival: string | null;
     customer_lon: number | null;
     customer_lat: number | null;
+    /** package_skills.skill_id this package requires. */
+    skill_ids: string[];
+    /** vehicle_skills.skill_id this pair's vehicle holds. */
+    vehicle_skill_ids: string[];
 }
 
 /**

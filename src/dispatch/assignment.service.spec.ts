@@ -43,8 +43,22 @@ interface DbState {
      * the shifts and idle pairs in the fixture when it is not given.
      */
     drivers?: string[];
+    /**
+     * A driver's raw driving_limit_profile row, keyed by driver id. Absent
+     * for a driver means no profile at all — every column comes back null,
+     * same as the LEFT JOIN in the real query does.
+     */
+    drivingLimits?: Record<string, Partial<DrivingLimitProfileRow>>;
     /** SQL fragment that should throw, and the error to throw. */
     failOn?: { fragment: string; error: Error };
+}
+
+/** One driver's raw driving-limit columns, before resolveLimits applies the fallback. */
+interface DrivingLimitProfileRow {
+    maxWorkingSeconds: number | null;
+    maxDrivingSeconds: number | null;
+    maxDistanceM: number | null;
+    maxStops: number | null;
 }
 
 /** One row of the coverage query's result, as the pg driver hands it back. */
@@ -234,6 +248,29 @@ function makeDb(state: DbState) {
         if (sql.includes('FROM drivers d')) {
             return knownDrivers().map(floaterRow);
         }
+        if (sql.includes('FROM input_drivers idr')) {
+            // One row per input id, exactly like the real unnest($2)-driven
+            // query: an id with no fixture entry reads as an all-null
+            // profile, resolving to NO_LIMITS same as a driver with no
+            // profile linked at all.
+            const driverIds = (params[1] as string[]) ?? [];
+            return driverIds.map((driverId) => {
+                const profile = state.drivingLimits?.[driverId];
+                return {
+                    driver_id: driverId,
+                    driver_max_working_seconds:
+                        profile?.maxWorkingSeconds ?? null,
+                    driver_max_driving_seconds:
+                        profile?.maxDrivingSeconds ?? null,
+                    driver_max_distance_m: profile?.maxDistanceM ?? null,
+                    driver_max_stops: profile?.maxStops ?? null,
+                    org_max_working_seconds: null,
+                    org_max_driving_seconds: null,
+                    org_max_distance_m: null,
+                    org_max_stops: null,
+                };
+            });
+        }
         if (sql.includes('FROM warehouse w')) {
             return state.warehouse === undefined
                 ? [WAREHOUSE]
@@ -249,16 +286,33 @@ function makeDb(state: DbState) {
         }
         if (sql.includes('FROM vrp_route_step rs')) return state.stops ?? [];
         if (sql.includes('FROM driver_vehicle_assignment dva')) {
-            const pairs = state.freePairs ?? [];
+            let pairs = state.freePairs ?? [];
             // Step 2 asks the same question as step 4 with an allowlist bolted
-            // on, so the fake has to honour the allowlist or the two steps
-            // would be indistinguishable here.
-            if (!sql.includes('ANY($4::uuid[])')) return pairs;
-            const allowed = new Set((params[3] as string[] | undefined) ?? []);
-            return pairs.filter(
-                (p) =>
-                    typeof p.driver_id === 'string' && allowed.has(p.driver_id),
-            );
+            // on, so the fake has to honour it — or the two steps would be
+            // indistinguishable here. $4 is null for step 4 (every idle pair
+            // eligible) and an array for step 2 (only these drivers), mirroring
+            // the real `$4::uuid[] IS NULL OR dva.driver_id = ANY($4::uuid[])`.
+            const driverIds = params[3] as string[] | null;
+            if (driverIds) {
+                const allowed = new Set(driverIds);
+                pairs = pairs.filter(
+                    (p) =>
+                        typeof p.driver_id === 'string' &&
+                        allowed.has(p.driver_id),
+                );
+            }
+            // Same hard constraint as filterBySkills, applied here because
+            // openShift enforces it in SQL rather than in JS: a required skill
+            // this vehicle does not hold makes it ineligible, same as being
+            // outside the allowlist above.
+            const requiredSkillIds = (params[4] as string[] | undefined) ?? [];
+            if (requiredSkillIds.length > 0) {
+                pairs = pairs.filter((p) => {
+                    const held = (p.skill_ids as string[] | undefined) ?? [];
+                    return requiredSkillIds.every((id) => held.includes(id));
+                });
+            }
+            return pairs;
         }
         if (sql.includes('SELECT revision, status FROM vrp_optimization')) {
             return state.revision === undefined
@@ -340,6 +394,7 @@ describe('AssignmentService', () => {
     const originalMode = process.env.ASSIGNMENT_MODE;
     const originalSpread = process.env.LOAD_SPREAD_ENABLED;
     const originalMatching = process.env.SERVICE_AREA_MATCHING;
+    const originalDrivingLimits = process.env.DRIVING_LIMITS;
 
     beforeEach(() => {
         // Only the clock is faked. Faking the microtask queue as well makes every
@@ -358,6 +413,9 @@ describe('AssignmentService', () => {
         // written before they existed are the ones that check it. The cases
         // that need matching on turn it on for themselves.
         delete process.env.SERVICE_AREA_MATCHING;
+        // Same reasoning as SERVICE_AREA_MATCHING: off by default so every
+        // test written before HIK-83 keeps its old, limit-free behaviour.
+        delete process.env.DRIVING_LIMITS;
     });
 
     afterEach(() => {
@@ -370,6 +428,9 @@ describe('AssignmentService', () => {
         if (originalMatching === undefined)
             delete process.env.SERVICE_AREA_MATCHING;
         else process.env.SERVICE_AREA_MATCHING = originalMatching;
+        if (originalDrivingLimits === undefined)
+            delete process.env.DRIVING_LIMITS;
+        else process.env.DRIVING_LIMITS = originalDrivingLimits;
     });
 
     describe('the feature flag', () => {
@@ -576,6 +637,163 @@ describe('AssignmentService', () => {
             );
             expect(idlePairQueries).toHaveLength(1);
             expect(idlePairQueries[0].sql).toContain('ANY($4::uuid[])');
+        });
+    });
+
+    describe('the driving-limits kill switch (HIK-83)', () => {
+        it('reads no driving-limit-profile table while it is off', async () => {
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(false);
+        });
+
+        it('reads it once it is on, so the assertion above means something', async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(true);
+        });
+
+        it("warns a dispatcher pin that breaches this driver's driving-time cap", async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { service } = build({
+                shifts: [EDITABLE_SHIFT],
+                drivingLimits: { 'driver-1': { maxDrivingSeconds: 1 } },
+            });
+
+            const { verdicts } = await service.assignToShift(
+                'org-1',
+                'shift-1',
+                ['pkg-1'],
+            );
+
+            // Wrong on purpose is still allowed: the pin goes through, but the
+            // dispatcher has to be told exactly why, in words that name the
+            // limit rather than just a generic deadline complaint.
+            expect(verdicts).toHaveLength(1);
+            expect(verdicts[0]?.packageId).toBe('pkg-1');
+            expect(verdicts[0]?.added).toBe(true);
+            expect(verdicts[0]?.warning).toContain('driving-time limit');
+        });
+
+        it("keeps a package off an auto-assign shift whose driver's cap is too tight", async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { service, log } = build({
+                shifts: [SHIFT, SHIFT_2],
+                drivingLimits: { 'driver-1': { maxDrivingSeconds: 1 } },
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            // shift-1's driver (driver-1) cannot take it at all; shift-2's
+            // driver (driver-2) has no profile, so NO_LIMITS lets it through.
+            expect(outcome.outcome).toBe('assigned');
+            expect(outcome.shift?.id).toBe('shift-2');
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(true);
+        });
+    });
+
+    describe('skills: a hard constraint mirroring VROOM', () => {
+        it('is unaffected when the package requires no skill', async () => {
+            const { service } = build({
+                shifts: [{ ...SHIFT, skill_ids: [] }],
+            });
+            const outcome = await service.assign('org-1', 'pkg-1');
+            expect(outcome.outcome).toBe('assigned');
+        });
+
+        it('drops a candidate shift whose vehicle lacks the required skill', async () => {
+            const { service } = build({
+                package: { ...PACKAGE, skill_ids: ['skill-liftgate'] },
+                shifts: [{ ...SHIFT, skill_ids: [] }],
+                freePairs: [],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome).toMatchObject({ outcome: 'deferred' });
+        });
+
+        it('assigns to the shift whose vehicle holds the required skill', async () => {
+            const { service } = build({
+                package: { ...PACKAGE, skill_ids: ['skill-liftgate'] },
+                shifts: [{ ...SHIFT, skill_ids: ['skill-liftgate'] }],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned');
+            expect(outcome.shift?.id).toBe('shift-1');
+        });
+
+        it('requires every skill on the SAME vehicle, not one skill each on several', async () => {
+            const { service } = build({
+                package: {
+                    ...PACKAGE,
+                    skill_ids: ['skill-liftgate', 'skill-fragile'],
+                },
+                // Holds one of the two required skills, not both.
+                shifts: [{ ...SHIFT, skill_ids: ['skill-liftgate'] }],
+                freePairs: [],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome).toMatchObject({ outcome: 'deferred' });
+        });
+
+        it('opens a new shift only for the idle vehicle holding the required skill', async () => {
+            const { service } = build({
+                package: { ...PACKAGE, skill_ids: ['skill-liftgate'] },
+                shifts: [],
+                freePairs: [
+                    {
+                        driver_id: 'driver-2',
+                        vehicle_id: 'vehicle-2',
+                        vehicle_gross_limits: '1500',
+                        ors_vehicle_type: 'driving-car',
+                        skill_ids: [],
+                    },
+                    {
+                        driver_id: 'driver-3',
+                        vehicle_id: 'vehicle-3',
+                        vehicle_gross_limits: '1500',
+                        ors_vehicle_type: 'driving-car',
+                        skill_ids: ['skill-liftgate'],
+                    },
+                ],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned_new_shift');
+            expect(outcome.shift?.driverId).toBe('driver-3');
+        });
+
+        it('defers when no vehicle anywhere at the warehouse holds the required skill', async () => {
+            const { service } = build({
+                package: { ...PACKAGE, skill_ids: ['skill-liftgate'] },
+                shifts: [{ ...SHIFT, skill_ids: [] }],
+                freePairs: [
+                    {
+                        driver_id: 'driver-2',
+                        vehicle_id: 'vehicle-2',
+                        vehicle_gross_limits: '1500',
+                        ors_vehicle_type: 'driving-car',
+                        skill_ids: [],
+                    },
+                ],
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome).toMatchObject({ outcome: 'deferred' });
         });
     });
 

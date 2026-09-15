@@ -201,6 +201,74 @@ describe('DatabaseService', () => {
             expect(result.vehicleMap[1]).toBe('veh-1');
         });
 
+        it('maps skill_ids to request-scoped integers shared by jobs and vehicles', async () => {
+            const today = new Date();
+            const runner = makeRunner(
+                jest
+                    .fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-1',
+                            tracking_number: 'TRK001',
+                            created_at: today,
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: 2,
+                            scheduled_arrival: null,
+                            customer_lon: 151.3,
+                            customer_lat: -33.9,
+                            skill_ids: ['skill-liftgate'],
+                        },
+                    ])
+                    .mockResolvedValueOnce([
+                        { ...ASSIGNMENT_ROW, skill_ids: ['skill-liftgate'] },
+                    ])
+                    .mockResolvedValueOnce([]), // no pinned packages
+            );
+
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
+
+            // Same integer on both sides — that agreement is the whole point
+            // of registering vehicles and packages on one shared SkillIndex
+            // before either array is built.
+            expect(result.request.vehicles[0].skills).toEqual([1]);
+            expect(result.request.jobs[0].skills).toEqual([1]);
+        });
+
+        it('leaves skills undefined for a job/vehicle with no skill_ids, matching VROOM default', async () => {
+            const today = new Date();
+            const runner = makeRunner(
+                jest
+                    .fn()
+                    .mockResolvedValueOnce([
+                        {
+                            id: 'pkg-1',
+                            tracking_number: 'TRK001',
+                            created_at: today,
+                            warehouse_id: 'wh-1',
+                            warehouse_lon: 151.2,
+                            warehouse_lat: -33.8,
+                            weight_kg: 2,
+                            scheduled_arrival: null,
+                            customer_lon: 151.3,
+                            customer_lat: -33.9,
+                        },
+                    ])
+                    .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                    .mockResolvedValueOnce([]),
+            );
+
+            const result = await service.buildOptimizationRequest(
+                runner as never,
+            );
+
+            expect(result.request.vehicles[0].skills).toBeUndefined();
+            expect(result.request.jobs[0].skills).toBeUndefined();
+        });
+
         it('maps ors_vehicle_type to a Valhalla costing profile', async () => {
             const today = new Date();
             const runner = makeRunner(
@@ -597,6 +665,34 @@ describe('DatabaseService', () => {
                 expect(pinned.scheduledStart).toBeInstanceOf(Date);
             });
 
+            it('maps a pinned route’s skill_ids to its OWN request-scoped index', async () => {
+                // Each pinned group is solved as its own VROOM request, so its
+                // skill index must not be shared with the main solve's — a
+                // job here and a job in the main request can legitimately get
+                // the same integer for two DIFFERENT skills.
+                const runner = makeRunner(
+                    jest
+                        .fn()
+                        .mockResolvedValueOnce([NORMAL_PACKAGE])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([
+                            {
+                                ...PINNED_ROW,
+                                skill_ids: ['skill-fragile'],
+                                vehicle_skill_ids: ['skill-fragile'],
+                            },
+                        ]),
+                );
+
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                );
+
+                const pinned = result.pinnedRoutes[0];
+                expect(pinned.request.vehicles[0].skills).toEqual([1]);
+                expect(pinned.request.jobs[0].skills).toEqual([1]);
+            });
+
             it('groups multiple pinned packages sharing a driver/vehicle pair into one route', async () => {
                 const runner = makeRunner(
                     jest
@@ -716,6 +812,106 @@ describe('DatabaseService', () => {
                 expect(
                     result.pinnedRoutes[0].request.vehicles[0].capacity,
                 ).toEqual([3_500_000]);
+            });
+        });
+
+        describe('driving limits (HIK-84)', () => {
+            const original = process.env.DRIVING_LIMITS;
+
+            afterEach(() => {
+                if (original === undefined) {
+                    delete process.env.DRIVING_LIMITS;
+                } else {
+                    process.env.DRIVING_LIMITS = original;
+                }
+            });
+
+            it('sends no limit fields while the flag is off, even with an organisation known', async () => {
+                delete process.env.DRIVING_LIMITS;
+                const today = new Date();
+                const runner = makeRunner(
+                    jest
+                        .fn()
+                        .mockResolvedValueOnce([
+                            {
+                                id: 'pkg-1',
+                                tracking_number: 'TRK001',
+                                created_at: today,
+                                warehouse_id: 'wh-1',
+                                warehouse_lon: 151.2,
+                                warehouse_lat: -33.8,
+                                weight_kg: 2,
+                                scheduled_arrival: null,
+                                customer_lon: 151.3,
+                                customer_lat: -33.9,
+                            },
+                        ])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW])
+                        .mockResolvedValueOnce([]), // no pinned packages
+                );
+
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                    { organisationId: 'org-1' },
+                );
+
+                const vehicle = result.request.vehicles[0];
+                expect(vehicle.max_travel_time).toBeUndefined();
+                expect(vehicle.max_distance).toBeUndefined();
+                expect(vehicle.max_tasks).toBeUndefined();
+                expect(
+                    runner.query.mock.calls.some(([sql]) =>
+                        String(sql).includes('driving_limit_profile'),
+                    ),
+                ).toBe(false);
+            });
+
+            it("sends the assigned driver's resolved limits to the vehicle once the flag is on", async () => {
+                process.env.DRIVING_LIMITS = 'on';
+                const today = new Date();
+                const runner = makeRunner(
+                    jest
+                        .fn()
+                        .mockResolvedValueOnce([
+                            {
+                                id: 'pkg-1',
+                                tracking_number: 'TRK001',
+                                created_at: today,
+                                warehouse_id: 'wh-1',
+                                warehouse_lon: 151.2,
+                                warehouse_lat: -33.8,
+                                weight_kg: 2,
+                                scheduled_arrival: null,
+                                customer_lon: 151.3,
+                                customer_lat: -33.9,
+                            },
+                        ])
+                        .mockResolvedValueOnce([ASSIGNMENT_ROW]) // driver_id: drv-1
+                        .mockResolvedValueOnce([
+                            {
+                                driver_id: 'drv-1',
+                                driver_max_working_seconds: null,
+                                driver_max_driving_seconds: 1_800,
+                                driver_max_distance_m: 50_000,
+                                driver_max_stops: null,
+                                org_max_working_seconds: null,
+                                org_max_driving_seconds: null,
+                                org_max_distance_m: null,
+                                org_max_stops: null,
+                            },
+                        ])
+                        .mockResolvedValueOnce([]), // no pinned packages
+                );
+
+                const result = await service.buildOptimizationRequest(
+                    runner as never,
+                    { organisationId: 'org-1' },
+                );
+
+                const vehicle = result.request.vehicles[0];
+                expect(vehicle.max_travel_time).toBe(1_800);
+                expect(vehicle.max_distance).toBe(50_000);
+                expect(vehicle.max_tasks).toBeUndefined();
             });
         });
     });

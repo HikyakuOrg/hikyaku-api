@@ -16,7 +16,8 @@ interface DbRow {
     id: string;
     organisation_id: string;
     stripe_customer_id: string | null;
-    shopify_customer_id: string | null;
+    external_platform: string | null;
+    external_customer_id: string | null;
     customer_name: string | null;
     customer_phone: string | null;
     customer_email: string | null;
@@ -38,7 +39,8 @@ export interface CustomerRow {
     id: string;
     organisation_id: string;
     stripe_customer_id: string | null;
-    shopify_customer_id: string | null;
+    external_platform: string | null;
+    external_customer_id: string | null;
     customer_name: string;
     customer_phone: string;
     customer_email: string;
@@ -56,7 +58,7 @@ export interface CustomerRow {
 }
 
 /** Columns selected on every read. Location is emitted as GeoJSON. */
-const SELECT_COLS = `id, organisation_id, stripe_customer_id, shopify_customer_id,
+const SELECT_COLS = `id, organisation_id, stripe_customer_id, external_platform, external_customer_id,
     customer_name, customer_phone, customer_email,
     customer_address, customer_unit, customer_suburb, customer_state, customer_postcode, customer_country,
     geocode_confidence, pelias_gid, pelias_raw,
@@ -272,19 +274,20 @@ export class CustomersService {
     }
 
     /**
-     * Upsert a customer for a Shopify `order.paid` webhook. DB-only — a
-     * Shopify order is paid entirely inside Shopify, so there is no Stripe
-     * payment for a Stripe Customer object to attach to. Syncing one anyway
-     * would just be a third, functionless copy of this person's PII (see
+     * Upsert a customer for an external storefront's `order.paid` webhook
+     * (Shopify today; WooCommerce/Magento/MedusaJS later). DB-only — the order
+     * is paid entirely inside the storefront, so there is no Stripe payment
+     * for a Stripe Customer object to attach to. Syncing one anyway would just
+     * be a third, functionless copy of this person's PII (see
      * upsertFromBooking, which syncs to Stripe precisely because a Stripe
      * payment *is* happening in that flow).
      *
-     * Unlike a booking, phone is frequently absent from Shopify's delivery
-     * payload, so this goes through the same three-tier (phone → email →
-     * name) fallback as upsertFromBooking via upsertCustomerRow — see that
-     * method for the exact matching rules.
+     * Unlike a booking, phone is frequently absent from a storefront's
+     * delivery payload, so this goes through the same three-tier (phone →
+     * email → name) fallback as upsertFromBooking via upsertCustomerRow — see
+     * that method for the exact matching rules.
      */
-    async upsertFromShopifyOrder(
+    async upsertFromExternalOrder(
         organisationId: string,
         person: {
             name: string;
@@ -304,14 +307,14 @@ export class CustomersService {
             peliasGid?: string | null;
             peliasRaw?: Record<string, unknown> | null;
         },
-        shopifyCustomerId: string | null,
+        external: { platform: string; externalCustomerId: string } | null,
     ): Promise<string> {
         const customerId = await this.upsertCustomerRow(organisationId, person);
 
-        if (shopifyCustomerId) {
+        if (external) {
             await this.dataSource.query(
-                `UPDATE public.customer SET shopify_customer_id = $1 WHERE id = $2`,
-                [shopifyCustomerId, customerId],
+                `UPDATE public.customer SET external_platform = $1, external_customer_id = $2 WHERE id = $3`,
+                [external.platform, external.externalCustomerId, customerId],
             );
         }
 
@@ -413,7 +416,7 @@ export class CustomersService {
 
     /**
      * Shared DB-upsert-by-identity used by both upsertFromBooking and
-     * upsertFromShopifyOrder. Picks the strongest available identifier as the
+     * upsertFromExternalOrder. Picks the strongest available identifier as the
      * ON CONFLICT target, in descending reliability: phone, then email (only
      * among rows that also lack a phone), then name (only among rows that
      * lack both). Each fallback tier is scoped so it can only ever merge into
@@ -522,7 +525,8 @@ export class CustomersService {
             id: row.id,
             organisation_id: row.organisation_id,
             stripe_customer_id: row.stripe_customer_id,
-            shopify_customer_id: row.shopify_customer_id,
+            external_platform: row.external_platform,
+            external_customer_id: row.external_customer_id,
             customer_name: row.customer_name ?? '',
             customer_phone: row.customer_phone ?? '',
             customer_email: row.customer_email ?? '',

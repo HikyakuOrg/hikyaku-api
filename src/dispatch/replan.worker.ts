@@ -10,7 +10,12 @@ import { OptimisationRun } from 'src/entities/optimisation-run.entity';
 import { DatabaseService } from 'src/database/database.service';
 import { VroomService } from 'src/vroom/vroom.service';
 import { orsProfileToValhallaCosting } from 'src/vroom/profile-map';
-import type { VroomJob, VroomRequest } from 'src/vroom/vroom.types';
+import type {
+    OptimizationRoute,
+    VroomJob,
+    VroomRequest,
+} from 'src/vroom/vroom.types';
+import { SkillIndex } from 'src/vroom/skill-index';
 import type { SetOffOverride } from 'src/database/database.types';
 import { PgNotifyService } from './pg-notify.service';
 import {
@@ -21,6 +26,12 @@ import {
 import { ShiftPlanWriter, type PlanStop } from './shift-plan.writer';
 import { AssignmentService } from './assignment.service';
 import { SHIFT_WINDOW_SECONDS, TIME_PER_STOP } from './insertion';
+import {
+    driverLimitsOrDefault,
+    NO_LIMITS,
+    vroomVehicleLimits,
+    type DrivingLimits,
+} from './driving-limits';
 
 /** Coalescing window for replan notifications, in ms. */
 const DEBOUNCE_MS = 3_000;
@@ -64,6 +75,8 @@ interface ShiftRow {
     ors_vehicle_type: string | null;
     depot_lon: number | null;
     depot_lat: number | null;
+    /** vehicle_skills.skill_id this shift's vehicle holds. */
+    skill_ids: string[];
 }
 
 interface ShiftPackageRow {
@@ -72,6 +85,8 @@ interface ShiftPackageRow {
     scheduled_arrival: string | null;
     lon: number | null;
     lat: number | null;
+    /** package_skills.skill_id this package requires. */
+    skill_ids: string[];
 }
 
 /**
@@ -268,6 +283,14 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             if (shift.depot_lon == null || shift.depot_lat == null) return;
             if (!shift.driver_id || !shift.vehicle_id) return;
 
+            const limits = shift.organisation_id
+                ? await driverLimitsOrDefault(
+                      this.dataSource,
+                      shift.organisation_id,
+                      shift.driver_id,
+                  )
+                : NO_LIMITS;
+
             const packages = await this.loadShiftPackages(optimisationId);
             const routable = packages.filter(
                 (p) => p.lon != null && p.lat != null,
@@ -279,6 +302,13 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                 : Date.now();
             const departureEpoch = Math.floor(departureMs / 1000);
 
+            // One VROOM request, one skill index: the vehicle and every job
+            // below share it, which is what lets a skill on both sides come
+            // out as the same integer.
+            const skillIndex = new SkillIndex();
+            skillIndex.register([shift.skill_ids]);
+            skillIndex.register(routable.map((p) => p.skill_ids));
+
             const jobs: VroomJob[] = [];
             const jobPackage: Record<number, string> = {};
             routable.forEach((pkg, i) => {
@@ -289,6 +319,7 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                     service: TIME_PER_STOP,
                     location: [Number(pkg.lon), Number(pkg.lat)],
                     amount: [this.weightGrams(pkg.weight_kg)],
+                    skills: skillIndex.indicesFor(pkg.skill_ids),
                 };
                 // The whole reason Tier 2 exists. Until now VROOM was told about
                 // deadlines only as a priority hint, which it is free to ignore;
@@ -318,10 +349,11 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                         capacity: [
                             this.capacityGrams(shift.vehicle_gross_limits),
                         ],
-                        time_window: [
+                        ...vroomVehicleLimits(limits, [
                             departureEpoch,
                             departureEpoch + SHIFT_WINDOW_SECONDS,
-                        ],
+                        ]),
+                        skills: skillIndex.indicesFor(shift.skill_ids),
                     },
                 ],
             };
@@ -329,10 +361,54 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
             const response = await this.vroom.solve(request);
 
             const route = response.routes?.[0];
+            if (route && this.breachesLimits(route, limits, departureEpoch)) {
+                // The one real routing call VROOM makes should have honoured
+                // these as hard constraints; a route that comes back over one
+                // anyway means the field was unsupported by this build, or
+                // silently ignored. Either way, writing it would hand this
+                // driver exactly the route this ticket exists to stop, so the
+                // solve is treated as failed: log loudly and leave the
+                // shift's existing plan untouched rather than persist it.
+                const duration =
+                    route.duration != null ? `${route.duration}s` : 'unknown';
+                const distance =
+                    route.distance != null ? `${route.distance}m` : 'unknown';
+                this.logger.error(
+                    `Replan for shift ${optimisationId} returned a route ` +
+                        `breaching driver ${shift.driver_id}'s limits ` +
+                        `(duration ${duration}, distance ${distance}, ` +
+                        `${route.steps.filter((s) => s.type === 'job').length} stop(s)); ` +
+                        'refusing to write it.',
+                );
+                return;
+            }
+
             const stops: PlanStop[] = [];
             const packageById = new Map(routable.map((p) => [p.id, p]));
 
+            // VROOM's step.distance is CUMULATIVE since route departure, not
+            // the incremental leg — confirmed against a live solve, and
+            // documented as "cumulated travel distance upon arrival at this
+            // step" in VROOM's own API docs. previousDistanceM tracks the
+            // running total so each row gets the leg landing on IT, matching
+            // vrp_route_step.distance_m's contract. It turns undefined (the
+            // -g flag off, or a step with no location) the moment any step is
+            // missing distance, which propagates every later leg to null
+            // rather than silently measuring from a wrong baseline.
+            let previousDistanceM: number | undefined = 0;
+            let returnLegDistanceM: number | null = null;
+
             for (const step of route?.steps ?? []) {
+                const legDistanceM =
+                    step.distance == null || previousDistanceM == null
+                        ? null
+                        : step.distance - previousDistanceM;
+                previousDistanceM = step.distance;
+
+                if (step.type === 'end') {
+                    returnLegDistanceM = legDistanceM;
+                }
+
                 if (step.type !== 'job' || step.id == null) continue;
                 const packageId = jobPackage[step.id];
                 const pkg = packageId ? packageById.get(packageId) : undefined;
@@ -345,6 +421,7 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                     // time_window is present, which it always is here.
                     arrivalMs: (step.arrival ?? departureEpoch) * 1000,
                     weightG: this.weightGrams(pkg.weight_kg),
+                    distanceM: legDistanceM,
                 });
             }
 
@@ -381,6 +458,8 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                     driverId: shift.driver_id,
                     vehicleId: shift.vehicle_id,
                     stops,
+                    returnLegDistanceM,
+                    distanceSource: 'measured',
                     reason: 'replan',
                 });
                 await runner.commitTransaction();
@@ -548,11 +627,17 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                     veh.vehicle_gross_limits,
                     vt.ors_vehicle_type,
                     ST_X(w.warehouse_location::geometry) AS depot_lon,
-                    ST_Y(w.warehouse_location::geometry) AS depot_lat
+                    ST_Y(w.warehouse_location::geometry) AS depot_lat,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM vrp_optimization v
                LEFT JOIN vehicles     veh ON veh.id = v.vehicle_id
                LEFT JOIN vehicle_type vt  ON vt.id  = veh.vehicle_type
                LEFT JOIN warehouse    w   ON w.id   = v.warehouse_id
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(vs.skill_id) AS skill_ids
+                      FROM vehicle_skills vs
+                     WHERE vs.vehicle_id = veh.id
+               ) sk ON true
               WHERE v.id = $1`,
             [optimisationId],
         );
@@ -567,11 +652,17 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
                     pd.weight_kg,
                     pdw.scheduled_arrival,
                     ST_X(c.customer_location::geometry) AS lon,
-                    ST_Y(c.customer_location::geometry) AS lat
+                    ST_Y(c.customer_location::geometry) AS lat,
+                    COALESCE(sk.skill_ids, '{}') AS skill_ids
                FROM packages p
                LEFT JOIN package_dimensions      pd  ON pd.package_id  = p.id
                LEFT JOIN package_delivery_window pdw ON pdw.package_id = p.id
                LEFT JOIN customer                c   ON c.id = p.to_customer
+               LEFT JOIN LATERAL (
+                    SELECT array_agg(ps.skill_id) AS skill_ids
+                      FROM package_skills ps
+                     WHERE ps.package_id = p.id
+               ) sk ON true
               WHERE p.optimisation_id = $1
               ORDER BY p.created_at`,
             [optimisationId],
@@ -587,5 +678,48 @@ export class ReplanWorker implements OnApplicationBootstrap, OnModuleDestroy {
     private weightGrams(weightKg: string | number | null): number {
         const kg = typeof weightKg === 'string' ? Number(weightKg) : weightKg;
         return Number.isFinite(kg) && kg ? Math.round(Number(kg) * 1000) : 1;
+    }
+
+    /**
+     * Does this returned route violate a limit `vroomVehicleLimits` already
+     * asked VROOM to respect?
+     *
+     * Not the primary enforcement — VROOM's own hard constraints are — this
+     * is the backstop for a build that does not honour one of them. Working
+     * time is checked here too even though it is enforced via `time_window`
+     * rather than a VROOM limit field, for the same defence-in-depth reason:
+     * the 'end' step's arrival is absolute epoch seconds whenever a vehicle
+     * time_window is present, which it always is on this path.
+     */
+    private breachesLimits(
+        route: OptimizationRoute,
+        limits: DrivingLimits,
+        departureEpoch: number,
+    ): boolean {
+        if (
+            limits.maxDrivingSeconds != null &&
+            (route.duration ?? 0) > limits.maxDrivingSeconds
+        ) {
+            return true;
+        }
+        if (
+            limits.maxDistanceM != null &&
+            (route.distance ?? 0) > limits.maxDistanceM
+        ) {
+            return true;
+        }
+        if (limits.maxStops != null) {
+            const stopCount = route.steps.filter(
+                (s) => s.type === 'job',
+            ).length;
+            if (stopCount > limits.maxStops) return true;
+        }
+        if (limits.maxWorkingSeconds != null) {
+            const end = route.steps.find((s) => s.type === 'end');
+            const workingSeconds =
+                (end?.arrival ?? departureEpoch) - departureEpoch;
+            if (workingSeconds > limits.maxWorkingSeconds) return true;
+        }
+        return false;
     }
 }

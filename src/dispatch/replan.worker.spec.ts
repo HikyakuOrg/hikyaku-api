@@ -44,6 +44,17 @@ interface WorkerState {
     packages?: Record<string, unknown>[];
     locked?: boolean;
     messages?: PgmqMessage[];
+    /**
+     * driver-1's raw driving_limit_profile columns. Absent means every
+     * column comes back null, same as the LEFT JOIN in the real query does
+     * for a driver with no profile.
+     */
+    drivingLimits?: {
+        maxWorkingSeconds?: number | null;
+        maxDrivingSeconds?: number | null;
+        maxDistanceM?: number | null;
+        maxStops?: number | null;
+    };
 }
 
 function message(
@@ -85,6 +96,24 @@ function build(state: WorkerState = {}) {
             sql.includes('JOIN vrp_route')
         ) {
             return [{ route_id: 'route-1', solution_id: 'sol-1' }];
+        }
+        if (sql.includes('FROM input_drivers idr')) {
+            const profile = state.drivingLimits;
+            return [
+                {
+                    driver_id: 'driver-1',
+                    driver_max_working_seconds:
+                        profile?.maxWorkingSeconds ?? null,
+                    driver_max_driving_seconds:
+                        profile?.maxDrivingSeconds ?? null,
+                    driver_max_distance_m: profile?.maxDistanceM ?? null,
+                    driver_max_stops: profile?.maxStops ?? null,
+                    org_max_working_seconds: null,
+                    org_max_driving_seconds: null,
+                    org_max_distance_m: null,
+                    org_max_stops: null,
+                },
+            ];
         }
         return [];
     };
@@ -281,6 +310,28 @@ describe('ReplanWorker', () => {
             ]);
         });
 
+        it('maps skills to request-scoped integers shared by the vehicle and its jobs', async () => {
+            const { worker, vroom } = build({
+                shift: { ...SHIFT, skill_ids: ['skill-liftgate'] },
+                packages: [
+                    { ...PACKAGES[0], skill_ids: ['skill-liftgate'] },
+                    { ...PACKAGES[1], skill_ids: [] },
+                ],
+            });
+            await worker.replanShift('shift-1');
+
+            const request = vroom.solve.mock.calls[0][0];
+            expect(request.vehicles[0].skills).toEqual([1]);
+            // pkg-a (job 1) requires the skill the vehicle holds — same
+            // integer as the vehicle's own `skills` array, above.
+            expect(request.jobs.find((j) => j.id === 1)?.skills).toEqual([1]);
+            // pkg-b (job 2) requires nothing: VROOM's own default, not an
+            // empty array.
+            expect(
+                request.jobs.find((j) => j.id === 2)?.skills,
+            ).toBeUndefined();
+        });
+
         it('writes the order VROOM returned, not the order it was given', async () => {
             const { worker, log } = build();
             await worker.replanShift('shift-1');
@@ -291,6 +342,82 @@ describe('ReplanWorker', () => {
             );
             expect(etas?.params[0]).toBe('pkg-b');
             expect(etas?.params[2]).toBe('pkg-a');
+        });
+
+        it('diffs VROOM’s cumulative step distances into the leg landing on each row', async () => {
+            // VROOM's step.distance is cumulative since route departure, not
+            // the incremental leg — confirmed against a live solve. 0 (start)
+            // -> 8000 (pkg-b) -> 15000 (pkg-a) -> 20000 (end) means the legs
+            // are 8000, 7000 and a 5000 m return, not the raw cumulative
+            // figures.
+            const { worker, vroom, log } = build();
+            vroom.solve.mockResolvedValue({
+                code: 0,
+                routes: [
+                    {
+                        vehicle: 1,
+                        steps: [
+                            {
+                                type: 'start',
+                                arrival: NOW.getTime() / 1000,
+                                distance: 0,
+                            },
+                            {
+                                type: 'job',
+                                id: 2,
+                                arrival: NOW.getTime() / 1000 + 300,
+                                distance: 8000,
+                            },
+                            {
+                                type: 'job',
+                                id: 1,
+                                arrival: NOW.getTime() / 1000 + 1500,
+                                distance: 15000,
+                            },
+                            {
+                                type: 'end',
+                                arrival: NOW.getTime() / 1000 + 2000,
+                                distance: 20000,
+                            },
+                        ],
+                    },
+                ],
+                unassigned: [],
+            });
+
+            await worker.replanShift('shift-1');
+
+            const steps = log.find((q) =>
+                q.sql.includes('INSERT INTO vrp_route_step'),
+            );
+            const params = steps?.params ?? [];
+            expect(params[8]).toBe(0); // start: no leg precedes it
+            expect(params[17]).toBe(8_000); // leg into pkg-b, solved first
+            expect(params[26]).toBe(7_000); // leg into pkg-a
+            expect(params[35]).toBe(5_000); // the return leg, on the end row
+
+            const routeUpdate = log.find((q) =>
+                q.sql.includes('SET distance_m'),
+            );
+            expect(routeUpdate?.params).toEqual([
+                'route-1',
+                20_000,
+                'measured',
+            ]);
+        });
+
+        it('writes a null distance rather than a wrong one when VROOM omits it', async () => {
+            // The -g flag (or geometry: true server-side) is what makes
+            // distance appear at all. If it were ever off, every step here
+            // has no `distance` field, and the plan must read back null
+            // rather than a silently-zeroed figure.
+            const { worker, log } = build();
+            await worker.replanShift('shift-1');
+
+            const routeUpdate = log.find((q) =>
+                q.sql.includes('SET distance_m'),
+            );
+            expect(routeUpdate?.params).toEqual(['route-1', null, null]);
         });
 
         it('snapshots the plan it replaces', async () => {
@@ -405,6 +532,137 @@ describe('ReplanWorker', () => {
             await expect(worker.replanShift('shift-1')).rejects.toThrow();
             expect(runner.rollbackTransaction).toHaveBeenCalled();
             expect(runner.commitTransaction).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('driving limits (HIK-84)', () => {
+        const original = process.env.DRIVING_LIMITS;
+
+        afterEach(() => {
+            if (original === undefined) delete process.env.DRIVING_LIMITS;
+            else process.env.DRIVING_LIMITS = original;
+        });
+
+        it('sends an unmodified window and no limit fields while the flag is off', async () => {
+            delete process.env.DRIVING_LIMITS;
+            const { worker, vroom, log } = build({
+                drivingLimits: { maxDistanceM: 1 }, // would reject everything if read
+            });
+
+            await worker.replanShift('shift-1');
+
+            const vehicle = vroom.solve.mock.calls[0][0].vehicles[0];
+            const departureEpoch = Math.floor(NOW.getTime() / 1000);
+            expect(vehicle.time_window).toEqual([
+                departureEpoch,
+                departureEpoch + 12 * 3600,
+            ]);
+            expect(vehicle.max_travel_time).toBeUndefined();
+            expect(vehicle.max_distance).toBeUndefined();
+            expect(vehicle.max_tasks).toBeUndefined();
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(false);
+        });
+
+        it("sends the driver's resolved limits once the flag is on", async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { worker, vroom } = build({
+                drivingLimits: {
+                    maxWorkingSeconds: 3_600,
+                    maxDrivingSeconds: 1_800,
+                    maxDistanceM: 50_000,
+                    maxStops: 10,
+                },
+            });
+
+            await worker.replanShift('shift-1');
+
+            const vehicle = vroom.solve.mock.calls[0][0].vehicles[0];
+            const departureEpoch = Math.floor(NOW.getTime() / 1000);
+            // Narrowed to maxWorkingSeconds, not the usual 12h window.
+            expect(vehicle.time_window).toEqual([
+                departureEpoch,
+                departureEpoch + 3_600,
+            ]);
+            expect(vehicle.max_travel_time).toBe(1_800);
+            expect(vehicle.max_distance).toBe(50_000);
+            expect(vehicle.max_tasks).toBe(10);
+        });
+
+        it('refuses to write a route that breaches a limit VROOM was asked to respect', async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { worker, vroom, runner, log } = build({
+                drivingLimits: { maxDistanceM: 10_000 },
+            });
+            vroom.solve.mockResolvedValue({
+                code: 0,
+                routes: [
+                    {
+                        vehicle: 1,
+                        distance: 20_000, // over the 10,000 m cap sent above
+                        steps: [
+                            { type: 'start', arrival: NOW.getTime() / 1000 },
+                            {
+                                type: 'job',
+                                id: 1,
+                                arrival: NOW.getTime() / 1000 + 300,
+                            },
+                            {
+                                type: 'end',
+                                arrival: NOW.getTime() / 1000 + 900,
+                            },
+                        ],
+                    },
+                ],
+                unassigned: [],
+            });
+
+            await expect(
+                worker.replanShift('shift-1'),
+            ).resolves.toBeUndefined();
+
+            // Never persisted: a breaching route is treated as a failed
+            // solve, not written over the shift's existing plan.
+            expect(
+                log.some((q) => q.sql.includes('INSERT INTO vrp_route_step')),
+            ).toBe(false);
+            expect(runner.commitTransaction).not.toHaveBeenCalled();
+        });
+
+        it('does not reject a route that stays within every sent limit', async () => {
+            process.env.DRIVING_LIMITS = 'on';
+            const { worker, vroom, log } = build({
+                drivingLimits: { maxDistanceM: 50_000 },
+            });
+            vroom.solve.mockResolvedValue({
+                code: 0,
+                routes: [
+                    {
+                        vehicle: 1,
+                        distance: 10_000,
+                        steps: [
+                            { type: 'start', arrival: NOW.getTime() / 1000 },
+                            {
+                                type: 'job',
+                                id: 1,
+                                arrival: NOW.getTime() / 1000 + 300,
+                            },
+                            {
+                                type: 'end',
+                                arrival: NOW.getTime() / 1000 + 900,
+                            },
+                        ],
+                    },
+                ],
+                unassigned: [],
+            });
+
+            await worker.replanShift('shift-1');
+
+            expect(
+                log.some((q) => q.sql.includes('INSERT INTO vrp_route_step')),
+            ).toBe(true);
         });
     });
 

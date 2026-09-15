@@ -14,7 +14,15 @@ import { VrpRoute } from 'src/entities/vrp-route.entity';
 import { VrpSolution } from 'src/entities/vrp-solution.entity';
 import type { OptimizationResponse } from '../vroom/vroom.types';
 import { orsProfileToValhallaCosting } from '../vroom/profile-map';
+import { SkillIndex } from '../vroom/skill-index';
 import { SHIFT_WINDOW_SECONDS, TIME_PER_STOP } from '../dispatch/insertion';
+import {
+    driverLimitsOrDefault,
+    driverLimitsOrDefaultForDrivers,
+    NO_LIMITS,
+    vroomVehicleLimits,
+    type DrivingLimits,
+} from '../dispatch/driving-limits';
 import type {
     AssignmentRow,
     BuildOptions,
@@ -220,7 +228,8 @@ export class DatabaseService implements OnApplicationBootstrap {
         pd.weight_kg,
         pdw.scheduled_arrival,
         ST_X(c.customer_location::geometry)    AS customer_lon,
-        ST_Y(c.customer_location::geometry)    AS customer_lat
+        ST_Y(c.customer_location::geometry)    AS customer_lat,
+        COALESCE(sk.skill_ids, '{}')           AS skill_ids
       FROM   packages                p
       JOIN   LATERAL (
                -- The id tiebreak matters since AllowStatusRevisits: a package can
@@ -237,6 +246,11 @@ export class DatabaseService implements OnApplicationBootstrap {
       LEFT   JOIN package_dimensions pd  ON pd.package_id = p.id
       LEFT   JOIN package_delivery_window pdw ON pdw.package_id = p.id
       JOIN   customer                c   ON c.id  = p.to_customer
+      LEFT   JOIN LATERAL (
+               SELECT array_agg(ps.skill_id) AS skill_ids
+               FROM   package_skills ps
+               WHERE  ps.package_id = p.id
+             ) sk ON true
       WHERE  latest_status.package_status = $1
         AND  p.optimisation_id   IS NULL
         AND  pa.package_id       IS NULL
@@ -259,11 +273,17 @@ export class DatabaseService implements OnApplicationBootstrap {
         v.vehicle_gross_limits,
         vt.ors_vehicle_type,
         ST_X(w.warehouse_location::geometry) AS warehouse_lon,
-        ST_Y(w.warehouse_location::geometry) AS warehouse_lat
+        ST_Y(w.warehouse_location::geometry) AS warehouse_lat,
+        COALESCE(sk.skill_ids, '{}')          AS skill_ids
       FROM  driver_vehicle_assignment dva
       JOIN  vehicles                  v   ON v.id  = dva.vehicle_id
       JOIN  vehicle_type              vt  ON vt.id = v.vehicle_type
       LEFT  JOIN warehouse            w   ON w.id  = v.warehouse_id
+      LEFT  JOIN LATERAL (
+              SELECT array_agg(vs.skill_id) AS skill_ids
+              FROM   vehicle_skills vs
+              WHERE  vs.vehicle_id = v.id
+            ) sk ON true
       WHERE v.is_deleted = false
         AND ($1::uuid IS NULL OR v.warehouse_id = $1)
       `,
@@ -314,6 +334,28 @@ export class DatabaseService implements OnApplicationBootstrap {
               )
             : {};
 
+        // 3c. One integer index for the whole request. VROOM only compares
+        //     skills within a single solve, so registering every vehicle's
+        //     and every package's skill ids together — before either array
+        //     is built — is what lets a shared skill on both sides come out
+        //     as the same integer, which is the only thing that makes a
+        //     match possible.
+        const skillIndex = new SkillIndex();
+        skillIndex.register(assignments.map((a) => a.skill_ids));
+        skillIndex.register(packages.map((p) => p.skill_ids));
+
+        // 3d. Every assigned driver's effective limits, in one round trip —
+        //     NO_LIMITS for all of them with no query while DRIVING_LIMITS is
+        //     off (see driving-limits.ts). Resolved before the vehicle loop
+        //     below since building it is synchronous.
+        const limitsByDriver = organisationId
+            ? await driverLimitsOrDefaultForDrivers(
+                  runner,
+                  organisationId,
+                  assignments.map((a) => a.driver_id),
+              )
+            : new Map<string, DrivingLimits>();
+
         // 4. Build vehicles array.
         const vehicles: BuildResult['request']['vehicles'] = [];
         const vehicleMap: Record<number, string> = {};
@@ -332,13 +374,20 @@ export class DatabaseService implements OnApplicationBootstrap {
                 start: warehouseCoords,
                 end: warehouseCoords,
                 capacity: [capacityG],
+                skills: skillIndex.indicesFor(a.skill_ids),
             };
             // Always, not just on demand: job time windows below are absolute
             // epoch seconds, and VROOM can only honour them if the vehicle is on
             // the same clock. Arrivals come back absolute and are normalised back
             // to relative-from-departure on the way into the database.
             const setOff = setOffByVehicle[a.vehicle_id] ?? nowEpoch;
-            vehicle.time_window = [setOff, setOff + SHIFT_WINDOW_SECONDS];
+            Object.assign(
+                vehicle,
+                vroomVehicleLimits(
+                    limitsByDriver.get(a.driver_id) ?? NO_LIMITS,
+                    [setOff, setOff + SHIFT_WINDOW_SECONDS],
+                ),
+            );
             vehicles.push(vehicle);
             vehicleMap[vehicleNumericId] = a.vehicle_id;
             if (a.driver_id) {
@@ -374,6 +423,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                 location: [pkg.customer_lon, pkg.customer_lat],
                 amount: [weightG],
                 priority,
+                skills: skillIndex.indicesFor(pkg.skill_ids),
             };
 
             if (pkg.scheduled_arrival) {
@@ -416,6 +466,7 @@ export class DatabaseService implements OnApplicationBootstrap {
         //    single-vehicle request per pair so they still get a route.
         const pinnedRoutes = await this.buildPinnedRoutes(
             runner,
+            organisationId,
             opts.warehouseId ?? null,
             warehouseCoords,
             setOffByVehicle,
@@ -448,6 +499,7 @@ export class DatabaseService implements OnApplicationBootstrap {
      */
     private async buildPinnedRoutes(
         runner: QueryRunner,
+        organisationId: string | null,
         warehouseId: string | null,
         warehouseCoords: [number, number],
         setOffByVehicle: Record<string, number>,
@@ -466,7 +518,9 @@ export class DatabaseService implements OnApplicationBootstrap {
         pd.weight_kg,
         pdw.scheduled_arrival,
         ST_X(c.customer_location::geometry) AS customer_lon,
-        ST_Y(c.customer_location::geometry) AS customer_lat
+        ST_Y(c.customer_location::geometry) AS customer_lat,
+        COALESCE(sk.skill_ids, '{}')         AS skill_ids,
+        COALESCE(vsk.skill_ids, '{}')        AS vehicle_skill_ids
       FROM   packages                     p
       JOIN   package_assignment           pa  ON pa.package_id = p.id
       JOIN   vehicles                     v   ON v.id = pa.vehicle_id
@@ -474,6 +528,16 @@ export class DatabaseService implements OnApplicationBootstrap {
       JOIN   customer                     c   ON c.id = p.to_customer
       LEFT   JOIN package_dimensions      pd  ON pd.package_id = p.id
       LEFT   JOIN package_delivery_window pdw ON pdw.package_id = p.id
+      LEFT   JOIN LATERAL (
+               SELECT array_agg(ps.skill_id) AS skill_ids
+               FROM   package_skills ps
+               WHERE  ps.package_id = p.id
+             ) sk ON true
+      LEFT   JOIN LATERAL (
+               SELECT array_agg(vs.skill_id) AS skill_ids
+               FROM   vehicle_skills vs
+               WHERE  vs.vehicle_id = v.id
+             ) vsk ON true
       WHERE  p.optimisation_id IS NULL
         AND  ($1::uuid IS NULL OR p.warehouse_id = $1)
         AND  NOT EXISTS (
@@ -489,6 +553,8 @@ export class DatabaseService implements OnApplicationBootstrap {
             vehicleId: string;
             profile: string;
             capacityG: number;
+            /** vehicle_skills.skill_id this group's vehicle holds. */
+            vehicleSkillIds: string[];
             packages: PinnedPackageRow[];
         }
         const groups = new Map<string, PinnedGroup>();
@@ -502,6 +568,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                     profile: orsProfileToValhallaCosting(row.ors_vehicle_type),
                     // GRAMS, same conversion and same reason as the main solve.
                     capacityG: numeric(row.vehicle_gross_limits, 1000) * 1000,
+                    vehicleSkillIds: row.vehicle_skill_ids,
                     packages: [],
                 };
                 groups.set(key, group);
@@ -517,6 +584,21 @@ export class DatabaseService implements OnApplicationBootstrap {
             const setOffEpoch =
                 setOffByVehicle[group.vehicleId] ??
                 Math.floor(now.getTime() / 1000);
+
+            const limits = organisationId
+                ? await driverLimitsOrDefault(
+                      runner,
+                      organisationId,
+                      group.driverId,
+                  )
+                : NO_LIMITS;
+
+            // Solved as its own VROOM request (see runWarehouseOptimisation),
+            // so its skill index is scoped to just this group rather than
+            // shared with the main solve above.
+            const skillIndex = new SkillIndex();
+            skillIndex.register([group.vehicleSkillIds]);
+            skillIndex.register(group.packages.map((p) => p.skill_ids));
 
             group.packages.forEach((pkg, index) => {
                 if (pkg.customer_lon == null || pkg.customer_lat == null)
@@ -535,6 +617,7 @@ export class DatabaseService implements OnApplicationBootstrap {
                         ),
                     ],
                     priority,
+                    skills: skillIndex.indicesFor(pkg.skill_ids),
                 };
 
                 if (pkg.scheduled_arrival) {
@@ -574,10 +657,13 @@ export class DatabaseService implements OnApplicationBootstrap {
                             start: warehouseCoords,
                             end: warehouseCoords,
                             capacity: [group.capacityG],
-                            time_window: [
+                            ...vroomVehicleLimits(limits, [
                                 setOff,
                                 setOff + SHIFT_WINDOW_SECONDS,
-                            ],
+                            ]),
+                            skills: skillIndex.indicesFor(
+                                group.vehicleSkillIds,
+                            ),
                         },
                     ],
                 },
