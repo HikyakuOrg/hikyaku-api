@@ -44,6 +44,28 @@ export interface CreateUserResult {
     user_avatar_upload_url?: string;
 }
 
+// auth-js falls back to JSON.stringify of a fetch Response when GoTrue sends no
+// readable body, which yields "{}". Fall back to the code/status so the reason
+// is not lost.
+function describeAuthError(error: {
+    message?: string;
+    code?: string;
+    status?: number;
+}): string {
+    const message =
+        error.message && error.message !== '{}' ? error.message : undefined;
+    const details = [
+        error.code && `code ${error.code}`,
+        error.status && `status ${error.status}`,
+    ].filter(Boolean);
+    if (message) {
+        return details.length > 0
+            ? `${message} (${details.join(', ')})`
+            : message;
+    }
+    return details.length > 0 ? details.join(', ') : 'unknown auth error';
+}
+
 @Injectable()
 export class UsersService {
     private readonly logger = new Logger(UsersService.name);
@@ -116,6 +138,21 @@ export class UsersService {
             }
         }
 
+        // Duplicate phone check. GoTrue rejects a phone already held by another
+        // auth user, but only after the invite has created one, and its error
+        // does not always say why. GoTrue stores phones as bare digits.
+        const phoneRows = await this.db.query<{ id: string }>(
+            `SELECT id FROM auth.users
+              WHERE phone = regexp_replace($1, '\\D', '', 'g')
+              LIMIT 1`,
+            [dto.user_phone_number],
+        );
+        if (phoneRows.length > 0) {
+            throw new BadRequestException(
+                `A user with phone number ${dto.user_phone_number} already exists`,
+            );
+        }
+
         const { data: inviteData, error: inviteError } =
             await this.supabase.auth.admin.inviteUserByEmail(dto.user_email, {
                 data: { display_name: dto.user_display_name },
@@ -143,8 +180,18 @@ export class UsersService {
             });
 
         if (updateError) {
+            const reason = describeAuthError(updateError);
+            await this.deleteOrphanedAuthUser(
+                userId,
+                `phone update error: ${reason}`,
+            );
+            if (updateError.code === 'phone_exists') {
+                throw new BadRequestException(
+                    `A user with phone number ${dto.user_phone_number} already exists`,
+                );
+            }
             throw new InternalServerErrorException(
-                `Failed to set phone number: ${updateError.message}`,
+                `Failed to set phone number: ${reason}`,
             );
         }
 
@@ -160,6 +207,7 @@ export class UsersService {
                 const meta = dto.user_metadata ?? {};
                 await runner.manager.insert(Driver, {
                     id: userId,
+                    organisationId,
                     driverLicense: meta.driver_license ?? null,
                     licenseExpiry: meta.license_expiry ?? null,
                     countryOfIssue: meta.country_of_issue ?? null,
@@ -188,16 +236,9 @@ export class UsersService {
         } catch (dbError) {
             await runner.rollbackTransaction();
 
-            // Best-effort: delete the orphaned auth user
-            const { error: deleteError } =
-                await this.supabase.auth.admin.deleteUser(userId);
-            if (deleteError) {
-                this.logger.error(
-                    `Auth user ${userId} could not be deleted after DB failure — manual cleanup required. DB error: ${(dbError as Error).message}. Delete error: ${deleteError.message}`,
-                );
-            }
-
             const msg = (dbError as Error).message ?? String(dbError);
+            await this.deleteOrphanedAuthUser(userId, `DB error: ${msg}`);
+
             if (
                 msg.includes('violates foreign key constraint') ||
                 msg.includes('invalid input syntax for type uuid')
@@ -241,6 +282,21 @@ export class UsersService {
         }
 
         return result;
+    }
+
+    // Best-effort: remove an invited auth user whose createUser run failed, so
+    // the email can be invited again.
+    private async deleteOrphanedAuthUser(
+        userId: string,
+        cause: string,
+    ): Promise<void> {
+        const { error: deleteError } =
+            await this.supabase.auth.admin.deleteUser(userId);
+        if (deleteError) {
+            this.logger.error(
+                `Auth user ${userId} could not be deleted after createUser failure — manual cleanup required. Cause: ${cause}. Delete error: ${describeAuthError(deleteError)}`,
+            );
+        }
     }
 
     async deactivateUsers(
