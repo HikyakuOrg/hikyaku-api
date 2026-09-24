@@ -91,9 +91,9 @@ export interface CoverageArea {
  * unless it was written down at the time.
  *
  *   - `covered`  a territory this driver is staffed on contains the point.
- *   - `floater`  the driver matched ONLY because they have no territories at
- *                all. Kept separate from `covered` on purpose: during rollout,
- *                with a half-drawn map, most matches are floater matches, and
+ *   - `floater`  the driver matched ONLY because they are staffed on no live
+ *                territory. Kept separate from `covered` on purpose: during
+ *                rollout, with a half-drawn map, most matches are floater matches, and
  *                merging the two would report the feature as working far better
  *                than it is.
  *   - `fallback_no_covering_capacity`  somebody covers the point, but no
@@ -235,20 +235,21 @@ interface CoverageAreaRow extends CoverageArea {
  * other five drivers still able to take anything.
  *
  * The rule has two halves and both are load-bearing. The SQL half identifies
- * floaters, with a `NOT EXISTS` against the whole link table rather than against
- * the live areas only. That is on purpose: a driver whose only territory has
- * been soft-deleted is NOT a floater. They are a driver whose territory was
- * retired, and quietly promoting them to covering the entire metro because a
- * dispatcher retired one polygon would be a surprising and expensive
- * reinterpretation of that click. They cover nothing until somebody says
- * otherwise, which is visible and fixable, where silently covering everything is
- * neither. This function is the other half: it merges the floater set into every
- * point's answer.
+ * floaters, with a `NOT EXISTS` against the driver's links to LIVE areas only
+ * (`is_deleted = false`). A link to a retired area does not count. Retiring a
+ * territory keeps its `driver_service_area` rows so it can be un-retired with
+ * the same drivers, which means a driver whose only territory was retired still
+ * has a row here. Counting that row would leave them neither a floater nor
+ * covering any point, reachable only through the fallback steps, while the
+ * driver page (which lists live areas only) calls them a floater. So they are a
+ * floater, exactly as if their last area had been detached, and every screen
+ * and the engine agree on it. This function is the other half: it merges the
+ * floater set into every point's answer.
  *
  * Pure, so it is unit tested with no database.
  *
  * @param pointCount           length of the caller's `points` array
- * @param floaterDriverIds     drivers with no rows at all in driver_service_area
+ * @param floaterDriverIds     drivers with no links to a live service area
  * @param explicitByPointIndex point index to drivers covering it through an area
  */
 export function applyFloaterRule(
@@ -268,8 +269,8 @@ export function applyFloaterRule(
             explicitDriverIds: explicit,
             floaterDriverIds: floaters,
             // A driver cannot be in both sets: being in the explicit set means
-            // having at least one row in driver_service_area, which is exactly
-            // what disqualifies them from the floater set. The union is
+            // being linked to at least one live area, which is exactly what
+            // disqualifies them from the floater set. The union is
             // deduplicated anyway, because relying on that invariant to stay
             // true is not worth the four characters it saves.
             driverIds: sortedUnique([...explicit, ...floaters]),
@@ -486,11 +487,12 @@ export const COVERING_DRIVERS_SQL = `
 WITH ${POINTS_CTE},
 ${ELIGIBLE_DRIVERS_CTE},
 ${COVERING_AREAS_CTE}
--- The floater rule, SQL half: a driver with no rows at all in
--- driver_service_area covers everywhere. Returned ONCE, with a null
--- point_index, rather than joined against every point: the answer does not
--- depend on the point, and cross-joining it would multiply the result set by
--- the batch size for no information. applyFloaterRule() merges it in.
+-- The floater rule, SQL half: a driver with no links to a live service area
+-- covers everywhere. Links to retired areas are kept for un-retiring and do
+-- not count, see applyFloaterRule(). Returned ONCE, with a null point_index,
+-- rather than joined against every point: the answer does not depend on the
+-- point, and cross-joining it would multiply the result set by the batch size
+-- for no information. applyFloaterRule() merges it in.
 SELECT NULL::int AS point_index,
        e.id      AS driver_id,
        true      AS is_floater
@@ -498,6 +500,9 @@ SELECT NULL::int AS point_index,
  WHERE NOT EXISTS (
            SELECT 1
              FROM driver_service_area dsa
+             JOIN service_areas       live
+               ON  live.id         = dsa.service_area_id
+               AND live.is_deleted = false
             WHERE dsa.driver_id = e.id
        )
 UNION ALL

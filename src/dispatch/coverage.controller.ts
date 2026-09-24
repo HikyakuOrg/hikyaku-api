@@ -170,7 +170,7 @@ export class CoverageController {
         description:
             'The point that was tested, the territories covering it, every ' +
             'driver covering it (flagged as an explicit territory match or as a ' +
-            'floater with no territories at all), and, for the package form, who ' +
+            'floater with no live territories), and, for the package form, who ' +
             'actually got it and whether coverage explains that.\n\n' +
             'A package with no geocode is answered here, not with an error: ' +
             '`resolution` says `package_not_geocoded`, which is a different and ' +
