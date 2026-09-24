@@ -52,9 +52,8 @@ export const NO_LIMITS: DrivingLimits = Object.freeze({
  * Is DRIVING_LIMITS switched on for this process?
  *
  * Read per call, never cached, so the switch works without a restart.
- * Generous in the on direction only (`on`, `true`, `1`), matching
- * SERVICE_AREA_MATCHING: the failure mode of a typo is then "the feature
- * stayed off", which is the safe one.
+ * Generous in the on direction only (`on`, `true`, `1`): the failure mode of a
+ * typo is then "the feature stayed off", which is the safe one.
  */
 export function drivingLimitsEnabled(): boolean {
     const flag = process.env.DRIVING_LIMITS;

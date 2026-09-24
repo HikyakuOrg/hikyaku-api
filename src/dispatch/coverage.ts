@@ -102,7 +102,8 @@ export interface CoverageArea {
  *   - `fallback_no_covering_driver`  nobody covers the point at all. Usually a
  *                territory that was never drawn, or one drawn and left
  *                unstaffed, rather than a busy afternoon.
- *   - `disabled`  SERVICE_AREA_MATCHING was off, so no coverage question was
+ *   - `disabled`  the organisation had service area matching switched off
+ *                (organisation_dispatch_settings), so no coverage question was
  *                asked. NOT the same as `floater`, which is a real answer from
  *                a real query.
  */
@@ -140,22 +141,6 @@ export const FALLBACK_OUTCOMES: readonly CoverageOutcome[] = [
 ];
 
 /**
- * Is service area matching switched on for this process?
- *
- * The single reading of SERVICE_AREA_MATCHING. `AssignmentService
- * .serviceAreaMatching` delegates here and carries the doc comment explaining
- * the rollout reasoning; this exists so that the read surfaces reporting
- * whether the feature is live cannot disagree with the engine about what "on"
- * spells, and so that they need no dependency on the engine to ask.
- *
- * Read per call, never cached, so the switch works without a restart.
- */
-export function serviceAreaMatchingEnabled(): boolean {
-    const flag = process.env.SERVICE_AREA_MATCHING;
-    return flag === 'on' || flag === 'true' || flag === '1';
-}
-
-/**
  * Which of the five outcomes describes this placement.
  *
  * Pure, and the ONLY place the classification is written down, so the column,
@@ -165,7 +150,8 @@ export function serviceAreaMatchingEnabled(): boolean {
  * an undrawn one), and collapsing them into one `fallback` value would throw
  * away the only bit that says which.
  *
- * `disabled` is decided by the caller's flag rather than by the coverage,
+ * `disabled` is decided by the organisation's setting, which the caller passes
+ * in (see dispatch-settings.ts), rather than by the coverage,
  * because a synthesized all-floater answer and a real all-floater answer are
  * deliberately indistinguishable here: that is exactly what makes the kill
  * switch collapse to the pre-service-area engine.

@@ -46,12 +46,15 @@ import {
     coveringDriversForPoint,
     coveringDriversForPoints,
     isPlausibleLonLat,
-    serviceAreaMatchingEnabled,
     type CoverageOutcome,
     type CoveragePoint,
     type PointCoverage,
 } from './coverage';
 import { CoverageMetricsService } from './coverage-metrics.service';
+import {
+    resolveDispatchSettings,
+    type DispatchSettings,
+} from './dispatch-settings';
 import {
     endOfLocalDayMs,
     localHourMs,
@@ -241,10 +244,11 @@ interface AssignmentPlan {
      */
     coverage: PointCoverage;
     /**
-     * What SERVICE_AREA_MATCHING said when `coverage` was resolved.
+     * What the organisation's service area matching setting said when
+     * `coverage` was resolved.
      *
      * Read once per assignment and carried, rather than re-read at write time,
-     * so a flag flipped mid-assignment cannot label a package `disabled` when
+     * so a setting saved mid-assignment cannot label a package `disabled` when
      * a real coverage query decided it, or the reverse.
      */
     serviceAreaMatching: boolean;
@@ -348,10 +352,11 @@ const skipped = (reason: string): AssignmentOutcome => ({
  * where it went survives a dispatcher redrawing a territory only because it was
  * written down at the time.
  *
- * ALL OF THIS IS BEHIND SERVICE_AREA_MATCHING, WHICH IS OFF BY DEFAULT. See the
- * `serviceAreaMatching` getter: off, the territory tables are not read at all
- * and the order above collapses back into "step 1 for whichever shift is
- * cheapest", the engine as it behaved before service areas existed.
+ * ALL OF THIS IS BEHIND EACH ORGANISATION'S SERVICE AREA MATCHING SETTING, WHICH
+ * IS OFF BY DEFAULT (see `DispatchSettings.serviceAreaMatching`). Off, the
+ * territory tables are not read at all and the order above collapses back into
+ * "step 1 for whichever shift is cheapest", the engine as it behaved before
+ * service areas existed.
  *
  * Everything here can decline. A package that reaches no shift is `deferred`,
  * never an error — creation already committed in its own transaction, and a
@@ -374,95 +379,47 @@ export class AssignmentService {
     ) {}
 
     /**
-     * `instant` is now the default, and effectively the only mode.
-     *
-     * The flag existed so the API could deploy ahead of the clients with the new
-     * endpoints live but inert, and so "turn it on" and "delete the fallback"
-     * were two reversible steps rather than one irreversible one. The fallback is
-     * gone: there is no nightly scheduler left to pick up what Tier 1 declines.
-     *
-     * ASSIGNMENT_MODE=nightly still switches Tier 1 off, but it is now an
-     * emergency stop rather than a rollout stage -- set it and packages stay
-     * PENDING until a dispatcher assigns them by hand.
-     */
-    get mode(): 'nightly' | 'instant' {
-        return process.env.ASSIGNMENT_MODE === 'nightly'
-            ? 'nightly'
-            : 'instant';
-    }
-
-    /**
-     * Whether chooseBest charges a shift for the stops it already carries.
-     *
-     * Read per call, like `mode`, so it can be flipped without a deploy. On by
-     * default: spreading is the fix for one driver carrying the whole metro
-     * while a colleague's van sits empty. LOAD_SPREAD_ENABLED=false (or 0)
-     * restores the old bin-packer, and that is the lever to pull if an
-     * organisation's shift billing or its total driving distance moves the
-     * wrong way once this is live. Anything else, unset included, means on.
-     *
-     * The penalty itself, and what it costs in both directions, is
-     * LOAD_SPREAD_SECONDS_PER_STOP in insertion.ts.
-     */
-    get loadSpread(): boolean {
-        const flag = process.env.LOAD_SPREAD_ENABLED;
-        return flag !== 'false' && flag !== '0';
-    }
-
-    /**
-     * Whether a package prefers a driver whose territory covers its address.
-     *
-     * OFF BY DEFAULT, unlike `loadSpread`, and that asymmetry is the whole
-     * point. Load spreading changes which of several correct answers is picked;
-     * service area matching changes which drivers are eligible at all, on data
-     * (`service_areas`, `driver_service_area`) that no organisation has
-     * finished drawing yet. Shipping it on would apply a half-drawn map to real
-     * traffic the moment the deploy landed, in every tenant at once. So the
-     * code ships inert and somebody turns it on deliberately, which is the same
-     * two-step `ASSIGNMENT_MODE` was built for and is worth repeating rather
-     * than a pattern to be embarrassed about.
-     *
-     * Read per call, like the other two, so it flips without a deploy.
-     * SERVICE_AREA_MATCHING=on (or `true`, or `1`) turns it on; anything else,
-     * unset included, means off. The spellings are generous in the on direction
-     * only, because the failure mode of a typo is then "the feature stayed
-     * off", which is the safe one.
-     *
-     * OFF MEANS THE TERRITORY TABLES ARE NOT READ, not that their answer is
-     * ignored: see `coverageForPoints`, and `allDriversAsFloaters` in
-     * coverage.ts for why the synthesized answer is "everyone is a floater"
-     * rather than "nobody covers anything".
-     *
-     * PROCESS-WIDE, NOT PER ORGANISATION. Turning it on turns it on for every
-     * tenant this process serves. That is a real limitation of a pilot rollout
-     * and it is a deliberate, documented choice rather than an oversight; see
-     * docs/service-area-rollout.md, which sets out what a genuine per-org flag
-     * would take and why it is a separate change.
-     */
-    get serviceAreaMatching(): boolean {
-        return serviceAreaMatchingEnabled();
-    }
-
-    /**
      * Assigns one package. Never throws for an ordinary "did not fit" — see the
      * class comment.
      *
      * `opts.coverage` lets a caller that has already resolved who covers this
      * package's delivery point hand the answer in, so a batch does not run one
-     * coverage query per package. Left out, this method resolves its own, which
-     * is what every caller outside `assignMany` does.
+     * coverage query per package. `opts.settings` does the same for the
+     * organisation's dispatch settings. Left out, this method resolves its
+     * own, which is what every caller outside `assignMany` does.
+     *
+     * An organisation whose assignment mode is `manual` gets `skipped` after
+     * the settings read and before anything else is looked at.
      */
     async assign(
         organisationId: string,
         packageId: string,
-        opts: { allowEviction?: boolean; coverage?: PointCoverage } = {},
+        opts: {
+            allowEviction?: boolean;
+            coverage?: PointCoverage;
+            settings?: DispatchSettings;
+        } = {},
     ): Promise<AssignmentOutcome> {
-        if (this.mode !== 'instant') {
-            return skipped('auto_assign_disabled');
-        }
-
         try {
-            return await this.assignInternal(organisationId, packageId, opts);
+            // Inside the try: a settings read that fails defers the package
+            // like any other failure. Guessing the defaults instead would
+            // auto-assign for an organisation that switched it off.
+            const settings =
+                opts.settings ??
+                (await resolveDispatchSettings(
+                    this.dataSource,
+                    organisationId,
+                ));
+            if (settings.assignmentMode !== 'instant') {
+                return skipped('auto_assign_disabled');
+            }
+
+            return await this.assignInternal(
+                organisationId,
+                packageId,
+                settings,
+                opts,
+            );
         } catch (err: unknown) {
             // Anything unexpected degrades to deferred rather than failing the
             // request the package was created by. The replan worker and the
@@ -483,22 +440,31 @@ export class AssignmentService {
      * over N separate HTTP calls is real regardless: one request, one connection,
      * and the replan notification coalesces into a single solve.
      *
-     * Coverage is the one thing NOT resolved per package here. Territories do
-     * not move while a batch is being placed (only a dispatcher editing them
-     * does that), so the whole batch's points are answered up front and each
-     * `assign` is handed its own slice. Sequential placement plus a per-package
-     * lookup would have turned a batch of 500 into 500 extra queries.
+     * Coverage and the organisation's dispatch settings are the two things NOT
+     * resolved per package here. Territories do not move while a batch is
+     * being placed (only a dispatcher editing them does that), so the whole
+     * batch's points are answered up front and each `assign` is handed its own
+     * slice. Sequential placement plus a per-package lookup would have turned a
+     * batch of 500 into 500 extra queries. The settings are read once for the
+     * same reason, which also means a setting saved mid-batch applies from the
+     * next batch rather than from some package in the middle of this one.
      */
     async assignMany(
         organisationId: string,
         packageIds: string[],
     ): Promise<Map<string, AssignmentOutcome>> {
-        // Inert means inert: the emergency stop is checked before the batch
-        // lookup, not just inside each assign(), so switching Tier 1 off reads
-        // nothing at all.
+        const settings = await this.batchSettings(organisationId);
+
+        // Inert means inert: `manual` is checked before the batch lookup, not
+        // just inside each assign(), so an organisation that switched automatic
+        // assignment off costs one settings read and nothing else.
         const coverage =
-            this.mode === 'instant'
-                ? await this.batchCoverage(organisationId, packageIds)
+            settings?.assignmentMode === 'instant'
+                ? await this.batchCoverage(
+                      organisationId,
+                      packageIds,
+                      settings.serviceAreaMatching,
+                  )
                 : new Map<string, PointCoverage>();
 
         const results = new Map<string, AssignmentOutcome>();
@@ -507,10 +473,32 @@ export class AssignmentService {
                 packageId,
                 await this.assign(organisationId, packageId, {
                     coverage: coverage.get(packageId),
+                    settings,
                 }),
             );
         }
         return results;
+    }
+
+    /**
+     * The batch's settings, or undefined when they could not be read. Undefined
+     * leaves each `assign()` to read its own, which defers the package if the
+     * database is still refusing, the same answer a single assignment gets.
+     */
+    private async batchSettings(
+        organisationId: string,
+    ): Promise<DispatchSettings | undefined> {
+        try {
+            return await resolveDispatchSettings(
+                this.dataSource,
+                organisationId,
+            );
+        } catch (err: unknown) {
+            this.logger.warn(
+                `Dispatch settings lookup for a batch failed, resolving them per package: ${String(err)}`,
+            );
+            return undefined;
+        }
     }
 
     /**
@@ -531,6 +519,7 @@ export class AssignmentService {
     private async batchCoverage(
         organisationId: string,
         packageIds: string[],
+        serviceAreaMatching: boolean,
     ): Promise<Map<string, PointCoverage>> {
         const byPackage = new Map<string, PointCoverage>();
         if (packageIds.length === 0) return byPackage;
@@ -571,6 +560,7 @@ export class AssignmentService {
                     organisationId,
                     warehouseId,
                     points,
+                    serviceAreaMatching,
                 );
                 coverage.forEach((entry, index) => {
                     const point = points[index];
@@ -595,9 +585,9 @@ export class AssignmentService {
      * EVERY coverage lookup the assignment engine makes goes through this
      * method or its single-point twin, and there are no direct calls to
      * `coveringDriversForPoints` left in this file. That is what makes the kill
-     * switch a claim anyone can check by grepping rather than a promise: with
-     * SERVICE_AREA_MATCHING off there is no code path from an assignment to
-     * `service_areas` or `driver_service_area` at all.
+     * switch a claim anyone can check by grepping rather than a promise: for an
+     * organisation with service area matching off there is no code path from
+     * an assignment to `service_areas` or `driver_service_area` at all.
      *
      * The off branch still reads the drivers table, because the synthesized
      * answer has to name the same drivers the real one would have considered
@@ -607,17 +597,21 @@ export class AssignmentService {
      * question, run a GIST scan, or touch a polygon.
      *
      * The `/dispatch/coverage` diagnostic endpoint is deliberately NOT gated by
-     * this flag. It explains rather than decides, and being able to check
+     * this setting. It explains rather than decides, and being able to check
      * whether the map is complete enough is exactly what has to happen while
-     * the flag is still off.
+     * the setting is still off.
+     *
+     * @param serviceAreaMatching the organisation's setting, as the caller
+     *                            already read it; see `DispatchSettings`.
      */
     private coverageForPoints(
         organisationId: string,
         warehouseId: string,
         points: readonly CoveragePoint[],
+        serviceAreaMatching: boolean,
     ): Promise<PointCoverage[]> {
         const query = { organisationId, warehouseId };
-        return this.serviceAreaMatching
+        return serviceAreaMatching
             ? coveringDriversForPoints(this.dataSource, query, points)
             : allDriversAsFloaters(this.dataSource, query, points.length);
     }
@@ -627,9 +621,10 @@ export class AssignmentService {
         organisationId: string,
         warehouseId: string,
         point: CoveragePoint,
+        serviceAreaMatching: boolean,
     ): Promise<PointCoverage> {
         const query = { organisationId, warehouseId };
-        return this.serviceAreaMatching
+        return serviceAreaMatching
             ? coveringDriversForPoint(this.dataSource, query, point)
             : allDriversAsFloatersForPoint(this.dataSource, query);
     }
@@ -1195,12 +1190,14 @@ export class AssignmentService {
      * failed; without an answer there is simply no out-of-area warning to add,
      * and `isOutOfArea` reads a missing entry that way by construction.
      *
-     * Goes through `coverageForPoints`, so with SERVICE_AREA_MATCHING off this
-     * reads no territory table either. Every driver comes back a floater, every
-     * pinned package is therefore inside the chosen driver's area, and no
-     * out-of-area warning is produced. That is the correct behaviour for a
-     * switched-off feature: warning a dispatcher about a territory rule that is
-     * not being enforced would be advice they cannot act on.
+     * Goes through `coverageForPoints`, so for an organisation with service
+     * area matching off this reads no territory table either. Every driver
+     * comes back a floater, every pinned package is therefore inside the chosen
+     * driver's area, and no out-of-area warning is produced. That is the
+     * correct behaviour for a switched-off feature: warning a dispatcher about
+     * a territory rule that is not being enforced would be advice they cannot
+     * act on. A settings read that fails is treated like a coverage lookup
+     * that fails, for the same reason.
      */
     private async coverageForPinned(
         organisationId: string,
@@ -1220,10 +1217,15 @@ export class AssignmentService {
         if (points.length === 0) return byPackage;
 
         try {
+            const { serviceAreaMatching } = await resolveDispatchSettings(
+                this.dataSource,
+                organisationId,
+            );
             const coverage = await this.coverageForPoints(
                 organisationId,
                 warehouseId,
                 points,
+                serviceAreaMatching,
             );
             coverage.forEach((entry, index) => {
                 const point = points[index];
@@ -1244,6 +1246,7 @@ export class AssignmentService {
     private async assignInternal(
         organisationId: string,
         packageId: string,
+        settings: DispatchSettings,
         opts: { allowEviction?: boolean; coverage?: PointCoverage },
     ): Promise<AssignmentOutcome> {
         const allowEviction = opts.allowEviction ?? true;
@@ -1288,19 +1291,20 @@ export class AssignmentService {
         // covered the point would send the package to an arbitrary driver and
         // look exactly like a correct decision afterwards.
         //
-        // The flag is read alongside it, once, and both travel on the plan. A
-        // batch hands its own precomputed coverage in, and it was resolved
-        // under whatever the flag said then; reading the flag again per package
-        // is close enough that the only disagreement possible is a flip landing
-        // mid-batch, which mislabels a handful of outcome values and changes no
-        // decision.
-        const serviceAreaMatching = this.serviceAreaMatching;
+        // The organisation's setting decides which question is asked, and both
+        // travel on the plan. A batch hands in coverage it resolved under the
+        // same settings object it hands in here, read once for the whole batch,
+        // so the recorded outcome and the question actually asked cannot
+        // disagree even when somebody saves the settings mid-batch.
+        const { serviceAreaMatching } = settings;
         const coverage =
             opts.coverage ??
-            (await this.coverageForPoint(organisationId, warehouse.id, {
-                lon: pkg.lon,
-                lat: pkg.lat,
-            }));
+            (await this.coverageForPoint(
+                organisationId,
+                warehouse.id,
+                { lon: pkg.lon, lat: pkg.lat },
+                serviceAreaMatching,
+            ));
 
         const plan: AssignmentPlan = {
             organisationId,
@@ -1334,7 +1338,13 @@ export class AssignmentService {
                 plan.requiredSkillIds,
             );
 
-            const decision = await this.decide(candidates, pkg, ctx, coverage);
+            const decision = await this.decide(
+                candidates,
+                pkg,
+                ctx,
+                coverage,
+                settings.loadSpread,
+            );
 
             // ── PHASE B: locked, no network I/O ──────────────────────────────
             const outcome = await this.commitDecision(
@@ -1348,6 +1358,7 @@ export class AssignmentService {
                     await this.reassignVictims(
                         organisationId,
                         outcome.evictedPackageIds,
+                        settings,
                     );
                 }
                 return outcome;
@@ -1375,18 +1386,22 @@ export class AssignmentService {
      * them AFTER `tryInsert` rather than before is what keeps the pure insertion
      * layer geography-blind: `chooseBest` is simply called twice and has no idea
      * a service area exists.
+     *
+     * @param spreadLoad the organisation's load spreading setting; see
+     *                   `DispatchSettings.loadSpread`.
      */
     private async decide(
         candidates: Candidate[],
         pkg: IncomingPackage,
         ctx: InsertionContext,
         coverage: PointCoverage,
+        spreadLoad: boolean,
     ): Promise<AssignmentDecision> {
         const costing: Costing = {
             results: new Map<string, InsertionResult>(),
             stopCounts: {},
             byId: new Map<string, Candidate>(),
-            spreadLoad: this.loadSpread,
+            spreadLoad,
             greyBandCallsLeft: 1,
         };
 
@@ -2390,10 +2405,12 @@ export class AssignmentService {
     private async reassignVictims(
         organisationId: string,
         victimIds: string[],
+        settings: DispatchSettings,
     ): Promise<void> {
         for (const victimId of victimIds) {
             const outcome = await this.assign(organisationId, victimId, {
                 allowEviction: false,
+                settings,
             });
             if (
                 outcome.outcome === 'deferred' ||

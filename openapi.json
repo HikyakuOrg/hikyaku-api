@@ -4959,7 +4959,7 @@
           },
           "disabled": {
             "type": "number",
-            "description": "SERVICE_AREA_MATCHING was off when the package was placed, so no coverage question was asked. Excluded from `decisions` and from the rate below."
+            "description": "Service area matching was switched off for the organisation when the package was placed, so no coverage question was asked. Excluded from `decisions` and from the rate below."
           }
         },
         "required": [
@@ -5030,7 +5030,7 @@
           },
           "serviceAreaMatching": {
             "type": "boolean",
-            "description": "Whether service area matching is switched on for the process answering this request. False means new packages are being recorded as `disabled` and the rate below describes history, not what is happening now. Process-wide, not per organisation."
+            "description": "Whether service area matching is switched on for this organisation, as set in Settings > Dispatch (organisation_dispatch_settings). False means new packages are being recorded as `disabled` and the rate below describes history, not what is happening now."
           },
           "liveServiceAreaCount": {
             "type": "number",
@@ -5195,7 +5195,7 @@
               "fallback_no_covering_driver",
               "disabled"
             ],
-            "description": "What the assignment engine recorded WHEN IT PLACED THIS PACKAGE (`package_assignment.coverage_outcome`), as opposed to `matchedBy` above, which is recomputed against the territories as they stand right now.\n\nThe two disagreeing is not a bug, it is the most useful thing on this response: it means the map changed after the package was placed. A package recorded as `covered` that now reads `not_covering` was routed correctly and then had its territory redrawn underneath it.\n\n`floater` is kept distinct from `covered` because during rollout most matches are floater matches, and merging them would report the feature as working better than it is. `disabled` means SERVICE_AREA_MATCHING was off and no coverage question was asked. Null means no automatic assignment wrote this row: the package was pinned by a dispatcher, or it predates this column."
+            "description": "What the assignment engine recorded WHEN IT PLACED THIS PACKAGE (`package_assignment.coverage_outcome`), as opposed to `matchedBy` above, which is recomputed against the territories as they stand right now.\n\nThe two disagreeing is not a bug, it is the most useful thing on this response: it means the map changed after the package was placed. A package recorded as `covered` that now reads `not_covering` was routed correctly and then had its territory redrawn underneath it.\n\n`floater` is kept distinct from `covered` because during rollout most matches are floater matches, and merging them would report the feature as working better than it is. `disabled` means the organisation had service area matching switched off and no coverage question was asked. Null means no automatic assignment wrote this row: the package was pinned by a dispatcher, or it predates this column."
           }
         },
         "required": [

@@ -149,7 +149,8 @@ export class CoverageAssignmentDto {
             '`floater` is kept distinct from `covered` because during rollout ' +
             'most matches are floater matches, and merging them would report ' +
             'the feature as working better than it is. `disabled` means ' +
-            'SERVICE_AREA_MATCHING was off and no coverage question was asked. ' +
+            'the organisation had service area matching switched off and no ' +
+            'coverage question was asked. ' +
             'Null means no automatic assignment wrote this row: the package ' +
             'was pinned by a dispatcher, or it predates this column.',
     })
@@ -362,9 +363,9 @@ export class CoverageOutcomeCountsDto {
 
     @ApiProperty({
         description:
-            'SERVICE_AREA_MATCHING was off when the package was placed, so no ' +
-            'coverage question was asked. Excluded from `decisions` and from ' +
-            'the rate below.',
+            'Service area matching was switched off for the organisation when ' +
+            'the package was placed, so no coverage question was asked. ' +
+            'Excluded from `decisions` and from the rate below.',
     })
     disabled: number;
 }
@@ -404,11 +405,11 @@ export class CoverageFallbackPackageDto {
 /**
  * 200 body of GET /api/v1/dispatch/coverage/summary.
  *
- * The number somebody looks at before turning SERVICE_AREA_MATCHING on, and
- * the one they watch afterwards. Everything on it exists to stop the headline
- * rate being read out of context: an organisation with no territories is 100%
- * floater and that is correct, and an organisation with the flag off is 100%
- * `disabled` and the rate means nothing at all.
+ * The number somebody looks at before turning service area matching on for an
+ * organisation, and the one they watch afterwards. Everything on it exists to
+ * stop the headline rate being read out of context: an organisation with no
+ * territories is 100% floater and that is correct, and an organisation with
+ * the setting off is 100% `disabled` and the rate means nothing at all.
  */
 export class CoverageSummaryDto {
     @ApiProperty({
@@ -425,10 +426,11 @@ export class CoverageSummaryDto {
 
     @ApiProperty({
         description:
-            'Whether service area matching is switched on for the process ' +
-            'answering this request. False means new packages are being ' +
-            'recorded as `disabled` and the rate below describes history, not ' +
-            'what is happening now. Process-wide, not per organisation.',
+            'Whether service area matching is switched on for this ' +
+            'organisation, as set in Settings > Dispatch ' +
+            '(organisation_dispatch_settings). False means new packages are ' +
+            'being recorded as `disabled` and the rate below describes ' +
+            'history, not what is happening now.',
     })
     serviceAreaMatching: boolean;
 
