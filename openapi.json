@@ -147,7 +147,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The point that was tested, the territories covering it, every driver covering it (flagged as an explicit territory match or as a floater with no territories at all), and, for the package form, who actually got it and whether coverage explains that.\n\nA package with no geocode is answered here, not with an error: `resolution` says `package_not_geocoded`, which is a different and more actionable answer than a geocoded address nobody covers.",
+            "description": "The point that was tested, the territories covering it, every driver covering it (flagged as an explicit territory match or as a floater with no live territories), and, for the package form, who actually got it and whether coverage explains that.\n\nA package with no geocode is answered here, not with an error: `resolution` says `package_not_geocoded`, which is a different and more actionable answer than a geocoded address nobody covers.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5142,7 +5142,7 @@
               "explicit",
               "floater"
             ],
-            "description": "`explicit`: a territory this driver is staffed on contains the point. `floater`: this driver has no territories at all and so covers everywhere, which is what keeps an unconfigured organisation behaving exactly as it did before territories existed."
+            "description": "`explicit`: a territory this driver is staffed on contains the point. `floater`: this driver is staffed on no live territory (links to retired territories do not count) and so covers everywhere, which is what keeps an unconfigured organisation behaving exactly as it did before territories existed."
           }
         },
         "required": [

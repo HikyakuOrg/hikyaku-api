@@ -17,6 +17,11 @@ import { Column, Entity, PrimaryColumn } from 'typeorm';
  *
  * A DRIVER WITH NO ROWS IN THIS TABLE COVERS EVERYWHERE.
  *
+ * "No rows" means no rows pointing at a LIVE service area. A row pointing at a
+ * retired (soft-deleted) area does not count, so a driver whose only area was
+ * retired is a floater again, the same as if it had been detached. See trap 1
+ * below for why such rows exist at all.
+ *
  * This is the single most consequential rule in the whole coverage feature and
  * it is not visible in the schema, so it is written here, in
  * `src/dispatch/coverage.ts` (as `applyFloaterRule`, which implements it), and
@@ -46,7 +51,9 @@ import { Column, Entity, PrimaryColumn } from 'typeorm';
  *     un-retired. Every read that resolves coverage MUST therefore join
  *     `service_areas` and spell out `AND sa.is_deleted = false` itself, exactly
  *     as `ServiceArea` rule 1 and `vehicles.is_deleted` require. Forgetting it
- *     routes packages into a territory the dispatcher retired months ago.
+ *     routes packages into a territory the dispatcher retired months ago. The
+ *     floater probe is one of those reads: forgetting it there leaves a driver
+ *     whose only area was retired neither a floater nor covering anything.
  *
  *  2. CONTAINMENT PREDICATES MUST SET THE SRID ON BOTH SIDES.
  *     `service_areas.geometry` is guaranteed SRID 4326 by

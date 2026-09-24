@@ -87,7 +87,11 @@ describe('UsersService', () => {
     };
 
     beforeEach(async () => {
-        db = { query: jest.fn(), beginTransaction: jest.fn() };
+        // Default: no auth user holds the requested phone number.
+        db = {
+            query: jest.fn().mockResolvedValue([]),
+            beginTransaction: jest.fn(),
+        };
         appRoleRepo = {
             findOne: jest.fn().mockResolvedValue({ id: 1, name: 'Admin' }),
         };
@@ -201,23 +205,84 @@ describe('UsersService', () => {
             ).rejects.toThrow(InternalServerErrorException);
         });
 
-        it('throws InternalServerErrorException when phone update fails', async () => {
-            supabase.auth.admin.inviteUserByEmail.mockResolvedValueOnce({
-                data: {
-                    user: {
-                        id: 'u1',
-                        email: 'user@example.com',
-                        invited_at: null,
-                    },
-                },
-                error: null,
-            });
-            supabase.auth.admin.updateUserById.mockResolvedValueOnce({
-                error: { message: 'Phone update failed' },
-            });
+        it('throws BadRequestException before inviting when the phone is already used', async () => {
+            db.query.mockResolvedValueOnce([{ id: 'existing-user' }]);
+
             await expect(
                 service.createUser(VALID_DTO, CALLER_ID, ORG_ID),
-            ).rejects.toThrow(InternalServerErrorException);
+            ).rejects.toThrow(
+                'A user with phone number +61400000000 already exists',
+            );
+            expect(db.query).toHaveBeenCalledWith(
+                expect.stringContaining('FROM auth.users'),
+                ['+61400000000'],
+            );
+            expect(
+                supabase.auth.admin.inviteUserByEmail,
+            ).not.toHaveBeenCalled();
+        });
+
+        describe('when the phone update fails', () => {
+            beforeEach(() => {
+                supabase.auth.admin.inviteUserByEmail.mockResolvedValueOnce({
+                    data: {
+                        user: {
+                            id: 'u1',
+                            email: 'user@example.com',
+                            invited_at: null,
+                        },
+                    },
+                    error: null,
+                });
+                supabase.auth.admin.deleteUser.mockResolvedValueOnce({
+                    error: null,
+                });
+            });
+
+            it('deletes the invited auth user and throws InternalServerErrorException', async () => {
+                supabase.auth.admin.updateUserById.mockResolvedValueOnce({
+                    error: { message: 'Phone update failed', status: 400 },
+                });
+
+                await expect(
+                    service.createUser(VALID_DTO, CALLER_ID, ORG_ID),
+                ).rejects.toThrow(
+                    new InternalServerErrorException(
+                        'Failed to set phone number: Phone update failed (status 400)',
+                    ),
+                );
+                expect(supabase.auth.admin.deleteUser).toHaveBeenCalledWith(
+                    'u1',
+                );
+                expect(db.beginTransaction).not.toHaveBeenCalled();
+            });
+
+            it('throws BadRequestException when GoTrue reports phone_exists', async () => {
+                supabase.auth.admin.updateUserById.mockResolvedValueOnce({
+                    error: {
+                        message: 'Phone number already registered',
+                        code: 'phone_exists',
+                        status: 422,
+                    },
+                });
+
+                await expect(
+                    service.createUser(VALID_DTO, CALLER_ID, ORG_ID),
+                ).rejects.toThrow(BadRequestException);
+                expect(supabase.auth.admin.deleteUser).toHaveBeenCalledWith(
+                    'u1',
+                );
+            });
+
+            it('falls back to the status when the error message is "{}"', async () => {
+                supabase.auth.admin.updateUserById.mockResolvedValueOnce({
+                    error: { message: '{}', status: 500 },
+                });
+
+                await expect(
+                    service.createUser(VALID_DTO, CALLER_ID, ORG_ID),
+                ).rejects.toThrow('Failed to set phone number: status 500');
+            });
         });
 
         it('rolls back and throws InternalServerErrorException on a generic DB error', async () => {
@@ -346,7 +411,11 @@ describe('UsersService', () => {
             expect(result.user_id).toBe('u2');
             expect(runner.manager.insert).toHaveBeenCalledWith(
                 Driver,
-                expect.objectContaining({ id: 'u2', driverLicense: 'DL123' }),
+                expect.objectContaining({
+                    id: 'u2',
+                    organisationId: ORG_ID,
+                    driverLicense: 'DL123',
+                }),
             );
         });
 
