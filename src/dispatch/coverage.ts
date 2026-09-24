@@ -438,13 +438,22 @@ function assertPlausiblePoints(points: readonly CoveragePoint[]): void {
 /**
  * The points being asked about, one row each, index aligned with the caller's
  * array. Shared by both queries below.
+ *
+ * The placeholders are passed in rather than fixed because the two queries do
+ * not bind the same parameter list. Every placeholder a statement is sent with
+ * has to appear in its text: Postgres infers a parameter's type from where it
+ * is used, and one used nowhere fails the whole statement with "could not
+ * determine data type of parameter". The area query has no warehouse to bind,
+ * so it numbers its coordinates from $2.
  */
-const POINTS_CTE = `pts AS (
+function pointsCte(lonParam: string, latParam: string): string {
+    return `pts AS (
     SELECT (p.ord - 1)::int AS point_index,
            extensions.st_setsrid(extensions.st_makepoint(p.lon, p.lat), 4326) AS geom
-      FROM unnest($3::double precision[], $4::double precision[])
+      FROM unnest(${lonParam}::double precision[], ${latParam}::double precision[])
            WITH ORDINALITY AS p(lon, lat, ord)
 )`;
+}
 
 /** The drivers this organisation/warehouse pair is allowed to answer with. */
 const ELIGIBLE_DRIVERS_CTE = `eligible AS (
@@ -483,7 +492,7 @@ const COVERING_AREAS_CTE = `covering_areas AS (
 )`;
 
 export const COVERING_DRIVERS_SQL = `
-WITH ${POINTS_CTE},
+WITH ${pointsCte('$3', '$4')},
 ${ELIGIBLE_DRIVERS_CTE},
 ${COVERING_AREAS_CTE}
 -- The floater rule, SQL half: a driver with no rows at all in
@@ -515,9 +524,9 @@ SELECT DISTINCT
 `;
 
 /**
- * Which territories contain each point. $1 organisation id, $3/$4 the parallel
- * coordinate arrays; $2 is unused here and is accepted only so both queries take
- * the same parameter list.
+ * Which territories contain each point. $1 organisation id, $2/$3 the parallel
+ * coordinate arrays. There is no warehouse parameter: see `pointsCte` for why an
+ * unused placeholder cannot be carried along to keep the two lists aligned.
  *
  * The same `covering_areas` set the driver query decides from, projected with
  * names instead of joined to drivers. That sharing is the whole point: a
@@ -535,7 +544,7 @@ SELECT DISTINCT
  * of GeoJSON, and the caller that wants it asks for it separately by area id.
  */
 export const COVERING_AREAS_SQL = `
-WITH ${POINTS_CTE},
+WITH ${pointsCte('$2', '$3')},
 ${COVERING_AREAS_CTE}
 SELECT ca.point_index,
        sa.id   AS service_area_id,
@@ -746,7 +755,6 @@ export async function coveringAreasForPoints(
     const rows = parseCoverageAreaRows(
         await executor.query(COVERING_AREAS_SQL, [
             query.organisationId,
-            query.warehouseId,
             points.map((p) => p.lon),
             points.map((p) => p.lat),
         ]),
