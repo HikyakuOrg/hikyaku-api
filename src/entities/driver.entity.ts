@@ -5,6 +5,9 @@ export class Driver {
     @PrimaryColumn({ type: 'uuid' })
     id: string;
 
+    @Column({ name: 'organisation_id', type: 'uuid' })
+    organisationId: string;
+
     @Column({ name: 'driver_license', type: 'text', nullable: true })
     driverLicense: string | null;
 
