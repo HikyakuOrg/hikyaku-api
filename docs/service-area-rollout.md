@@ -74,7 +74,8 @@ GET /api/v1/dispatch/coverage?lon=103.851959&lat=1.29027
 ```
 
 For each one, `drivers[]` says who would be eligible and why (`explicit` means a
-territory selects them, `floater` means they simply have no territories). Pick a
+territory selects them, `floater` means they have no live territories; a link to
+a retired territory does not count). Pick a
 dozen addresses spread across the depot's real delivery area, including the awkward
 ones: the edge of town, the industrial estate, the address the dispatcher already
 knows is a pain. What you are looking for is:

@@ -73,8 +73,9 @@ export class CoverageDriverDto {
         enum: ['explicit', 'floater'],
         description:
             '`explicit`: a territory this driver is staffed on contains the ' +
-            'point. `floater`: this driver has no territories at all and so ' +
-            'covers everywhere, which is what keeps an unconfigured ' +
+            'point. `floater`: this driver is staffed on no live territory ' +
+            '(links to retired territories do not count) and so covers ' +
+            'everywhere, which is what keeps an unconfigured ' +
             'organisation behaving exactly as it did before territories existed.',
     })
     matchedBy: 'explicit' | 'floater';

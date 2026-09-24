@@ -385,6 +385,18 @@ describe('the coverage query text', () => {
         expect(COVERING_DRIVERS_SQL).toContain('sa.is_deleted      = false');
     });
 
+    it('ignores links to retired areas when deciding who is a floater', () => {
+        // Retiring an area keeps its driver_service_area rows. If the floater
+        // probe counted them, a driver whose only area was retired would be
+        // neither a floater nor covering anything.
+        const floaterBranch = COVERING_DRIVERS_SQL.slice(
+            COVERING_DRIVERS_SQL.indexOf('WHERE NOT EXISTS ('),
+            COVERING_DRIVERS_SQL.indexOf('UNION ALL'),
+        );
+        expect(floaterBranch).toContain('FROM driver_service_area dsa');
+        expect(floaterBranch).toContain('live.is_deleted = false');
+    });
+
     it('keeps the indexed geometry column bare inside the bbox operator', () => {
         // Wrapping it in st_setsrid here is what silently costs the GIST index.
         expect(COVERING_DRIVERS_SQL).toContain(
