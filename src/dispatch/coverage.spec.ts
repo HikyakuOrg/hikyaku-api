@@ -4,8 +4,10 @@ import {
     applyFloaterRule,
     coverageOutcomeFor,
     COVERAGE_OUTCOMES,
+    coveringAreasForPoints,
     coveringDriversForPoint,
     coveringDriversForPoints,
+    COVERING_AREAS_SQL,
     COVERING_DRIVERS_SQL,
     ELIGIBLE_DRIVERS_SQL,
     isPlausibleLonLat,
@@ -414,6 +416,62 @@ describe('the coverage query text', () => {
         expect(COVERING_DRIVERS_SQL).toContain('d.organisation_id = $1::uuid');
         expect(COVERING_DRIVERS_SQL).toContain('sa.organisation_id = $1::uuid');
     });
+});
+
+/**
+ * Every placeholder a statement is sent with must appear in its text.
+ *
+ * Postgres infers a bound parameter's type from where the statement uses it,
+ * and one used nowhere fails the whole statement with "could not determine data
+ * type of parameter $n" (42P18). The fake executor above never parses SQL, so
+ * without this check that failure is invisible until a real database sees it,
+ * which is exactly how the area query shipped binding a warehouse id it never
+ * read and broke the coverage diagnostic for every evaluated request.
+ */
+describe('the bound parameters', () => {
+    function placeholders(sql: string): number[] {
+        const found = new Set(
+            [...sql.matchAll(/\$(\d+)/g)].map((match) => Number(match[1])),
+        );
+        return [...found].sort((a, b) => a - b);
+    }
+
+    function oneThroughN(count: number): number[] {
+        return Array.from({ length: count }, (_, index) => index + 1);
+    }
+
+    it.each([
+        [
+            'COVERING_DRIVERS_SQL',
+            COVERING_DRIVERS_SQL,
+            (executor: CoverageQueryExecutor) =>
+                coveringDriversForPoints(executor, QUERY, [POINT]),
+        ],
+        [
+            'COVERING_AREAS_SQL',
+            COVERING_AREAS_SQL,
+            (executor: CoverageQueryExecutor) =>
+                coveringAreasForPoints(executor, QUERY, [POINT]),
+        ],
+        [
+            'ELIGIBLE_DRIVERS_SQL',
+            ELIGIBLE_DRIVERS_SQL,
+            (executor: CoverageQueryExecutor) =>
+                allDriversAsFloaters(executor, QUERY, 1),
+        ],
+    ])(
+        '%s references exactly the parameters it is sent',
+        async (_name, sql, run) => {
+            const executor = fakeExecutor([]);
+            await run(executor);
+
+            expect(executor.calls).toHaveLength(1);
+            expect(executor.calls[0].sql).toBe(sql);
+            expect(placeholders(sql)).toEqual(
+                oneThroughN(executor.calls[0].parameters?.length ?? 0),
+            );
+        },
+    );
 });
 
 describe('the disabled answer', () => {
