@@ -67,8 +67,10 @@ export function drivingLimitsEnabled(): boolean {
  * Unlike coverage's disabled path (`allDriversAsFloaters`), which still reads
  * `drivers` because the answer depends on which drivers exist, this one does
  * not: "no limits" does not depend on anything about the driver, so there is
- * nothing to look up. Turning the flag off has to mean the profile tables are
- * not read, full stop — see the parent epic's rollout section.
+ * nothing to look up. Turning the flag off has to mean dispatch does not read
+ * the profile tables. The one reader that ignores the flag is the shift read
+ * path (ShiftsService), which shows a dispatcher the driver's limits whether
+ * or not assignment is applying them yet.
  */
 export function noLimitsForDrivers(
     driverIds: readonly string[],
