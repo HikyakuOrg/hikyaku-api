@@ -12,7 +12,6 @@ import {
     ELIGIBLE_DRIVERS_SQL,
     isPlausibleLonLat,
     parseCoverageRows,
-    serviceAreaMatchingEnabled,
     type CoveragePoint,
     type CoverageQueryExecutor,
 } from './coverage';
@@ -551,32 +550,6 @@ describe('the disabled answer', () => {
         await allDriversAsFloatersForPoint(executor, QUERY);
         expect(executor.calls[0].parameters).toEqual([ORG, WAREHOUSE]);
     });
-});
-
-describe('serviceAreaMatchingEnabled', () => {
-    const original = process.env.SERVICE_AREA_MATCHING;
-    afterEach(() => {
-        if (original === undefined) delete process.env.SERVICE_AREA_MATCHING;
-        else process.env.SERVICE_AREA_MATCHING = original;
-    });
-
-    it('is off when nothing is set', () => {
-        delete process.env.SERVICE_AREA_MATCHING;
-        expect(serviceAreaMatchingEnabled()).toBe(false);
-    });
-
-    it.each(['on', 'true', '1'])('is on for %p', (value) => {
-        process.env.SERVICE_AREA_MATCHING = value;
-        expect(serviceAreaMatchingEnabled()).toBe(true);
-    });
-
-    it.each(['off', 'ON', 'True', 'yes', ''])(
-        'is off for %p, so a typo cannot switch it on',
-        (value) => {
-            process.env.SERVICE_AREA_MATCHING = value;
-            expect(serviceAreaMatchingEnabled()).toBe(false);
-        },
-    );
 });
 
 describe('coverageOutcomeFor', () => {

@@ -10,6 +10,7 @@ import {
     resolveAssignment,
 } from './coverage-diagnostics.service';
 import { COVERING_AREAS_SQL, COVERING_DRIVERS_SQL } from './coverage';
+import { DISPATCH_SETTINGS_SQL } from './dispatch-settings';
 
 /**
  * The diagnostic endpoint, without a database.
@@ -71,6 +72,11 @@ interface DbState {
     fallbackRows?: Record<string, unknown>[];
     /** Row the skills-satisfaction query answers with. */
     skillsRow?: Record<string, unknown>;
+    /**
+     * organisation_dispatch_settings rows, keyed by organisation id. No entry
+     * means the organisation never saved its settings.
+     */
+    settings?: Record<string, Record<string, unknown>>;
 }
 
 interface Call {
@@ -100,6 +106,10 @@ function fakeDataSource(state: DbState): {
         }
         if (sql === COVERING_AREAS_SQL) {
             return Promise.resolve(state.areaRows ?? []);
+        }
+        if (sql === DISPATCH_SETTINGS_SQL) {
+            const row = state.settings?.[params[0] as string];
+            return Promise.resolve(row ? [row] : []);
         }
         // Matched before 'FROM warehouse' below: this statement's own
         // `held AS (... FROM warehouse_vehicles wv ...)` clause contains that
@@ -1020,12 +1030,6 @@ describe('explainSummary', () => {
 });
 
 describe('the coverage summary', () => {
-    const original = process.env.SERVICE_AREA_MATCHING;
-    afterEach(() => {
-        if (original === undefined) delete process.env.SERVICE_AREA_MATCHING;
-        else process.env.SERVICE_AREA_MATCHING = original;
-    });
-
     const COUNTS = [
         { outcome: 'covered', count: 60 },
         { outcome: 'floater', count: 30 },
@@ -1093,13 +1097,44 @@ describe('the coverage summary', () => {
         expect(summary.explanation).toContain('No territories are drawn');
     });
 
-    it('reports whether the feature is switched on for this process', async () => {
-        process.env.SERVICE_AREA_MATCHING = 'on';
-        const { subject } = service({ outcomeCounts: [] });
-        expect((await subject.summary(ORG)).serviceAreaMatching).toBe(true);
+    it('reports whether the feature is switched on for this organisation', async () => {
+        const { subject, calls } = service({
+            outcomeCounts: [],
+            settings: {
+                [ORG]: {
+                    assignment_mode: 'instant',
+                    load_spread_enabled: true,
+                    service_area_matching: true,
+                },
+            },
+        });
 
-        delete process.env.SERVICE_AREA_MATCHING;
-        expect((await subject.summary(ORG)).serviceAreaMatching).toBe(false);
+        const summary = await subject.summary(ORG);
+
+        expect(summary.serviceAreaMatching).toBe(true);
+        expect(summary.explanation).not.toContain('currently switched off');
+        const read = calls.find((call) => call.sql === DISPATCH_SETTINGS_SQL);
+        expect(read?.params).toEqual([ORG]);
+    });
+
+    it("does not report another organisation's setting", async () => {
+        // The bug the settings table exists to fix: this used to be one
+        // process-wide answer, so every tenant's summary said the same thing.
+        const { subject } = service({
+            outcomeCounts: [],
+            settings: {
+                [OTHER_ORG]: {
+                    assignment_mode: 'instant',
+                    load_spread_enabled: true,
+                    service_area_matching: true,
+                },
+            },
+        });
+
+        const summary = await subject.summary(ORG);
+
+        expect(summary.serviceAreaMatching).toBe(false);
+        expect(summary.explanation).toContain('currently switched off');
     });
 
     it('names the packages that fell back, which is the dispatcher’s question', async () => {

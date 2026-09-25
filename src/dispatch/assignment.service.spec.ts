@@ -49,9 +49,39 @@ interface DbState {
      * same as the LEFT JOIN in the real query does.
      */
     drivingLimits?: Record<string, Partial<DrivingLimitProfileRow>>;
+    /**
+     * organisation_dispatch_settings rows, keyed by organisation id. An
+     * organisation with no entry has no row, which is the state of every
+     * organisation that has never saved its settings and means the defaults:
+     * instant, spreading on, service area matching off. A partial entry takes
+     * the column defaults for the rest, as a real row would.
+     */
+    settings?: Record<string, Partial<SettingsRow>>;
     /** SQL fragment that should throw, and the error to throw. */
     failOn?: { fragment: string; error: Error };
 }
+
+/** One organisation_dispatch_settings row, as the pg driver hands it back. */
+interface SettingsRow {
+    assignment_mode: string;
+    load_spread_enabled: boolean;
+    service_area_matching: boolean;
+}
+
+/** The column defaults a row takes for anything it was not written with. */
+const SETTINGS_COLUMN_DEFAULTS: SettingsRow = {
+    assignment_mode: 'instant',
+    load_spread_enabled: true,
+    service_area_matching: false,
+};
+
+/** org-1 has switched service area matching on; nothing else is set. */
+const MATCHING_ON: DbState['settings'] = {
+    'org-1': { service_area_matching: true },
+};
+
+/** Anything that reads the settings table. */
+const SETTINGS_TABLE = /organisation_dispatch_settings/;
 
 /** One driver's raw driving-limit columns, before resolveLimits applies the fallback. */
 interface DrivingLimitProfileRow {
@@ -211,6 +241,10 @@ function makeDb(state: DbState) {
     const answer = (sql: string, params: unknown[]): unknown => {
         if (state.failOn && sql.includes(state.failOn.fragment)) {
             throw state.failOn.error;
+        }
+        if (sql.includes('FROM organisation_dispatch_settings')) {
+            const row = state.settings?.[params[0] as string];
+            return row ? [{ ...SETTINGS_COLUMN_DEFAULTS, ...row }] : [];
         }
         if (
             sql.includes('FROM packages p') &&
@@ -391,9 +425,6 @@ function build(state: DbState = {}) {
 }
 
 describe('AssignmentService', () => {
-    const originalMode = process.env.ASSIGNMENT_MODE;
-    const originalSpread = process.env.LOAD_SPREAD_ENABLED;
-    const originalMatching = process.env.SERVICE_AREA_MATCHING;
     const originalDrivingLimits = process.env.DRIVING_LIMITS;
 
     beforeEach(() => {
@@ -403,40 +434,31 @@ describe('AssignmentService', () => {
         jest.useFakeTimers({
             doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
         }).setSystemTime(NOW);
-        process.env.ASSIGNMENT_MODE = 'instant';
-        // Hermetic: the default is on, but a developer with the kill switch set
-        // in their shell should not get a different suite.
-        delete process.env.LOAD_SPREAD_ENABLED;
-        // The default for this one is OFF, and the suite runs at that default
+        // Off by default so every test written before HIK-83 keeps its old,
+        // limit-free behaviour.
+        //
+        // The dispatch settings need no equivalent: they live in the fake
+        // database, and a fixture with no `settings` is an organisation that
+        // never saved any, so the whole suite runs on the defaults unless a
+        // case says otherwise. Service area matching is OFF at that default,
         // on purpose: the whole claim of the kill switch is that off behaves
         // exactly as the engine did before service areas existed, so the tests
-        // written before they existed are the ones that check it. The cases
-        // that need matching on turn it on for themselves.
-        delete process.env.SERVICE_AREA_MATCHING;
-        // Same reasoning as SERVICE_AREA_MATCHING: off by default so every
-        // test written before HIK-83 keeps its old, limit-free behaviour.
+        // written before they existed are the ones that check it.
         delete process.env.DRIVING_LIMITS;
     });
 
     afterEach(() => {
         jest.useRealTimers();
-        if (originalMode === undefined) delete process.env.ASSIGNMENT_MODE;
-        else process.env.ASSIGNMENT_MODE = originalMode;
-        if (originalSpread === undefined)
-            delete process.env.LOAD_SPREAD_ENABLED;
-        else process.env.LOAD_SPREAD_ENABLED = originalSpread;
-        if (originalMatching === undefined)
-            delete process.env.SERVICE_AREA_MATCHING;
-        else process.env.SERVICE_AREA_MATCHING = originalMatching;
         if (originalDrivingLimits === undefined)
             delete process.env.DRIVING_LIMITS;
         else process.env.DRIVING_LIMITS = originalDrivingLimits;
     });
 
-    describe('the feature flag', () => {
-        it('does nothing at all in nightly mode — the emergency stop', async () => {
-            process.env.ASSIGNMENT_MODE = 'nightly';
-            const { service, query } = build();
+    describe('the assignment mode setting', () => {
+        it('does nothing but read the settings when the organisation chose manual', async () => {
+            const { service, query, log } = build({
+                settings: { 'org-1': { assignment_mode: 'manual' } },
+            });
 
             const outcome = await service.assign('org-1', 'pkg-1');
 
@@ -446,81 +468,113 @@ describe('AssignmentService', () => {
                 shift: null,
                 evictedPackageIds: [],
             });
-            // Inert means inert: not even a read.
-            expect(query).not.toHaveBeenCalled();
+            // Inert means inert: the one read that says so, then nothing.
+            expect(query).toHaveBeenCalledTimes(1);
+            expect(log[0].sql).toMatch(SETTINGS_TABLE);
         });
 
-        it('defaults to instant now that there is no scheduler to fall back to', () => {
-            delete process.env.ASSIGNMENT_MODE;
-            const { service } = build();
-            expect(service.mode).toBe('instant');
+        it('asks about the organisation it is assigning for', async () => {
+            const { service, log } = build({ shifts: [SHIFT] });
+
+            await service.assign('org-1', 'pkg-1');
+
+            const reads = log.filter((q) => SETTINGS_TABLE.test(q.sql));
+            expect(reads).toHaveLength(1);
+            expect(reads[0].params).toEqual(['org-1']);
         });
 
-        it('treats an unrecognised value as instant rather than silently stopping', () => {
-            process.env.ASSIGNMENT_MODE = 'aggressive';
-            const { service } = build();
-            expect(service.mode).toBe('instant');
+        it('assigns instantly for an organisation that never saved its settings', async () => {
+            const { service } = build({ shifts: [SHIFT] });
+            const outcome = await service.assign('org-1', 'pkg-1');
+            expect(outcome.outcome).toBe('assigned');
+        });
+
+        it("does not take one organisation's manual mode for another's", async () => {
+            // The bug the settings table exists to fix: this used to be one
+            // environment variable, so stopping assignment for one tenant
+            // stopped it for all of them.
+            const { service } = build({
+                shifts: [SHIFT],
+                settings: { 'org-2': { assignment_mode: 'manual' } },
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.outcome).toBe('assigned');
+        });
+
+        it('applies a saved setting from the next package, with no restart', async () => {
+            const state: DbState = { shifts: [SHIFT] };
+            const { service } = build(state);
+            expect((await service.assign('org-1', 'pkg-1')).outcome).toBe(
+                'assigned',
+            );
+
+            state.settings = { 'org-1': { assignment_mode: 'manual' } };
+
+            expect(await service.assign('org-1', 'pkg-1')).toMatchObject({
+                outcome: 'skipped',
+                reason: 'auto_assign_disabled',
+            });
+        });
+
+        it('defers rather than guessing when the settings cannot be read', async () => {
+            // Guessing the defaults would auto-assign for an organisation that
+            // may have switched it off. Deferred leaves the package PENDING for
+            // the replan worker or a dispatcher, the same as any other failure.
+            const { service, log } = build({
+                shifts: [SHIFT],
+                failOn: {
+                    fragment: 'organisation_dispatch_settings',
+                    error: new Error('connection reset'),
+                },
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome).toMatchObject({
+                outcome: 'deferred',
+                reason: 'no_capacity',
+            });
+            expect(log.some((q) => q.sql.includes('FROM packages p'))).toBe(
+                false,
+            );
         });
     });
 
-    describe('the load-spreading flag', () => {
-        it('spreads by default, so an unconfigured deployment gets the fix', () => {
-            const { service } = build();
-            expect(service.loadSpread).toBe(true);
+    describe('the service area matching setting', () => {
+        it('is off for an organisation that never saved its settings', async () => {
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assign('org-1', 'pkg-1');
+            expect(recordedOutcome(log)).toBe('disabled');
         });
 
-        it.each(['false', '0'])(
-            'is switched off by LOAD_SPREAD_ENABLED=%s',
-            (value) => {
-                process.env.LOAD_SPREAD_ENABLED = value;
-                const { service } = build();
-                expect(service.loadSpread).toBe(false);
-            },
-        );
+        it("does not take one organisation's setting for another's", async () => {
+            // org-2 switched matching on. org-1 did not, so its assignment must
+            // not go anywhere near a territory table.
+            const { service, log } = build({
+                shifts: [SHIFT],
+                settings: { 'org-2': { service_area_matching: true } },
+            });
 
-        it('treats an unrecognised value as on, like ASSIGNMENT_MODE does', () => {
-            process.env.LOAD_SPREAD_ENABLED = 'maybe';
-            const { service } = build();
-            expect(service.loadSpread).toBe(true);
+            await service.assign('org-1', 'pkg-1');
+
+            expect(log.filter((q) => TERRITORY_TABLES.test(q.sql))).toEqual([]);
+            expect(recordedOutcome(log)).toBe('disabled');
         });
 
-        it('is read per call, so the switch works without a restart', () => {
-            const { service } = build();
-            expect(service.loadSpread).toBe(true);
-            process.env.LOAD_SPREAD_ENABLED = 'false';
-            expect(service.loadSpread).toBe(false);
-        });
-    });
+        it('applies a saved setting from the next package, with no restart', async () => {
+            const state: DbState = { shifts: [SHIFT] };
+            const { service, log } = build(state);
+            await service.assign('org-1', 'pkg-1');
+            expect(log.filter((q) => TERRITORY_TABLES.test(q.sql))).toEqual([]);
 
-    describe('the service area kill switch', () => {
-        it('is off until somebody turns it on, unlike load spreading', () => {
-            const { service } = build();
-            expect(service.serviceAreaMatching).toBe(false);
-        });
+            state.settings = MATCHING_ON;
+            await service.assign('org-1', 'pkg-1');
 
-        it.each(['on', 'true', '1'])(
-            'is switched on by SERVICE_AREA_MATCHING=%s',
-            (value) => {
-                process.env.SERVICE_AREA_MATCHING = value;
-                const { service } = build();
-                expect(service.serviceAreaMatching).toBe(true);
-            },
-        );
-
-        it.each(['off', 'ON', 'yes', 'enabled', ''])(
-            'treats %p as off, because a typo must not switch it on',
-            (value) => {
-                process.env.SERVICE_AREA_MATCHING = value;
-                const { service } = build();
-                expect(service.serviceAreaMatching).toBe(false);
-            },
-        );
-
-        it('is read per call, so the switch works without a restart', () => {
-            const { service } = build();
-            expect(service.serviceAreaMatching).toBe(false);
-            process.env.SERVICE_AREA_MATCHING = 'on';
-            expect(service.serviceAreaMatching).toBe(true);
+            expect(
+                log.filter((q) => TERRITORY_TABLES.test(q.sql)).length,
+            ).toBeGreaterThan(0);
         });
 
         it('reads NEITHER territory table while it is off', async () => {
@@ -536,8 +590,10 @@ describe('AssignmentService', () => {
         });
 
         it('reads them once it is on, so the assertion above means something', async () => {
-            process.env.SERVICE_AREA_MATCHING = 'on';
-            const { service, log } = build({ shifts: [SHIFT] });
+            const { service, log } = build({
+                shifts: [SHIFT],
+                settings: MATCHING_ON,
+            });
 
             await service.assign('org-1', 'pkg-1');
 
@@ -557,6 +613,54 @@ describe('AssignmentService', () => {
             // package landing outside the driver's patch. With the feature off
             // there is no patch to be outside of, so it must not ask either.
             const { service, log } = build({ shifts: [EDITABLE_SHIFT] });
+
+            const { verdicts } = await service.assignToShift(
+                'org-1',
+                'shift-1',
+                ['pkg-1'],
+            );
+
+            expect(verdicts).toEqual([
+                { packageId: 'pkg-1', added: true, warning: null },
+            ]);
+            expect(log.filter((q) => TERRITORY_TABLES.test(q.sql))).toEqual([]);
+        });
+
+        it("warns about a pin outside the driver's territory once it is on", async () => {
+            // Only driver-2 covers the point; the dispatcher pinned it to
+            // driver-1's shift anyway. Allowed, but not silently.
+            const { service } = build({
+                shifts: [EDITABLE_SHIFT],
+                coverage: [coverRow(0, 'driver-2')],
+                settings: MATCHING_ON,
+            });
+
+            const { verdicts } = await service.assignToShift(
+                'org-1',
+                'shift-1',
+                ['pkg-1'],
+            );
+
+            expect(verdicts).toEqual([
+                {
+                    packageId: 'pkg-1',
+                    added: true,
+                    warning: "outside this driver's service area",
+                },
+            ]);
+        });
+
+        it('pins without that warning when the settings cannot be read', async () => {
+            // A dispatcher's pin is never refused over a lookup, and a warning
+            // about a rule nobody could confirm is on would be a guess.
+            const { service, log } = build({
+                shifts: [EDITABLE_SHIFT],
+                coverage: [coverRow(0, 'driver-2')],
+                failOn: {
+                    fragment: 'organisation_dispatch_settings',
+                    error: new Error('connection reset'),
+                },
+            });
 
             const { verdicts } = await service.assignToShift(
                 'org-1',
@@ -798,7 +902,7 @@ describe('AssignmentService', () => {
     });
 
     describe('the recorded coverage outcome', () => {
-        it('is `disabled` while the kill switch is off', async () => {
+        it('is `disabled` while the setting is off', async () => {
             // Not `floater`. A synthesized answer and a real all-floater answer
             // are deliberately indistinguishable to the engine, and just as
             // deliberately distinguishable afterwards: without this, an
@@ -810,17 +914,19 @@ describe('AssignmentService', () => {
         });
 
         it('is `floater` when the driver simply has no territories', async () => {
-            process.env.SERVICE_AREA_MATCHING = 'on';
-            const { service, log } = build({ shifts: [SHIFT] });
+            const { service, log } = build({
+                shifts: [SHIFT],
+                settings: MATCHING_ON,
+            });
             await service.assign('org-1', 'pkg-1');
             expect(recordedOutcome(log)).toBe('floater');
         });
 
         it('is `covered` when a drawn territory selected the driver', async () => {
-            process.env.SERVICE_AREA_MATCHING = 'on';
             const { service, log } = build({
                 shifts: [SHIFT],
                 coverage: [coverRow(0, 'driver-1')],
+                settings: MATCHING_ON,
             });
 
             await service.assign('org-1', 'pkg-1');
@@ -829,13 +935,13 @@ describe('AssignmentService', () => {
         });
 
         it('separates "nobody covers it" from "nobody covering had room"', async () => {
-            process.env.SERVICE_AREA_MATCHING = 'on';
             // A territory covers this address, but the only driver on it is not
             // out today and has no idle van, so steps 1 and 2 both fail.
             const covered = build({
                 shifts: [SHIFT],
                 freePairs: [],
                 coverage: [coverRow(0, 'driver-off-today')],
+                settings: MATCHING_ON,
             });
             await covered.service.assign('org-1', 'pkg-1');
             expect(recordedOutcome(covered.log)).toBe(
@@ -848,6 +954,7 @@ describe('AssignmentService', () => {
                 shifts: [SHIFT],
                 freePairs: [],
                 coverage: [],
+                settings: MATCHING_ON,
             });
             await uncovered.service.assign('org-1', 'pkg-1');
             expect(recordedOutcome(uncovered.log)).toBe(
@@ -907,16 +1014,29 @@ describe('AssignmentService', () => {
             expect(outcome.shift?.id).toBe('shift-2');
         });
 
-        it('goes back to the loaded van when the kill switch is set', async () => {
-            // The rollback story, end to end: LOAD_SPREAD_ENABLED=false restores
-            // the old bin-packing choice with no deploy.
-            process.env.LOAD_SPREAD_ENABLED = 'false';
-            const { service } = build(twoVans);
+        it('goes back to the loaded van for an organisation that switched it off', async () => {
+            // The rollback story, end to end: load_spread_enabled = false
+            // restores the old bin-packing choice with no deploy.
+            const { service } = build({
+                ...twoVans,
+                settings: { 'org-1': { load_spread_enabled: false } },
+            });
 
             const outcome = await service.assign('org-1', 'pkg-1');
 
             expect(outcome.outcome).toBe('assigned');
             expect(outcome.shift?.id).toBe('shift-1');
+        });
+
+        it("does not take one organisation's setting for another's", async () => {
+            const { service } = build({
+                ...twoVans,
+                settings: { 'org-2': { load_spread_enabled: false } },
+            });
+
+            const outcome = await service.assign('org-1', 'pkg-1');
+
+            expect(outcome.shift?.id).toBe('shift-2');
         });
 
         it('opens no new shift either way, since spreading only reorders what exists', async () => {
@@ -1386,6 +1506,50 @@ describe('AssignmentService', () => {
                 q.sql.includes('pg_advisory_xact_lock'),
             );
             expect(locks).toHaveLength(1);
+        });
+
+        it('reads the settings once for the whole batch', async () => {
+            const { service, log } = build({ shifts: [SHIFT] });
+            await service.assignMany('org-1', ['pkg-1', 'pkg-2', 'pkg-3']);
+            expect(log.filter((q) => SETTINGS_TABLE.test(q.sql))).toHaveLength(
+                1,
+            );
+        });
+
+        it('reads nothing but the settings for an organisation that chose manual', async () => {
+            const { service, query } = build({
+                shifts: [SHIFT],
+                settings: { 'org-1': { assignment_mode: 'manual' } },
+            });
+
+            const results = await service.assignMany('org-1', [
+                'pkg-1',
+                'pkg-2',
+            ]);
+
+            expect([...results.values()].map((r) => r.reason)).toEqual([
+                'auto_assign_disabled',
+                'auto_assign_disabled',
+            ]);
+            expect(query).toHaveBeenCalledTimes(1);
+        });
+
+        it('falls back to reading them per package when the batch read fails', async () => {
+            // Every per-package read fails the same way here, so each package
+            // defers on its own: the batch neither throws nor guesses.
+            const { service } = build({
+                shifts: [SHIFT],
+                failOn: {
+                    fragment: 'organisation_dispatch_settings',
+                    error: new Error('connection reset'),
+                },
+            });
+
+            const results = await service.assignMany('org-1', ['pkg-1']);
+
+            expect(results.get('pkg-1')).toMatchObject({
+                outcome: 'deferred',
+            });
         });
     });
 });

@@ -12,10 +12,10 @@ import {
     coveringDriversForPoint,
     FALLBACK_OUTCOMES,
     isPlausibleLonLat,
-    serviceAreaMatchingEnabled,
     type CoverageOutcome,
     type CoveragePoint,
 } from './coverage';
+import { resolveDispatchSettings } from './dispatch-settings';
 import type {
     CoverageAreaDto,
     CoverageAssignmentDto,
@@ -93,9 +93,9 @@ interface FallbackRow {
  * A week, for two reasons that agree. Shift plans are daily and delivery
  * traffic has a strong weekday shape, so anything shorter than seven days
  * compares a Tuesday against a Sunday and reads the difference as a change in
- * coverage. And the rollout runbook asks for a week of watching after the flag
- * is turned on for an organisation, so the default window is the same window
- * that decision is actually made over.
+ * coverage. And the rollout runbook asks for a week of watching after the
+ * setting is turned on for an organisation, so the default window is the same
+ * window that decision is actually made over.
  */
 const DEFAULT_SUMMARY_DAYS = 7;
 
@@ -168,9 +168,9 @@ export class CoverageDiagnosticsService {
      * ── WHY THIS IS AN ENDPOINT AND NOT A QUERY IN A RUNBOOK ────────────────
      *
      * It is the number somebody has to look at to decide whether to turn
-     * SERVICE_AREA_MATCHING on, and again every day for a week afterwards. A
-     * decision that is checked that often cannot depend on having a database
-     * console open, or it will stop being checked.
+     * service area matching on for an organisation, and again every day for a
+     * week afterwards. A decision that is checked that often cannot depend on
+     * having a database console open, or it will stop being checked.
      *
      * ── WHAT MAKES THE NUMBER HONEST ────────────────────────────────────────
      *
@@ -179,7 +179,7 @@ export class CoverageDiagnosticsService {
      *   - Only rows automatic assignment wrote are counted. A dispatcher's
      *     hand-pinned package took no coverage decision, so counting it either
      *     way would be wrong; those rows carry a null outcome and drop out.
-     *   - `disabled` is excluded from the denominator. With the flag off,
+     *   - `disabled` is excluded from the denominator. With the setting off,
      *     counting those as successes would report a perfect score for a
      *     feature that is not running.
      *   - The live territory count travels with it. An organisation that has
@@ -193,11 +193,13 @@ export class CoverageDiagnosticsService {
     ): Promise<CoverageSummaryDto> {
         const windowDays = parseSummaryDays(days);
 
-        const [counts, fallbacks, liveServiceAreaCount] = await Promise.all([
-            this.countOutcomes(organisationId, windowDays),
-            this.recentFallbacks(organisationId, windowDays),
-            this.countLiveAreas(organisationId),
-        ]);
+        const [counts, fallbacks, liveServiceAreaCount, settings] =
+            await Promise.all([
+                this.countOutcomes(organisationId, windowDays),
+                this.recentFallbacks(organisationId, windowDays),
+                this.countLiveAreas(organisationId),
+                resolveDispatchSettings(this.dataSource, organisationId),
+            ]);
 
         const byOutcome = toCountsDto(counts);
         const totalAssigned = COVERAGE_OUTCOMES.reduce(
@@ -220,7 +222,7 @@ export class CoverageDiagnosticsService {
         return {
             windowDays,
             since,
-            serviceAreaMatching: serviceAreaMatchingEnabled(),
+            serviceAreaMatching: settings.serviceAreaMatching,
             liveServiceAreaCount,
             totalAssigned,
             decisions,
@@ -232,7 +234,7 @@ export class CoverageDiagnosticsService {
                 decisions,
                 coveredRate,
                 liveServiceAreaCount,
-                serviceAreaMatching: serviceAreaMatchingEnabled(),
+                serviceAreaMatching: settings.serviceAreaMatching,
             }),
         };
     }
@@ -1106,9 +1108,10 @@ export function explainSummary(input: SummaryExplanationInput): string {
 
     if (!input.serviceAreaMatching) {
         parts.push(
-            'Service area matching is currently switched off, so packages ' +
-                'placed from now on are recorded as `disabled` and are left out ' +
-                'of the rate above.',
+            'Service area matching is currently switched off for this ' +
+                'organisation (Settings > Dispatch), so packages placed from ' +
+                'now on are recorded as `disabled` and are left out of the ' +
+                'rate above.',
         );
     }
 

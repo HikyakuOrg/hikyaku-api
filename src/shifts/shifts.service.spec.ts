@@ -31,6 +31,8 @@ interface State {
     shiftRange?: unknown[];
     insertError?: Error;
     lockedStatus?: string;
+    /** Per driver id, profile columns to set on the limits query's row. */
+    limits?: Record<string, Record<string, number>>;
 }
 
 function build(state: State = {}) {
@@ -77,6 +79,7 @@ function build(state: State = {}) {
                 org_max_driving_seconds: null,
                 org_max_distance_m: null,
                 org_max_stops: null,
+                ...state.limits?.[driverId],
             }));
         }
         return [];
@@ -435,34 +438,56 @@ describe('ShiftsService', () => {
             expect(shift.scheduledStart).toBe('2026-09-01T22:00:00.000Z');
         });
 
-        it('resolves nothing at all when DRIVING_LIMITS is off, the default', async () => {
-            const { service, log } = build();
-            const before = log.length;
+        it('resolves the driver’s limits even while DRIVING_LIMITS is off', async () => {
+            // The flag gates whether assignment applies the limits, not what
+            // they are: the dashboard shows a configured profile either way,
+            // with drivingLimitsEnabled saying it was not applied.
+            const { service, log } = build({
+                limits: {
+                    'driver-1': {
+                        driver_max_working_seconds: 36000,
+                        driver_max_stops: 40,
+                    },
+                },
+            });
+            log.length = 0;
             const shift = await service.get('org-1', 'shift-1');
-            expect(shift.drivingLimits).toEqual(NO_LIMITS);
-            // No new query beyond the shift load itself: the profile tables
-            // are not read at all while the flag is off.
-            expect(log.length).toBe(before + 1);
+            expect(shift.drivingLimits).toEqual({
+                maxWorkingSeconds: 36000,
+                maxDrivingSeconds: null,
+                maxDistanceM: null,
+                maxStops: 40,
+            });
+            expect(shift.drivingLimitsEnabled).toBe(false);
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(true);
         });
 
-        it('resolves the driver’s real limits once DRIVING_LIMITS is on', async () => {
+        it('reports drivingLimitsEnabled once DRIVING_LIMITS is on', async () => {
             const original = process.env.DRIVING_LIMITS;
             process.env.DRIVING_LIMITS = 'on';
             try {
-                const { service, log } = build();
-                log.length = 0;
-                // The driving-limits query returns nothing for this driver,
-                // which resolves to NO_LIMITS — the point here is that the
-                // query fires at all once the flag is on.
+                const { service } = build();
                 const shift = await service.get('org-1', 'shift-1');
                 expect(shift.drivingLimits).toEqual(NO_LIMITS);
-                expect(
-                    log.some((q) => q.sql.includes('driving_limit_profile')),
-                ).toBe(true);
+                expect(shift.drivingLimitsEnabled).toBe(true);
             } finally {
                 if (original === undefined) delete process.env.DRIVING_LIMITS;
                 else process.env.DRIVING_LIMITS = original;
             }
+        });
+
+        it('gives a shift with no driver NO_LIMITS without a limits query', async () => {
+            const { service, log } = build({
+                shift: [{ ...SHIFT_ROW, driver_id: null }],
+            });
+            log.length = 0;
+            const shift = await service.get('org-1', 'shift-1');
+            expect(shift.drivingLimits).toEqual(NO_LIMITS);
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(false);
         });
     });
 
@@ -484,63 +509,53 @@ describe('ShiftsService', () => {
         });
 
         it('resolves every driver’s limits in one round trip, not one per shift', async () => {
-            const original = process.env.DRIVING_LIMITS;
-            process.env.DRIVING_LIMITS = 'on';
-            try {
-                const { service, log } = build({
-                    shiftRange: [
-                        SHIFT_ROW,
-                        { ...SHIFT_ROW, id: 'shift-2', driver_id: 'driver-2' },
-                    ],
-                });
-                log.length = 0;
-                await service.list('org-1', '2026-09-01', '2026-09-30');
+            const { service, log } = build({
+                shiftRange: [
+                    SHIFT_ROW,
+                    { ...SHIFT_ROW, id: 'shift-2', driver_id: 'driver-2' },
+                ],
+            });
+            log.length = 0;
+            await service.list('org-1', '2026-09-01', '2026-09-30');
 
-                const limitsQueries = log.filter((q) =>
-                    q.sql.includes('driving_limit_profile'),
-                );
-                expect(limitsQueries).toHaveLength(1);
-                expect(limitsQueries[0].params[1]).toEqual([
-                    'driver-1',
-                    'driver-2',
-                ]);
-            } finally {
-                if (original === undefined) delete process.env.DRIVING_LIMITS;
-                else process.env.DRIVING_LIMITS = original;
-            }
+            const limitsQueries = log.filter((q) =>
+                q.sql.includes('driving_limit_profile'),
+            );
+            expect(limitsQueries).toHaveLength(1);
+            expect(limitsQueries[0].params[1]).toEqual([
+                'driver-1',
+                'driver-2',
+            ]);
         });
 
-        it('never queries the profile tables while DRIVING_LIMITS is off', async () => {
-            const { service, log } = build({
+        it('returns configured limits while DRIVING_LIMITS is off, for the calendar’s near/over flags', async () => {
+            const { service } = build({
                 shiftRange: [SHIFT_ROW],
+                limits: { 'driver-1': { org_max_distance_m: 250000 } },
             });
-            await service.list('org-1', '2026-09-01', '2026-09-30');
-            expect(
-                log.some((q) => q.sql.includes('driving_limit_profile')),
-            ).toBe(false);
+            const shifts = await service.list(
+                'org-1',
+                '2026-09-01',
+                '2026-09-30',
+            );
+            expect(shifts[0].drivingLimits.maxDistanceM).toBe(250000);
+            expect(shifts[0].drivingLimitsEnabled).toBe(false);
         });
 
         it('gives an unassigned shift NO_LIMITS without asking the driver query for it', async () => {
-            const original = process.env.DRIVING_LIMITS;
-            process.env.DRIVING_LIMITS = 'on';
-            try {
-                const { service, log } = build({
-                    shiftRange: [{ ...SHIFT_ROW, driver_id: null }],
-                });
-                log.length = 0;
-                const shifts = await service.list(
-                    'org-1',
-                    '2026-09-01',
-                    '2026-09-30',
-                );
-                expect(shifts[0].drivingLimits).toEqual(NO_LIMITS);
-                expect(
-                    log.some((q) => q.sql.includes('driving_limit_profile')),
-                ).toBe(false);
-            } finally {
-                if (original === undefined) delete process.env.DRIVING_LIMITS;
-                else process.env.DRIVING_LIMITS = original;
-            }
+            const { service, log } = build({
+                shiftRange: [{ ...SHIFT_ROW, driver_id: null }],
+            });
+            log.length = 0;
+            const shifts = await service.list(
+                'org-1',
+                '2026-09-01',
+                '2026-09-30',
+            );
+            expect(shifts[0].drivingLimits).toEqual(NO_LIMITS);
+            expect(
+                log.some((q) => q.sql.includes('driving_limit_profile')),
+            ).toBe(false);
         });
 
         it('rejects a missing or malformed range before touching the database', async () => {

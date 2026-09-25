@@ -324,13 +324,20 @@ describeWithDb('coverage against a real database', () => {
                 INSIDE_WEST,
             );
 
+            // The retired polygon still contains the point and RLS never
+            // filters is_deleted, so only the query's own soft-delete filter
+            // stops it from covering anybody.
             expect(coverage.explicitDriverIds).toEqual([]);
-            // And crucially NOT promoted to a floater: they have a coverage row,
-            // it is just pointing at a territory that was retired. Silently
-            // giving them the whole metro because a dispatcher retired one
-            // polygon would be a surprising reading of that click.
-            expect(coverage.floaterDriverIds).toEqual([]);
-            expect(coverage.driverIds).toEqual([]);
+            // And the driver IS a floater. Retiring an area keeps its
+            // driver_service_area rows so it can be un-retired with the same
+            // drivers, but the floater rule counts links to live areas only.
+            // Counting this one would leave the driver neither a floater nor
+            // covering any point, reachable only through the fallback steps,
+            // while the driver page (which lists live areas only) calls them a
+            // floater. Retiring a driver's last area therefore makes them a
+            // floater, exactly as detaching it would.
+            expect(coverage.floaterDriverIds).toEqual([driver]);
+            expect(coverage.driverIds).toEqual([driver]);
         });
 
         it('ignores a driver at another warehouse in the same organisation', async () => {

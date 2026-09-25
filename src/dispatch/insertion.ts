@@ -746,8 +746,9 @@ export function loadPenaltySeconds(stops: number): number {
  * the whole metro while a colleague idled at the depot. See
  * LOAD_SPREAD_SECONDS_PER_STOP for what that trade is worth in both directions.
  *
- * `spreadLoad` defaults to on; AssignmentService passes its LOAD_SPREAD_ENABLED
- * reading through so the penalty can be switched off mid-incident without a
+ * `spreadLoad` defaults to on; AssignmentService passes the organisation's
+ * load spreading setting through (organisation_dispatch_settings), so an
+ * organisation can switch the penalty off from its settings page without a
  * deploy. The tie-break stays flipped either way. It only fires on an exact
  * equality of detour seconds, which is rare with float haversine estimates, and
  * it can only ever move a package between shifts that already exist, so unlike

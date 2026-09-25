@@ -3,12 +3,12 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 /** Response schemas for the shift endpoints. */
 
 /**
- * This shift driver's effective driving limits, resolved per HIK-82: the
- * driver's own profile, then the org default, dimension by dimension. Every
- * field null means DRIVING_LIMITS is off, or nobody has set a limit on any
- * dimension — the dashboard cannot tell those two apart from this alone, and
- * does not need to: both mean "show the figure with nothing to compare it
- * to". Seconds and metres throughout; kilometres are a display concern only.
+ * This shift driver's effective driving limits, resolved as the
+ * driver's own profile, then the org default, dimension by dimension.
+ * Resolved whether or not DRIVING_LIMITS is on, so every field null means
+ * nobody has set a limit on any dimension (or the shift has no driver).
+ * Whether automatic assignment applied them is `ShiftDto.drivingLimitsEnabled`.
+ * Seconds and metres throughout; kilometres are a display concern only.
  */
 export class DrivingLimitsDto {
     @ApiProperty({ type: Number, nullable: true })
@@ -80,9 +80,10 @@ export class ShiftDto {
 
     @ApiProperty({
         description:
-            'Whether DRIVING_LIMITS is on for this process. Lets a client ' +
-            'tell "off" apart from "on, nothing configured" without a second ' +
-            'call to the diagnostics summary endpoint.',
+            'Whether DRIVING_LIMITS is on for this process, i.e. whether ' +
+            'automatic assignment applies `drivingLimits` when planning. The ' +
+            'limits are resolved and returned either way, so a client can ' +
+            'show a configured limit as "not applied yet" while this is false.',
     })
     drivingLimitsEnabled: boolean;
 }

@@ -12,10 +12,10 @@ import { DataSource } from 'typeorm';
 import { AssignmentService } from 'src/dispatch/assignment.service';
 import { ShiftPlanWriter } from 'src/dispatch/shift-plan.writer';
 import {
-    driverLimitsOrDefaultForDrivers,
     drivingLimitsEnabled,
     NO_LIMITS,
     resolveDrivingLimitsForDriver,
+    resolveDrivingLimitsForDrivers,
     type DrivingLimits,
 } from 'src/dispatch/driving-limits';
 import type {
@@ -258,7 +258,9 @@ export class ShiftsService {
         const driverIds = rows
             .map((row) => row.driver_id)
             .filter((id): id is string => id != null);
-        const limits = await driverLimitsOrDefaultForDrivers(
+        // Resolved whether or not DRIVING_LIMITS is on, like `get`: see
+        // resolveLimitsFor for why the read path ignores the flag.
+        const limits = await resolveDrivingLimitsForDrivers(
             this.dataSource,
             organisationId,
             driverIds,
@@ -275,15 +277,22 @@ export class ShiftsService {
     }
 
     /**
-     * This shift's effective driving limits, or NO_LIMITS with no query at
-     * all when DRIVING_LIMITS is off (see driving-limits.ts) or the shift has
-     * no driver yet.
+     * This shift's effective driving limits, or NO_LIMITS with no query when
+     * the shift has no driver yet.
+     *
+     * Resolved whether or not DRIVING_LIMITS is on. The flag decides whether
+     * automatic assignment APPLIES the limits (both dispatch tiers go through
+     * `driverLimitsOrDefault`, which still skips the query while it is off);
+     * it does not change what a driver's limits are. A dispatcher who has set
+     * a profile needs to see it against the plan, with `drivingLimitsEnabled`
+     * saying it was not applied, rather than a shift claiming the driver has
+     * no limits at all.
      */
     private async resolveLimitsFor(
         organisationId: string,
         driverId: string | null,
     ): Promise<DrivingLimits> {
-        if (!driverId || !drivingLimitsEnabled()) return NO_LIMITS;
+        if (!driverId) return NO_LIMITS;
         return resolveDrivingLimitsForDriver(
             this.dataSource,
             organisationId,
