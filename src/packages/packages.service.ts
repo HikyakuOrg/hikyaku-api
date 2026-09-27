@@ -41,6 +41,12 @@ export interface PackageSpec {
     scheduledDeparture?: string | null;
     /** skills.id this delivery requires. Validated against the org catalog. */
     skillIds?: string[];
+    /**
+     * The storefront order this package was created from. Unique per
+     * organisation and platform (packages_org_external_order_key), so a
+     * second insert for the same order fails with 23505.
+     */
+    externalOrder?: { platform: string; id: string; name: string | null };
 }
 
 interface PackageRow {
@@ -267,8 +273,10 @@ export class PackagesService {
             const rows = (await runner.query(
                 `INSERT INTO packages
                      (id, organisation_id, warehouse_id, from_customer, to_customer,
-                      delivery_notes, tracking_number)
-                 VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7)
+                      delivery_notes, tracking_number,
+                      external_platform, external_order_id, external_order_name)
+                 VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7,
+                         $8, $9, $10)
                  RETURNING id`,
                 [
                     spec.id ?? null,
@@ -278,6 +286,9 @@ export class PackagesService {
                     spec.toCustomerId,
                     spec.deliveryNotes ?? null,
                     spec.trackingNumber ?? null,
+                    spec.externalOrder?.platform ?? null,
+                    spec.externalOrder?.id ?? null,
+                    spec.externalOrder?.name ?? null,
                 ],
             )) as { id: string }[];
             const id = rows[0].id;
