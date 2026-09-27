@@ -5,6 +5,15 @@ import { Organisation } from './organisation.entity';
 import { OrganisationStripeAccount } from './organisation-stripe-account.entity';
 import { OrganisationSubscription } from './organisation-subscription.entity';
 
+/** One entry of GET /api/v1/organisations/me. */
+export interface MemberOrganisation {
+    id: string;
+    slug: string;
+    /** NULL for a personal org that was never named. */
+    name: string | null;
+    orgType: string;
+}
+
 @Injectable()
 export class OrganisationsService {
     constructor(
@@ -150,6 +159,47 @@ export class OrganisationsService {
             { organisationId },
             { hasVanityUrlEntitlement },
         );
+    }
+
+    /**
+     * The organisations the user is a member of and holds `permission` in,
+     * ordered by name. Membership is read from team_members, the same source
+     * PermissionGuard checks, so every org returned here is one the guard will
+     * admit the user to; the permission is checked with EXISTS so an org is
+     * never repeated. Unnamed orgs sort last.
+     */
+    async listForMember(
+        userId: string,
+        permission: string,
+    ): Promise<MemberOrganisation[]> {
+        const rows: {
+            id: string;
+            slug: string;
+            name: string | null;
+            org_type: string;
+        }[] = await this.dataSource.query(
+            `SELECT o.id, o.slug, o.name, o.org_type
+               FROM public.organisations o
+              INNER JOIN public.team_members tm
+                      ON tm.organisation_id = o.id AND tm.id = $1
+              WHERE EXISTS (
+                    SELECT 1
+                      FROM public.user_permission up
+                     INNER JOIN public.app_permission ap ON ap.id = up.permission_id
+                     WHERE up.organisation_id = o.id
+                       AND up.user_id = $1
+                       AND ap.permission = $2
+                    )
+              ORDER BY o.name, o.slug`,
+            [userId, permission],
+        );
+
+        return rows.map((r) => ({
+            id: r.id,
+            slug: r.slug,
+            name: r.name,
+            orgType: r.org_type,
+        }));
     }
 
     /**

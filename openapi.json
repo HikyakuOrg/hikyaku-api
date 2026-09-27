@@ -1469,6 +1469,47 @@
         ]
       }
     },
+    "/api/v1/organisations/me": {
+      "get": {
+        "description": "Every organisation the caller is a member of and holds `integrations.orders.write` in, ordered by name. Used by storefront connectors to choose the `X-Organisation-Slug` for POST /api/v1/integrations/orders. Takes no tenant header — the caller has not chosen an organisation yet. Empty array when there are none.",
+        "operationId": "OrganisationsController_listMine",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MemberOrganisationDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Organisations the caller can forward integration orders to.",
+        "tags": [
+          "organisations"
+        ]
+      }
+    },
     "/api/v1/billing/trial": {
       "get": {
         "description": "Deliberately exempt from the expired-trial block it reports on — an org whose trial has ended must still be able to read why it is locked out, otherwise the dashboard could only show a bare error.",
@@ -4836,6 +4877,10 @@
       "description": "Customer records for the active organisation."
     },
     {
+      "name": "organisations",
+      "description": "Organisations the caller belongs to, before a tenant is chosen."
+    },
+    {
       "name": "users",
       "description": "Team member provisioning and lifecycle."
     },
@@ -6228,6 +6273,40 @@
         },
         "required": [
           "stripeIds"
+        ]
+      },
+      "MemberOrganisationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Send this as `X-Organisation-Slug` on tenant-scoped calls.",
+            "example": "acme-logistics"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "description": "NULL for a personal organisation that was never named.",
+            "example": "Acme Logistics"
+          },
+          "orgType": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "company"
+            ],
+            "example": "company"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "orgType"
         ]
       },
       "TrialStatusDto": {

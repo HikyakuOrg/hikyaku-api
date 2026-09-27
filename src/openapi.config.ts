@@ -55,6 +55,10 @@ export function buildOpenApiConfig() {
                 'customers',
                 'Customer records for the active organisation.',
             )
+            .addTag(
+                'organisations',
+                'Organisations the caller belongs to, before a tenant is chosen.',
+            )
             .addTag('users', 'Team member provisioning and lifecycle.')
             .addTag(
                 'invitations',
