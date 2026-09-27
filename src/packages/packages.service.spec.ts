@@ -484,6 +484,36 @@ describe('PackagesService', () => {
             expect(runner.startTransaction).not.toHaveBeenCalled();
             expect(assignment.assign).not.toHaveBeenCalled();
         });
+
+        it('stores the storefront order a package came from', async () => {
+            const { service, runner, log } = build();
+            await service.createMany(runner as never, 'org-1', [
+                {
+                    warehouseId: 'wh-1',
+                    fromCustomerId: 'cust-from',
+                    toCustomerId: 'cust-to',
+                    weightKg: 1,
+                    lengthCm: 1,
+                    widthCm: 1,
+                    heightCm: 1,
+                    externalOrder: {
+                        platform: 'shopify',
+                        id: 'gid://shopify/Order/1',
+                        name: '#1001',
+                    },
+                },
+            ]);
+
+            const insert = log.find((q) =>
+                q.sql.includes('INSERT INTO packages'),
+            );
+            expect(insert?.sql).toContain('external_order_id');
+            expect(insert?.params.slice(7)).toEqual([
+                'shopify',
+                'gid://shopify/Order/1',
+                '#1001',
+            ]);
+        });
     });
 
     describe('assignCreated', () => {

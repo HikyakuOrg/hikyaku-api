@@ -4746,7 +4746,7 @@
     },
     "/api/v1/integrations/orders": {
       "post": {
-        "description": "Record-only for now: validates and durably stores the event, keyed by (organisation, platform, Idempotency-Key). It does not create a customer or package — see HIK-99.",
+        "description": "Validates and durably stores the event, keyed by (organisation, platform, Idempotency-Key), and returns without waiting for anything else. An `order.paid` event that needs delivery is then turned into a customer and a package, and assigned, in the background; follow it with GET /api/v1/integrations/orders. A replay creates nothing new.",
         "operationId": "IntegrationsController_recordOrder",
         "parameters": [
           {
@@ -4847,6 +4847,195 @@
           }
         ],
         "summary": "Record an external order event.",
+        "tags": [
+          "integrations"
+        ]
+      },
+      "get": {
+        "description": "Newest first. Filter by `status=needs_attention` for the orders that could not become a package without a human (an address that cannot be placed on the map, no warehouse), each with the reason in `error`.",
+        "operationId": "IntegrationsController_listOrders",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "processing",
+                "processed",
+                "skipped",
+                "needs_attention",
+                "failed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "Maximum rows, 1 to 200. Defaults to 50.",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderEventRecordListDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List recorded order events and what they produced.",
+        "tags": [
+          "integrations"
+        ]
+      }
+    },
+    "/api/v1/integrations/orders/{id}/retry": {
+      "post": {
+        "description": "Queues the event for processing again with a fresh attempt budget, once the cause in `error` has been fixed.",
+        "operationId": "IntegrationsController_retryOrder",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queued. `status` is now `pending`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderEventRecordDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such order event in this organisation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The event is not in `needs_attention` or `failed`, so there is nothing to retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Retry an order event that needs attention or has failed.",
         "tags": [
           "integrations"
         ]
@@ -9152,6 +9341,100 @@
         },
         "required": [
           "id"
+        ]
+      },
+      "OrderEventRecordDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "platform": {
+            "type": "string",
+            "example": "shopify"
+          },
+          "eventType": {
+            "type": "string",
+            "example": "order.paid"
+          },
+          "externalOrderId": {
+            "type": "string",
+            "description": "The order's id in the storefront's system."
+          },
+          "orderName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Human-facing order number, e.g. \"#1001\"."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "processing",
+              "processed",
+              "skipped",
+              "needs_attention",
+              "failed"
+            ],
+            "description": "`pending`/`processing`: not done yet. `processed`: `packageId` and `customerId` say what it produced. `skipped`: nothing to deliver. `needs_attention`: a human has to fix something (see `error`), then retry. `failed`: transient failures exhausted the retry budget; retry once the cause is fixed."
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why the event was skipped, needs attention, failed, or is waiting to be retried."
+          },
+          "attempts": {
+            "type": "number",
+            "description": "Processing attempts so far."
+          },
+          "customerId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "packageId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "processedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "platform",
+          "eventType",
+          "externalOrderId",
+          "orderName",
+          "status",
+          "error",
+          "attempts",
+          "customerId",
+          "packageId",
+          "createdAt",
+          "processedAt"
+        ]
+      },
+      "OrderEventRecordListDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderEventRecordDto"
+            }
+          }
+        },
+        "required": [
+          "data"
         ]
       }
     }
