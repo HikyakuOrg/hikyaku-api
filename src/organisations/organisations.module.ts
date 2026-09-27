@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Organisation } from './organisation.entity';
 import { OrganisationStripeAccount } from './organisation-stripe-account.entity';
 import { OrganisationSubscription } from './organisation-subscription.entity';
+import { OrganisationsController } from './organisations.controller';
 import { OrganisationsService } from './organisations.service';
 
 @Module({
@@ -13,6 +14,7 @@ import { OrganisationsService } from './organisations.service';
             OrganisationSubscription,
         ]),
     ],
+    controllers: [OrganisationsController],
     providers: [OrganisationsService],
     exports: [OrganisationsService],
 })
