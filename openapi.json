@@ -5040,6 +5040,249 @@
           "integrations"
         ]
       }
+    },
+    "/api/v1/integrations/locations": {
+      "get": {
+        "description": "Ordered by platform, shop, then live locations before stale ones. Stale locations (no longer reported by the storefront) are included, with `stale_at` set.",
+        "operationId": "LocationMappingsController_list",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "platform",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "shopify",
+              "type": "string"
+            }
+          },
+          {
+            "name": "shop_domain",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "store.myshopify.com",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationLocationListDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List storefront locations and where each ships from.",
+        "tags": [
+          "integrations"
+        ]
+      },
+      "put": {
+        "description": "Creates or updates each location of one shop, keyed by (platform, shop_domain, external_location_id), in one transaction. A location sent without `mode` keeps its current mode and warehouse (a new one starts `unmapped`). With `mark_missing_stale`, the shop's locations not in the body are marked stale, never deleted. Returns every location of the shop afterwards.",
+        "operationId": "LocationMappingsController_upsert",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertIntegrationLocationsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationLocationListDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A `warehouse_id` is not a warehouse of this organisation (another organisation's warehouse gets the same answer as a missing one).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Upsert a shop's locations and their warehouse mappings.",
+        "tags": [
+          "integrations"
+        ]
+      }
+    },
+    "/api/v1/warehouses": {
+      "get": {
+        "description": "Ordered by name. Used by storefront connectors to offer a warehouse picker when mapping their locations (PUT /api/v1/integrations/locations). Empty `data` when the organisation has none.",
+        "operationId": "WarehousesController_list",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarehouseListDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List the organisation's warehouses.",
+        "tags": [
+          "warehouses"
+        ]
+      }
     }
   },
   "info": {
@@ -9430,6 +9673,243 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OrderEventRecordDto"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "IntegrationLocationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "platform": {
+            "type": "string",
+            "example": "shopify"
+          },
+          "shop_domain": {
+            "type": "string",
+            "example": "store.myshopify.com"
+          },
+          "external_location_id": {
+            "type": "string",
+            "example": "gid://shopify/Location/123"
+          },
+          "external_location_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "country_code": {
+            "type": "string",
+            "nullable": true,
+            "example": "AU"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "warehouse",
+              "not_delivered",
+              "unmapped"
+            ],
+            "description": "`warehouse`: dispatch this location's items from `warehouse_id`. `not_delivered`: Hikyaku does not deliver this location's items. `unmapped`: not decided yet; its orders need attention."
+          },
+          "warehouse_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Set exactly when `mode` is `warehouse`. Deleting the warehouse moves the location back to `unmapped`."
+          },
+          "stale_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When a full sync (`mark_missing_stale`) last left this location out. NULL while the storefront still reports it."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_by": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "User whose request last changed the row. NULL when the database changed it, e.g. after its warehouse was deleted."
+          }
+        },
+        "required": [
+          "id",
+          "platform",
+          "shop_domain",
+          "external_location_id",
+          "external_location_name",
+          "country_code",
+          "mode",
+          "warehouse_id",
+          "stale_at",
+          "updated_at",
+          "updated_by"
+        ]
+      },
+      "IntegrationLocationListDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntegrationLocationDto"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "IntegrationLocationInputDto": {
+        "type": "object",
+        "properties": {
+          "external_location_id": {
+            "type": "string",
+            "description": "The location's id in the storefront's own system.",
+            "example": "gid://shopify/Location/123"
+          },
+          "external_location_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Display name, refreshed on every sync. Omit (or send null) to keep the stored name.",
+            "example": "Melbourne warehouse"
+          },
+          "country_code": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO 3166-1 alpha-2 country of the location, stored upper case. Omit (or send null) to keep the stored value.",
+            "example": "AU"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "warehouse",
+              "not_delivered",
+              "unmapped"
+            ],
+            "description": "`warehouse`: dispatch this location's items from `warehouse_id`. `not_delivered`: Hikyaku does not deliver this location's items. `unmapped`: not decided yet; its orders need attention. Omit to leave an existing location's mode and warehouse as they are (a new one starts `unmapped`), which is how a connector refreshes names without undoing what the merchant chose."
+          },
+          "warehouse_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Required when `mode` is `warehouse`, and only then. Must be a warehouse of the organisation in `X-Organisation-Slug`."
+          }
+        },
+        "required": [
+          "external_location_id"
+        ]
+      },
+      "UpsertIntegrationLocationsDto": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Lowercase connector slug. An open value, never a closed enum, as on POST /api/v1/integrations/orders.",
+            "example": "shopify"
+          },
+          "shop_domain": {
+            "type": "string",
+            "description": "The storefront the locations belong to. Compared case insensitively and stored lower case.",
+            "example": "store.myshopify.com"
+          },
+          "locations": {
+            "description": "Up to 1000 locations, each at most once.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntegrationLocationInputDto"
+            }
+          },
+          "mark_missing_stale": {
+            "type": "boolean",
+            "default": false,
+            "description": "`true` when `locations` is every location the shop has right now: any stored location of this shop missing from it is marked stale (`stale_at`), keeping its mapping. Leave `false` to upsert a few locations without touching the rest."
+          }
+        },
+        "required": [
+          "platform",
+          "shop_domain",
+          "locations"
+        ]
+      },
+      "WarehouseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "West Melbourne Depot"
+          },
+          "address": {
+            "type": "string",
+            "description": "Street address line."
+          },
+          "city": {
+            "type": "string",
+            "example": "West Melbourne"
+          },
+          "state": {
+            "type": "string",
+            "example": "VIC"
+          },
+          "postcode": {
+            "type": "string",
+            "example": "3003"
+          },
+          "country": {
+            "type": "string",
+            "description": "Country as entered on the warehouse, a name such as \"Australia\" rather than an ISO code.",
+            "example": "Australia"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA time zone of the warehouse.",
+            "example": "Australia/Melbourne"
+          },
+          "lon": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180,
+            "example": 144.9407
+          },
+          "lat": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90,
+            "example": -37.8063
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "address",
+          "city",
+          "state",
+          "postcode",
+          "country",
+          "timezone",
+          "lon",
+          "lat"
+        ]
+      },
+      "WarehouseListDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WarehouseDto"
             }
           }
         },
