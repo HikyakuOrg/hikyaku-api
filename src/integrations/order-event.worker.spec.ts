@@ -53,7 +53,7 @@ describe('OrderEventWorker', () => {
                 .mockResolvedValue({
                     status: 'processed',
                     customerId: 'c',
-                    packageId: 'p',
+                    packageIds: ['p'],
                 }),
         };
         worker = new OrderEventWorker(
@@ -159,7 +159,7 @@ describe('OrderEventWorker', () => {
                         resolve({
                             status: 'processed',
                             customerId: 'c',
-                            packageId: 'p',
+                            packageIds: ['p'],
                         });
                 }),
         );

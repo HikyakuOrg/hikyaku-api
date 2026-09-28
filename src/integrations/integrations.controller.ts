@@ -131,8 +131,9 @@ export class IntegrationsController {
         description:
             'Newest first. Filter by `status=needs_attention` for the orders ' +
             'that could not become a package without a human (an address ' +
-            'that cannot be placed on the map, no warehouse), each with the ' +
-            'reason in `error`.',
+            'that cannot be placed on the map, no warehouse, a storefront ' +
+            'location not mapped to a warehouse), each with the reason in ' +
+            '`error`.',
     })
     @ApiQuery({ name: 'status', required: false, enum: ORDER_EVENT_STATUSES })
     @ApiQuery({
@@ -181,7 +182,9 @@ export class IntegrationsController {
         summary: 'Retry an order event that needs attention or has failed.',
         description:
             'Queues the event for processing again with a fresh attempt ' +
-            'budget, once the cause in `error` has been fixed.',
+            'budget, once the cause in `error` has been fixed. Packages it ' +
+            'already produced are kept, and fulfillment groups that already ' +
+            'have a package are not made again.',
     })
     @ApiResponse({
         status: 200,

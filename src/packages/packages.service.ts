@@ -42,11 +42,18 @@ export interface PackageSpec {
     /** skills.id this delivery requires. Validated against the org catalog. */
     skillIds?: string[];
     /**
-     * The storefront order this package was created from. Unique per
-     * organisation and platform (packages_org_external_order_key), so a
-     * second insert for the same order fails with 23505.
+     * The storefront order this package was created from, and the fulfillment
+     * group within it when the order ships from several locations. Unique per
+     * organisation, platform, order and group
+     * (packages_org_external_fulfillment_key), so a second insert for the
+     * same order and group fails with 23505.
      */
-    externalOrder?: { platform: string; id: string; name: string | null };
+    externalOrder?: {
+        platform: string;
+        id: string;
+        name: string | null;
+        fulfillmentId?: string | null;
+    };
 }
 
 interface PackageRow {
@@ -274,9 +281,10 @@ export class PackagesService {
                 `INSERT INTO packages
                      (id, organisation_id, warehouse_id, from_customer, to_customer,
                       delivery_notes, tracking_number,
-                      external_platform, external_order_id, external_order_name)
+                      external_platform, external_order_id, external_order_name,
+                      external_fulfillment_id)
                  VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7,
-                         $8, $9, $10)
+                         $8, $9, $10, $11)
                  RETURNING id`,
                 [
                     spec.id ?? null,
@@ -289,6 +297,7 @@ export class PackagesService {
                     spec.externalOrder?.platform ?? null,
                     spec.externalOrder?.id ?? null,
                     spec.externalOrder?.name ?? null,
+                    spec.externalOrder?.fulfillmentId ?? null,
                 ],
             )) as { id: string }[];
             const id = rows[0].id;

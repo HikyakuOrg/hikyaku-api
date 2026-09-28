@@ -519,10 +519,15 @@ export class OrderEventDto {
         type: () => [OrderFulfillmentGroupDto],
         description:
             'Which storefront location fulfils which items, for a store that ' +
-            'ships from more than one. Every `line_items[].line_item_id` must ' +
-            'reference an `order.line_items[].id`, or the event is rejected ' +
-            'with 400. Omit it, or send an empty array, to have the whole ' +
-            'order dispatched as one package from the nearest warehouse.',
+            'ships from more than one. Each group with `delivery_method` ' +
+            '`shipping` or `local` becomes its own package, dispatched from ' +
+            'the warehouse its location is mapped to through PUT ' +
+            '/api/v1/integrations/locations; a group whose location is not ' +
+            'mapped puts the event in `needs_attention` instead of falling ' +
+            'back to another warehouse. Every `line_items[].line_item_id` ' +
+            'must reference an `order.line_items[].id`, or the event is ' +
+            'rejected with 400. Omit it, or send an empty array, to have the ' +
+            'whole order dispatched as one package from the nearest warehouse.',
     })
     @IsOptional()
     @IsArray()

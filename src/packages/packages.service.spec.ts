@@ -512,7 +512,35 @@ describe('PackagesService', () => {
                 'shopify',
                 'gid://shopify/Order/1',
                 '#1001',
+                null,
             ]);
+        });
+
+        it('stores the fulfillment group a package was made for', async () => {
+            const { service, runner, log } = build();
+            await service.createMany(runner as never, 'org-1', [
+                {
+                    warehouseId: 'wh-1',
+                    fromCustomerId: 'cust-from',
+                    toCustomerId: 'cust-to',
+                    weightKg: 1,
+                    lengthCm: 1,
+                    widthCm: 1,
+                    heightCm: 1,
+                    externalOrder: {
+                        platform: 'shopify',
+                        id: 'gid://shopify/Order/1',
+                        name: '#1001',
+                        fulfillmentId: 'gid://shopify/FulfillmentOrder/7',
+                    },
+                },
+            ]);
+
+            const insert = log.find((q) =>
+                q.sql.includes('INSERT INTO packages'),
+            );
+            expect(insert?.sql).toContain('external_fulfillment_id');
+            expect(insert?.params[10]).toBe('gid://shopify/FulfillmentOrder/7');
         });
     });
 

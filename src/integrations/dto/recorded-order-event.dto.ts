@@ -51,11 +51,14 @@ export class OrderEventRecordDto {
     @ApiProperty({
         enum: ORDER_EVENT_STATUSES,
         description:
-            '`pending`/`processing`: not done yet. `processed`: `packageId` ' +
-            'and `customerId` say what it produced. `skipped`: nothing to ' +
-            'deliver. `needs_attention`: a human has to fix something (see ' +
-            '`error`), then retry. `failed`: transient failures exhausted ' +
-            'the retry budget; retry once the cause is fixed.',
+            '`pending`/`processing`: not done yet. `processed`: ' +
+            '`packageIds` and `customerId` say what it produced. `skipped`: ' +
+            'nothing to deliver. `needs_attention`: a human has to fix ' +
+            'something (see `error`), then retry; for an order split by ' +
+            'fulfillment group, the groups that could be processed already ' +
+            'have their packages in `packageIds`. `failed`: transient ' +
+            'failures exhausted the retry budget; retry once the cause is ' +
+            'fixed.',
     })
     status: OrderEventStatus;
 
@@ -74,8 +77,25 @@ export class OrderEventRecordDto {
     @ApiProperty({ type: String, format: 'uuid', nullable: true })
     customerId: string | null;
 
-    @ApiProperty({ type: String, format: 'uuid', nullable: true })
+    @ApiProperty({
+        type: String,
+        format: 'uuid',
+        nullable: true,
+        description:
+            'The first of `packageIds`. Kept for clients written before an ' +
+            'order could produce more than one package.',
+    })
     packageId: string | null;
+
+    @ApiProperty({
+        type: [String],
+        format: 'uuid',
+        description:
+            'Every package this event produced or was matched to: one for a ' +
+            'whole order, one per delivered fulfillment group for an order ' +
+            'that ships from several locations. Empty when it produced none.',
+    })
+    packageIds: string[];
 
     @ApiProperty({ format: 'date-time' })
     createdAt: string;

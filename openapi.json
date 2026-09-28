@@ -4852,7 +4852,7 @@
         ]
       },
       "get": {
-        "description": "Newest first. Filter by `status=needs_attention` for the orders that could not become a package without a human (an address that cannot be placed on the map, no warehouse), each with the reason in `error`.",
+        "description": "Newest first. Filter by `status=needs_attention` for the orders that could not become a package without a human (an address that cannot be placed on the map, no warehouse, a storefront location not mapped to a warehouse), each with the reason in `error`.",
         "operationId": "IntegrationsController_listOrders",
         "parameters": [
           {
@@ -4946,7 +4946,7 @@
     },
     "/api/v1/integrations/orders/{id}/retry": {
       "post": {
-        "description": "Queues the event for processing again with a fresh attempt budget, once the cause in `error` has been fixed.",
+        "description": "Queues the event for processing again with a fresh attempt budget, once the cause in `error` has been fixed. Packages it already produced are kept, and fulfillment groups that already have a package are not made again.",
         "operationId": "IntegrationsController_retryOrder",
         "parameters": [
           {
@@ -9629,7 +9629,7 @@
             "$ref": "#/components/schemas/OrderDeliveryDto"
           },
           "fulfillment_groups": {
-            "description": "Which storefront location fulfils which items, for a store that ships from more than one. Every `line_items[].line_item_id` must reference an `order.line_items[].id`, or the event is rejected with 400. Omit it, or send an empty array, to have the whole order dispatched as one package from the nearest warehouse.",
+            "description": "Which storefront location fulfils which items, for a store that ships from more than one. Each group with `delivery_method` `shipping` or `local` becomes its own package, dispatched from the warehouse its location is mapped to through PUT /api/v1/integrations/locations; a group whose location is not mapped puts the event in `needs_attention` instead of falling back to another warehouse. Every `line_items[].line_item_id` must reference an `order.line_items[].id`, or the event is rejected with 400. Omit it, or send an empty array, to have the whole order dispatched as one package from the nearest warehouse.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OrderFulfillmentGroupDto"
@@ -9691,7 +9691,7 @@
               "needs_attention",
               "failed"
             ],
-            "description": "`pending`/`processing`: not done yet. `processed`: `packageId` and `customerId` say what it produced. `skipped`: nothing to deliver. `needs_attention`: a human has to fix something (see `error`), then retry. `failed`: transient failures exhausted the retry budget; retry once the cause is fixed."
+            "description": "`pending`/`processing`: not done yet. `processed`: `packageIds` and `customerId` say what it produced. `skipped`: nothing to deliver. `needs_attention`: a human has to fix something (see `error`), then retry; for an order split by fulfillment group, the groups that could be processed already have their packages in `packageIds`. `failed`: transient failures exhausted the retry budget; retry once the cause is fixed."
           },
           "error": {
             "type": "string",
@@ -9710,7 +9710,16 @@
           "packageId": {
             "type": "string",
             "format": "uuid",
-            "nullable": true
+            "nullable": true,
+            "description": "The first of `packageIds`. Kept for clients written before an order could produce more than one package."
+          },
+          "packageIds": {
+            "description": "Every package this event produced or was matched to: one for a whole order, one per delivered fulfillment group for an order that ships from several locations. Empty when it produced none.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           },
           "createdAt": {
             "type": "string",
@@ -9733,6 +9742,7 @@
           "attempts",
           "customerId",
           "packageId",
+          "packageIds",
           "createdAt",
           "processedAt"
         ]
