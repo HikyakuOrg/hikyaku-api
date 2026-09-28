@@ -114,7 +114,7 @@ export class OrderEventWorker
                 this.logger.log(
                     `Order event ${row.id} (${row.payload.order?.name ?? row.id}): ${outcome.status}` +
                         (outcome.status === 'processed'
-                            ? ` -> package ${outcome.packageId}`
+                            ? ` -> package ${outcome.packageIds.join(', ')}`
                             : ` (${outcome.error})`),
                 );
             } catch (err: unknown) {

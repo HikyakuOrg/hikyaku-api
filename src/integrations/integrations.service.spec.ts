@@ -137,6 +137,7 @@ describe('IntegrationsService', () => {
         attempts: 1,
         customer_id: null,
         package_id: null,
+        package_ids: [],
         created_at: '2026-09-27T01:00:00.000Z',
         processed_at: '2026-09-27T01:00:05.000Z',
     };
@@ -152,6 +153,7 @@ describe('IntegrationsService', () => {
         attempts: 1,
         customerId: null,
         packageId: null,
+        packageIds: [],
         createdAt: '2026-09-27T01:00:00.000Z',
         processedAt: '2026-09-27T01:00:05.000Z',
     };
@@ -168,8 +170,35 @@ describe('IntegrationsService', () => {
 
             expect(rows).toEqual([recordDto]);
             const [sql, params] = dataSource.query.mock.calls[0];
-            expect(sql).toContain('ORDER BY created_at DESC');
+            expect(sql).toContain('ORDER BY e.created_at DESC');
             expect(params).toEqual(['org-1', 'needs_attention', 20]);
+        });
+
+        it('lists every package an event produced, from the link table', async () => {
+            dataSource.query.mockResolvedValueOnce([
+                {
+                    ...recordRow,
+                    status: 'needs_attention',
+                    package_id: 'pkg-1',
+                    package_ids: ['pkg-1', 'pkg-2'],
+                },
+                { ...recordRow, id: 'ledger-8', package_ids: null },
+            ]);
+
+            const [split, none] = await service.listOrderEvents(
+                'org-1',
+                undefined,
+                50,
+            );
+
+            expect(split).toMatchObject({
+                packageId: 'pkg-1',
+                packageIds: ['pkg-1', 'pkg-2'],
+            });
+            expect(none.packageIds).toEqual([]);
+            expect(dataSource.query.mock.calls[0][0]).toContain(
+                'FROM public.integration_order_event_package l',
+            );
         });
 
         it('passes a null status to list every event', async () => {

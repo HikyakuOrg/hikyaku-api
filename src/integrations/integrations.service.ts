@@ -27,13 +27,23 @@ interface RecordRow {
     attempts: number;
     customer_id: string | null;
     package_id: string | null;
+    package_ids: string[] | null;
     created_at: string;
     processed_at: string | null;
 }
 
-const RECORD_COLS = `id, platform, event_type, external_order_id,
-    payload->'order'->>'name' AS order_name, status, error, attempts,
-    customer_id, package_id, created_at, processed_at`;
+/**
+ * Every column the record DTO needs, for a query that names the ledger `e`.
+ * package_ids comes from integration_order_event_package, in the order the
+ * packages were linked; package_id is the first of them.
+ */
+const RECORD_COLS = `e.id, e.platform, e.event_type, e.external_order_id,
+    e.payload->'order'->>'name' AS order_name, e.status, e.error, e.attempts,
+    e.customer_id, e.package_id,
+    ARRAY(SELECT l.package_id FROM public.integration_order_event_package l
+           WHERE l.event_id = e.id
+           ORDER BY l.created_at, l.package_id) AS package_ids,
+    e.created_at, e.processed_at`;
 
 /** Statuses a human can send back to the worker. */
 const RETRYABLE: OrderEventStatus[] = ['needs_attention', 'failed'];
@@ -153,9 +163,9 @@ export class IntegrationsService {
         limit: number,
     ): Promise<OrderEventRecordDto[]> {
         const rows: RecordRow[] = await this.dataSource.query(
-            `SELECT ${RECORD_COLS} FROM public.integration_order_event
-              WHERE organisation_id = $1 AND ($2::text IS NULL OR status = $2)
-              ORDER BY created_at DESC
+            `SELECT ${RECORD_COLS} FROM public.integration_order_event e
+              WHERE e.organisation_id = $1 AND ($2::text IS NULL OR e.status = $2)
+              ORDER BY e.created_at DESC
               LIMIT $3`,
             [organisationId, status ?? null, limit],
         );
@@ -165,18 +175,23 @@ export class IntegrationsService {
     /**
      * Sends a `needs_attention` or `failed` event back to the worker, with a
      * fresh attempt budget: the person retrying has presumably fixed the
-     * cause (corrected the address, added a warehouse). The status change
-     * fires the wake-up trigger, so it is picked up at once.
+     * cause (corrected the address, added a warehouse, mapped a location).
+     * The status change fires the wake-up trigger, so it is picked up at once.
+     *
+     * Packages the event already produced stay linked. Processing it again
+     * finds them by order and fulfillment group and makes only the missing
+     * ones, so retrying after mapping one location never duplicates the
+     * package another location already has.
      */
     async retryOrderEvent(
         organisationId: string,
         eventId: string,
     ): Promise<OrderEventRecordDto> {
         const [rows]: [RecordRow[], number] = await this.dataSource.query(
-            `UPDATE public.integration_order_event
+            `UPDATE public.integration_order_event e
                 SET status = 'pending', attempts = 0, next_attempt_at = now(),
                     error = NULL, processed_at = NULL, claimed_at = NULL
-              WHERE id = $1 AND organisation_id = $2 AND status = ANY($3::text[])
+              WHERE e.id = $1 AND e.organisation_id = $2 AND e.status = ANY($3::text[])
               RETURNING ${RECORD_COLS}`,
             [eventId, organisationId, RETRYABLE],
         );
@@ -205,6 +220,7 @@ export class IntegrationsService {
             attempts: row.attempts,
             customerId: row.customer_id,
             packageId: row.package_id,
+            packageIds: row.package_ids ?? [],
             createdAt: new Date(row.created_at).toISOString(),
             processedAt: row.processed_at
                 ? new Date(row.processed_at).toISOString()
