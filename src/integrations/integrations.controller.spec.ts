@@ -294,5 +294,76 @@ describe('IntegrationsController (integration)', () => {
                 .expect(400);
             expect(service.recordOrderEvent).not.toHaveBeenCalled();
         });
+
+        it.each(['customer', 'delivery'])(
+            'returns 400 for an order.paid without %s',
+            async (field) => {
+                const without: Record<string, unknown> = { ...body };
+                delete without[field];
+                await post().send(without).expect(400);
+                expect(service.recordOrderEvent).not.toHaveBeenCalled();
+            },
+        );
+
+        it('returns 400 for an order.paid with only an order id', async () => {
+            await post()
+                .send({ ...body, order: { id: 'gid://shopify/Order/1' } })
+                .expect(400);
+        });
+    });
+
+    describe('POST /api/v1/integrations/orders (order.fulfillment_updated)', () => {
+        /** A re-routing: the order by id, its groups now, what was released. */
+        const update = {
+            event: {
+                ...body.event,
+                id: 'evt-2',
+                type: 'order.fulfillment_updated',
+            },
+            source: body.source,
+            order: { id: 'gid://shopify/Order/1', name: '#1001' },
+            fulfillment_groups: [
+                {
+                    ...group,
+                    id: 'fo-3',
+                    // Not checked against an order the event does not carry.
+                    line_items: [{ line_item_id: 'li-7', quantity: 1 }],
+                },
+            ],
+            released_group_ids: ['fo-1'],
+        };
+
+        it('records a re-routing with just the order id, its groups and the released ids', async () => {
+            await post().send(update).expect(201, { id: 'ledger-1' });
+
+            expect(JSON.parse(JSON.stringify(recorded()))).toEqual(update);
+        });
+
+        it('records a re-routing that leaves nothing to deliver', async () => {
+            await post()
+                .send({ ...update, fulfillment_groups: [], order: { id: 'o' } })
+                .expect(201);
+        });
+
+        it.each([
+            ['without fulfillment_groups', { fulfillment_groups: undefined }],
+            ['without released_group_ids', { released_group_ids: undefined }],
+            ['with an empty released id', { released_group_ids: [''] }],
+            ['without an order id', { order: { name: '#1001' } }],
+            ['with the whole order', { order: body.order }],
+            [
+                'with an invalid group',
+                {
+                    fulfillment_groups: [
+                        { ...group, delivery_method: 'drone' },
+                    ],
+                },
+            ],
+        ])('returns 400 %s', async (_label, patch) => {
+            await post()
+                .send({ ...update, ...patch })
+                .expect(400);
+            expect(service.recordOrderEvent).not.toHaveBeenCalled();
+        });
     });
 });

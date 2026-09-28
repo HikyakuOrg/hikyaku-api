@@ -1,8 +1,14 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+    ApiExtraModels,
+    ApiProperty,
+    ApiPropertyOptional,
+    getSchemaPath,
+} from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
     IsArray,
     IsBoolean,
+    IsDefined,
     IsIn,
     IsInt,
     IsISO8601,
@@ -13,11 +19,32 @@ import {
     Matches,
     Min,
     Validate,
+    ValidateIf,
     ValidateNested,
     ValidatorConstraint,
     ValidatorConstraintInterface,
     ValidationArguments,
 } from 'class-validator';
+
+/** A paid order: the event that produces packages. */
+export const ORDER_PAID = 'order.paid';
+
+/**
+ * The storefront re-routed an order's items after payment (moved them to
+ * another location, split or merged its groups, cancelled one). Carries the
+ * order's current fulfillment groups in full, not the change, and refers to
+ * the order by id only: its recipient and line items come from the order.paid
+ * event already recorded for it.
+ */
+export const ORDER_FULFILLMENT_UPDATED = 'order.fulfillment_updated';
+
+/** Whether a raw event body is an order.fulfillment_updated event. */
+function isFulfillmentUpdate(body: unknown): boolean {
+    return (
+        (body as { event?: { type?: unknown } } | null)?.event?.type ===
+        ORDER_FULFILLMENT_UPDATED
+    );
+}
 
 /**
  * The generic order-event contract every storefront connector translates its
@@ -46,9 +73,12 @@ export class OrderEventInfoDto {
 
     @ApiProperty({
         description:
-            'Event type, e.g. "order.paid". An open string, not a closed ' +
-            'enum, so a connector can introduce a new event type without a ' +
-            'hikyaku-api change.',
+            'Event type. "order.paid" creates the packages; ' +
+            '"order.fulfillment_updated" re-routes them after the storefront ' +
+            'moved, split, merged or cancelled fulfillment groups. An open ' +
+            'string, not a closed enum, so a connector can introduce a new ' +
+            'event type without a hikyaku-api change; other types are ' +
+            'recorded and skipped.',
         example: 'order.paid',
     })
     @IsString()
@@ -225,6 +255,29 @@ export class OrderInfoDto {
     @ValidateNested({ each: true })
     @Type(() => OrderLineItemDto)
     line_items: OrderLineItemDto[];
+}
+
+/**
+ * The order an `order.fulfillment_updated` event is about. Only the id is
+ * needed: everything else was recorded with the order's `order.paid` event.
+ */
+export class OrderReferenceDto {
+    @ApiProperty({
+        description:
+            'The same `order.id` the order.paid event for this order carried.',
+    })
+    @IsString()
+    @IsNotEmpty()
+    id: string;
+
+    @ApiPropertyOptional({
+        type: String,
+        nullable: true,
+        description: 'Human-facing order name/number, e.g. "#1001".',
+    })
+    @IsOptional()
+    @IsString()
+    name?: string | null;
 }
 
 export class OrderEventCustomerDto {
@@ -489,6 +542,14 @@ function unknownLineItemIds(groups: unknown, dto: object): string[] {
     return [...unknown];
 }
 
+/**
+ * One body for every event type. `order.paid` carries the whole order;
+ * `order.fulfillment_updated` carries only `order.id`, the order's current
+ * `fulfillment_groups` and `released_group_ids`, and leaves out `customer` and
+ * `delivery`. The shape of `order` is picked from `event.type` before
+ * validation, so each type is held to its own required fields.
+ */
+@ApiExtraModels(OrderInfoDto, OrderReferenceDto)
 export class OrderEventDto {
     @ApiProperty({ type: () => OrderEventInfoDto })
     @ValidateNested()
@@ -500,20 +561,40 @@ export class OrderEventDto {
     @Type(() => OrderEventSourceDto)
     source: OrderEventSourceDto;
 
-    @ApiProperty({ type: () => OrderInfoDto })
+    @ApiProperty({
+        oneOf: [
+            { $ref: getSchemaPath(OrderInfoDto) },
+            { $ref: getSchemaPath(OrderReferenceDto) },
+        ],
+        description:
+            'The whole order for `order.paid`; just its id (and optionally ' +
+            'its name) for `order.fulfillment_updated`.',
+    })
     @ValidateNested()
-    @Type(() => OrderInfoDto)
-    order: OrderInfoDto;
+    @Type((options) =>
+        isFulfillmentUpdate(options?.object) ? OrderReferenceDto : OrderInfoDto,
+    )
+    order: OrderInfoDto | OrderReferenceDto;
 
-    @ApiProperty({ type: () => OrderEventCustomerDto })
+    @ApiPropertyOptional({
+        type: () => OrderEventCustomerDto,
+        description: 'Required, except on `order.fulfillment_updated`.',
+    })
+    @ValidateIf((body) => !isFulfillmentUpdate(body))
+    @IsDefined()
     @ValidateNested()
     @Type(() => OrderEventCustomerDto)
-    customer: OrderEventCustomerDto;
+    customer?: OrderEventCustomerDto;
 
-    @ApiProperty({ type: () => OrderDeliveryDto })
+    @ApiPropertyOptional({
+        type: () => OrderDeliveryDto,
+        description: 'Required, except on `order.fulfillment_updated`.',
+    })
+    @ValidateIf((body) => !isFulfillmentUpdate(body))
+    @IsDefined()
     @ValidateNested()
     @Type(() => OrderDeliveryDto)
-    delivery: OrderDeliveryDto;
+    delivery?: OrderDeliveryDto;
 
     @ApiPropertyOptional({
         type: () => [OrderFulfillmentGroupDto],
@@ -524,15 +605,52 @@ export class OrderEventDto {
             'the warehouse its location is mapped to through PUT ' +
             '/api/v1/integrations/locations; a group whose location is not ' +
             'mapped puts the event in `needs_attention` instead of falling ' +
-            'back to another warehouse. Every `line_items[].line_item_id` ' +
-            'must reference an `order.line_items[].id`, or the event is ' +
-            'rejected with 400. Omit it, or send an empty array, to have the ' +
-            'whole order dispatched as one package from the nearest warehouse.',
+            'back to another warehouse. On `order.paid`, every ' +
+            '`line_items[].line_item_id` must reference an ' +
+            '`order.line_items[].id`, or the event is rejected with 400; omit ' +
+            'it, or send an empty array, to have the whole order dispatched ' +
+            'as one package from the nearest warehouse. Required on ' +
+            '`order.fulfillment_updated`, where it lists every group that is ' +
+            'still to be delivered after the change (empty when none is): a ' +
+            'package whose group now ships from another warehouse, or ' +
+            'weighs something else, is replaced, and a group without a ' +
+            'package gets one.',
     })
-    @IsOptional()
+    @ValidateIf(
+        (body: OrderEventDto) =>
+            isFulfillmentUpdate(body) || body.fulfillment_groups != null,
+    )
     @IsArray()
     @ValidateNested({ each: true })
     @Type(() => OrderFulfillmentGroupDto)
     @Validate(FulfillmentLineItemsInOrderConstraint)
     fulfillment_groups?: OrderFulfillmentGroupDto[];
+
+    @ApiPropertyOptional({
+        type: [String],
+        description:
+            'Only on `order.fulfillment_updated`, and required there: the ids ' +
+            'of groups whose items the storefront re-routed or cancelled, ' +
+            'such as the group items were moved out of, groups merged into ' +
+            'another, or a cancelled group. The package of a released group ' +
+            'that is not in `fulfillment_groups` any more is taken off its ' +
+            'shift and deleted. A group that is missing from ' +
+            '`fulfillment_groups` without being released (fulfilled, for ' +
+            'instance) keeps its package.',
+    })
+    @ValidateIf(
+        (body: OrderEventDto) =>
+            isFulfillmentUpdate(body) || body.released_group_ids != null,
+    )
+    @IsArray()
+    @IsString({ each: true })
+    @IsNotEmpty({ each: true })
+    released_group_ids?: string[];
 }
+
+/** An `order.paid` body, which validation guarantees carries the whole order. */
+export type OrderPaidPayload = OrderEventDto & {
+    order: OrderInfoDto;
+    customer: OrderEventCustomerDto;
+    delivery: OrderDeliveryDto;
+};

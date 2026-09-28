@@ -258,6 +258,79 @@ export class PackagesService {
         }
     }
 
+    /**
+     * Takes a package that has not been loaded off its shift and deletes it:
+     * the path for a storefront order whose items were re-routed or
+     * cancelled before dispatch.
+     *
+     * Unassigning goes through AssignmentService, so the shift's route is
+     * rewritten without the stop and a replan is queued, exactly as when a
+     * dispatcher removes it by hand. It refuses (ConflictException) a package
+     * that is IN_TRANSIT or later: removing it from the plan would not remove
+     * it from the van.
+     *
+     * The delete then re-checks, under a row lock, that nothing put the
+     * package back on a shift in between (the replan worker picks up PENDING
+     * packages); if something did, it throws ConflictException and deletes
+     * nothing, and the caller tries again later. A package that is already
+     * gone counts as deleted. Its dimensions, delivery window, timeline and
+     * links go with it (ON DELETE CASCADE).
+     */
+    async deleteUndispatched(
+        organisationId: string,
+        packageId: string,
+    ): Promise<void> {
+        try {
+            await this.assignment.unassign(organisationId, packageId);
+        } catch (err) {
+            // Gone already. Anything else inconsistent is caught below.
+            if (!(err instanceof NotFoundException)) throw err;
+        }
+
+        const runner = this.dataSource.createQueryRunner();
+        await runner.connect();
+        await runner.startTransaction();
+        try {
+            const rows = (await runner.query(
+                `SELECT p.optimisation_id, latest.enums AS status
+                   FROM packages p
+                   LEFT JOIN LATERAL (
+                        SELECT ps.enums
+                          FROM package_timeline pt
+                          JOIN package_status  ps ON ps.id = pt.package_status
+                         WHERE pt.package_id = p.id
+                         ORDER BY pt.created_at DESC, pt.id DESC
+                         LIMIT 1
+                   ) latest ON true
+                  WHERE p.id = $1 AND p.organisation_id = $2
+                    FOR UPDATE OF p`,
+                [packageId, organisationId],
+            )) as { optimisation_id: string | null; status: string | null }[];
+            const row = rows[0];
+            if (row) {
+                const status = row.status ?? 'PENDING';
+                if (
+                    row.optimisation_id ||
+                    (status !== 'PENDING' && status !== 'ASSIGNED')
+                ) {
+                    throw new ConflictException(
+                        `Package ${packageId} was put back on a shift (${status}) while it was being removed.`,
+                    );
+                }
+                await runner.query(
+                    `DELETE FROM packages WHERE id = $1 AND organisation_id = $2`,
+                    [packageId, organisationId],
+                );
+            }
+            await runner.commitTransaction();
+        } catch (err) {
+            if (runner.isTransactionActive) await runner.rollbackTransaction();
+            throw err;
+        } finally {
+            await runner.release();
+        }
+    }
+
     // ── Writing ──────────────────────────────────────────────────────────────
 
     /**

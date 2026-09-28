@@ -71,9 +71,15 @@ export class IntegrationsController {
             'Validates and durably stores the event, keyed by (organisation, ' +
             'platform, Idempotency-Key), and returns without waiting for ' +
             'anything else. An `order.paid` event that needs delivery is then ' +
-            'turned into a customer and a package, and assigned, in the ' +
-            'background; follow it with GET /api/v1/integrations/orders. A ' +
-            'replay creates nothing new.',
+            'turned into a customer and its packages, and assigned, in the ' +
+            'background; follow it with GET /api/v1/integrations/orders. An ' +
+            '`order.fulfillment_updated` event, sent when the storefront ' +
+            're-routes the order after payment, reconciles those packages ' +
+            'with the groups it carries: packages that no longer match are ' +
+            'taken off their shift and deleted, and new groups get packages. ' +
+            'A change that touches a package already loaded or delivered is ' +
+            'not applied, and the event needs attention. A replay creates ' +
+            'nothing new.',
     })
     @ApiHeader({
         name: 'Idempotency-Key',

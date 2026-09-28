@@ -4746,7 +4746,7 @@
     },
     "/api/v1/integrations/orders": {
       "post": {
-        "description": "Validates and durably stores the event, keyed by (organisation, platform, Idempotency-Key), and returns without waiting for anything else. An `order.paid` event that needs delivery is then turned into a customer and a package, and assigned, in the background; follow it with GET /api/v1/integrations/orders. A replay creates nothing new.",
+        "description": "Validates and durably stores the event, keyed by (organisation, platform, Idempotency-Key), and returns without waiting for anything else. An `order.paid` event that needs delivery is then turned into a customer and its packages, and assigned, in the background; follow it with GET /api/v1/integrations/orders. An `order.fulfillment_updated` event, sent when the storefront re-routes the order after payment, reconciles those packages with the groups it carries: packages that no longer match are taken off their shift and deleted, and new groups get packages. A change that touches a package already loaded or delivered is not applied, and the event needs attention. A replay creates nothing new.",
         "operationId": "IntegrationsController_recordOrder",
         "parameters": [
           {
@@ -9215,57 +9215,6 @@
           "errors"
         ]
       },
-      "OrderEventInfoDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "The connector-assigned id for this event. Shopify uses its webhook delivery id, which also doubles as the Idempotency-Key header value."
-          },
-          "type": {
-            "type": "string",
-            "description": "Event type, e.g. \"order.paid\". An open string, not a closed enum, so a connector can introduce a new event type without a hikyaku-api change.",
-            "example": "order.paid"
-          },
-          "occurred_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "api_version": {
-            "type": "string",
-            "description": "The source platform's API version string."
-          }
-        },
-        "required": [
-          "id",
-          "type",
-          "occurred_at",
-          "api_version"
-        ]
-      },
-      "OrderEventSourceDto": {
-        "type": "object",
-        "properties": {
-          "platform": {
-            "type": "string",
-            "description": "Lowercase connector slug (e.g. \"shopify\"). An open, validated string — never a closed enum. hikyaku-api never learns a platform name as code; every future connector needs zero hikyaku-api changes to add one.",
-            "example": "shopify"
-          },
-          "shop_domain": {
-            "type": "string",
-            "nullable": true,
-            "description": "The storefront's own domain, when the platform has one."
-          },
-          "app_version": {
-            "type": "string",
-            "description": "The connector app's own version string."
-          }
-        },
-        "required": [
-          "platform",
-          "app_version"
-        ]
-      },
       "OrderLineItemDto": {
         "type": "object",
         "properties": {
@@ -9398,6 +9347,74 @@
           "tags",
           "total_weight_grams",
           "line_items"
+        ]
+      },
+      "OrderReferenceDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The same `order.id` the order.paid event for this order carried."
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Human-facing order name/number, e.g. \"#1001\"."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "OrderEventInfoDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The connector-assigned id for this event. Shopify uses its webhook delivery id, which also doubles as the Idempotency-Key header value."
+          },
+          "type": {
+            "type": "string",
+            "description": "Event type. \"order.paid\" creates the packages; \"order.fulfillment_updated\" re-routes them after the storefront moved, split, merged or cancelled fulfillment groups. An open string, not a closed enum, so a connector can introduce a new event type without a hikyaku-api change; other types are recorded and skipped.",
+            "example": "order.paid"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "api_version": {
+            "type": "string",
+            "description": "The source platform's API version string."
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "occurred_at",
+          "api_version"
+        ]
+      },
+      "OrderEventSourceDto": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Lowercase connector slug (e.g. \"shopify\"). An open, validated string — never a closed enum. hikyaku-api never learns a platform name as code; every future connector needs zero hikyaku-api changes to add one.",
+            "example": "shopify"
+          },
+          "shop_domain": {
+            "type": "string",
+            "nullable": true,
+            "description": "The storefront's own domain, when the platform has one."
+          },
+          "app_version": {
+            "type": "string",
+            "description": "The connector app's own version string."
+          }
+        },
+        "required": [
+          "platform",
+          "app_version"
         ]
       },
       "OrderEventCustomerDto": {
@@ -9620,28 +9637,51 @@
             "$ref": "#/components/schemas/OrderEventSourceDto"
           },
           "order": {
-            "$ref": "#/components/schemas/OrderInfoDto"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OrderInfoDto"
+              },
+              {
+                "$ref": "#/components/schemas/OrderReferenceDto"
+              }
+            ],
+            "description": "The whole order for `order.paid`; just its id (and optionally its name) for `order.fulfillment_updated`."
           },
           "customer": {
-            "$ref": "#/components/schemas/OrderEventCustomerDto"
+            "description": "Required, except on `order.fulfillment_updated`.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OrderEventCustomerDto"
+              }
+            ]
           },
           "delivery": {
-            "$ref": "#/components/schemas/OrderDeliveryDto"
+            "description": "Required, except on `order.fulfillment_updated`.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OrderDeliveryDto"
+              }
+            ]
           },
           "fulfillment_groups": {
-            "description": "Which storefront location fulfils which items, for a store that ships from more than one. Each group with `delivery_method` `shipping` or `local` becomes its own package, dispatched from the warehouse its location is mapped to through PUT /api/v1/integrations/locations; a group whose location is not mapped puts the event in `needs_attention` instead of falling back to another warehouse. Every `line_items[].line_item_id` must reference an `order.line_items[].id`, or the event is rejected with 400. Omit it, or send an empty array, to have the whole order dispatched as one package from the nearest warehouse.",
+            "description": "Which storefront location fulfils which items, for a store that ships from more than one. Each group with `delivery_method` `shipping` or `local` becomes its own package, dispatched from the warehouse its location is mapped to through PUT /api/v1/integrations/locations; a group whose location is not mapped puts the event in `needs_attention` instead of falling back to another warehouse. On `order.paid`, every `line_items[].line_item_id` must reference an `order.line_items[].id`, or the event is rejected with 400; omit it, or send an empty array, to have the whole order dispatched as one package from the nearest warehouse. Required on `order.fulfillment_updated`, where it lists every group that is still to be delivered after the change (empty when none is): a package whose group now ships from another warehouse, or weighs something else, is replaced, and a group without a package gets one.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OrderFulfillmentGroupDto"
+            }
+          },
+          "released_group_ids": {
+            "description": "Only on `order.fulfillment_updated`, and required there: the ids of groups whose items the storefront re-routed or cancelled, such as the group items were moved out of, groups merged into another, or a cancelled group. The package of a released group that is not in `fulfillment_groups` any more is taken off its shift and deleted. A group that is missing from `fulfillment_groups` without being released (fulfilled, for instance) keeps its package.",
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         },
         "required": [
           "event",
           "source",
-          "order",
-          "customer",
-          "delivery"
+          "order"
         ]
       },
       "RecordedOrderEventDto": {
