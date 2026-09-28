@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+    BadRequestException,
+    ConflictException,
+    NotFoundException,
+} from '@nestjs/common';
 import { PackagesService } from './packages.service';
 import type { CreatePackageDto } from './dto/create-package.dto';
 
@@ -558,6 +562,74 @@ describe('PackagesService', () => {
                 service.assignCreated('org-1', ['pkg-1', 'pkg-2']),
             ).resolves.toBeUndefined();
             expect(assignment.assign).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    describe('deleteUndispatched', () => {
+        const deletes = (log: { sql: string; params: unknown[] }[]) =>
+            log.filter((q) => q.sql.includes('DELETE FROM packages'));
+
+        it('takes the package off its shift, then deletes it under a row lock', async () => {
+            const { service, assignment, runner, log } = build({
+                stored: [{ optimisation_id: null, status: 'PENDING' }],
+            });
+
+            await service.deleteUndispatched('org-1', 'pkg-1');
+
+            expect(assignment.unassign).toHaveBeenCalledWith('org-1', 'pkg-1');
+            const check = log.find((q) => q.sql.includes('FOR UPDATE OF p'));
+            expect(check?.params).toEqual(['pkg-1', 'org-1']);
+            expect(deletes(log).map((q) => q.params)).toEqual([
+                ['pkg-1', 'org-1'],
+            ]);
+            expect(runner.commitTransaction).toHaveBeenCalled();
+        });
+
+        it('deletes a package that is ASSIGNED but on no shift', async () => {
+            const { service, log } = build({
+                stored: [{ optimisation_id: null, status: 'ASSIGNED' }],
+            });
+
+            await service.deleteUndispatched('org-1', 'pkg-1');
+
+            expect(deletes(log)).toHaveLength(1);
+        });
+
+        it('passes on the refusal to unassign a package that has been loaded', async () => {
+            const { service, assignment, log } = build();
+            const refused = new ConflictException(
+                'Package pkg-1 is IN_TRANSIT and can no longer be moved.',
+            );
+            assignment.unassign.mockRejectedValue(refused);
+
+            await expect(
+                service.deleteUndispatched('org-1', 'pkg-1'),
+            ).rejects.toBe(refused);
+            expect(deletes(log)).toHaveLength(0);
+        });
+
+        it('deletes nothing and throws when the package was put back on a shift in between', async () => {
+            const { service, runner, log } = build({
+                stored: [{ optimisation_id: 'shift-9', status: 'ASSIGNED' }],
+            });
+
+            await expect(
+                service.deleteUndispatched('org-1', 'pkg-1'),
+            ).rejects.toBeInstanceOf(ConflictException);
+            expect(deletes(log)).toHaveLength(0);
+            expect(runner.rollbackTransaction).toHaveBeenCalled();
+        });
+
+        it('counts a package that is already gone as deleted', async () => {
+            const { service, assignment, log } = build({ stored: [] });
+            assignment.unassign.mockRejectedValue(
+                new NotFoundException('Package not found.'),
+            );
+
+            await expect(
+                service.deleteUndispatched('org-1', 'pkg-1'),
+            ).resolves.toBeUndefined();
+            expect(deletes(log)).toHaveLength(0);
         });
     });
 });

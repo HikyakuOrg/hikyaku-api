@@ -4,19 +4,19 @@ import { DataSource, QueryRunner } from 'typeorm';
 import { toE164OrNull } from 'src/common/phone';
 import { CustomersService } from 'src/customers/customers.service';
 import { PackagesService } from 'src/packages/packages.service';
-import type {
-    FulfillmentDeliveryMethod,
-    OrderEventDto,
-    OrderFulfillmentGroupDto,
+import {
+    ORDER_FULFILLMENT_UPDATED,
+    ORDER_PAID,
+    type FulfillmentDeliveryMethod,
+    type OrderEventDto,
+    type OrderFulfillmentGroupDto,
+    type OrderPaidPayload,
 } from './dto/order-event.dto';
 import {
     OrderGeocoder,
     UngeocodableAddressError,
     type GeocodedPoint,
 } from './order-geocoder';
-
-/** The only event type that produces a package. */
-const ORDER_PAID = 'order.paid';
 
 /**
  * Parcel size used when the storefront sends none, which is always: no
@@ -34,6 +34,19 @@ const DELIVERED_METHODS: ReadonlySet<FulfillmentDeliveryMethod> = new Set([
     'shipping',
     'local',
 ]);
+
+/**
+ * Statuses a package can still be taken off its shift and deleted in: it has
+ * not been loaded. Past them the parcel is in a van or delivered, and only a
+ * person can sort out a re-routing.
+ */
+const REMOVABLE_STATUSES: ReadonlySet<string> = new Set([
+    'PENDING',
+    'ASSIGNED',
+]);
+
+/** Package weights closer than this, in kg, are the same parcel. */
+const WEIGHT_TOLERANCE_KG = 0.001;
 
 /** A claimed ledger row, as the worker hands it over. */
 export interface ClaimedOrderEvent {
@@ -76,6 +89,12 @@ interface OrderPackageRow {
     id: string;
     to_customer: string;
     external_fulfillment_id: string | null;
+    tracking_number: string;
+    warehouse_id: string | null;
+    /** numeric, so node-postgres hands it over as a string. */
+    weight_kg: string | number | null;
+    /** Latest timeline status; null reads as PENDING. */
+    status: string | null;
 }
 
 /** A storefront location's mapping, with its warehouse when it has one. */
@@ -93,23 +112,68 @@ interface PackageToCreate {
     fulfillmentId: string | null;
 }
 
+/** A package to take off its shift and delete, and why, for the log. */
+interface PackageToRemove {
+    pkg: OrderPackageRow;
+    reason: string;
+}
+
 /**
- * Turns one recorded order event into a customer and its packages, and
- * assigns them: the second half of the generic ecommerce connector.
+ * The event being processed, and the order.paid body the order's recipient,
+ * items and address come from: the event itself for `order.paid`, the order's
+ * newest recorded `order.paid` for `order.fulfillment_updated`.
+ */
+interface OrderContext {
+    event: ClaimedOrderEvent;
+    paid: OrderPaidPayload;
+}
+
+/** What the ledger says about an order's routing, across all its events. */
+export interface OrderRouting {
+    /** The newest order.paid body, or null when none has arrived yet. */
+    paid: OrderPaidPayload | null;
+    /**
+     * The order's current fulfillment groups: those of the newest event that
+     * carries any. Null when no event does, so the order ships whole.
+     */
+    groups: OrderFulfillmentGroupDto[] | null;
+    /** Groups the storefront re-routed or cancelled, and no longer lists. */
+    released: Set<string>;
+}
+
+/**
+ * Turns recorded order events into a customer and packages, and keeps the
+ * packages in step with the storefront's routing: the second half of the
+ * generic ecommerce connector.
  *
- * An order without fulfillment groups becomes one package from the warehouse
- * nearest the recipient. An order with them becomes one package per group
- * that is delivered (`shipping` or `local`), each from the warehouse its
- * storefront location is mapped to. A group whose location is not mapped
+ * `order.paid`: an order without fulfillment groups becomes one package from
+ * the warehouse nearest the recipient. An order with them becomes one package
+ * per group that is delivered (`shipping` or `local`), each from the warehouse
+ * its storefront location is mapped to. A group whose location is not mapped
  * never falls back to the nearest warehouse: the merchant has said where the
  * items are, so guessing would send a van to a depot that does not have them.
+ * A package that already exists for a group is kept as it is.
+ *
+ * `order.fulfillment_updated`: the storefront re-routed the order after
+ * payment. Its packages are reconciled with the order's current groups: a
+ * package whose group now ships from another warehouse, weighs something
+ * else, or was released (moved out of, merged away, cancelled) is taken off
+ * its shift and deleted, and every current group without a package gets one.
+ * If any package the change touches has already been loaded, nothing is
+ * changed and the event needs attention: taking a parcel off the plan does not
+ * take it out of the van.
+ *
+ * Both work from the order's current routing, not only their own body: the
+ * groups of the newest event that has any (see loadRouting). So an order.paid
+ * processed or retried after a re-routing builds the routing as it is now.
  *
  * Every outcome it can decide on is written back to the ledger row here:
  * `processed` (with the customer and packages it produced), `skipped`
  * (nothing to deliver) or `needs_attention` (a human has to fix something
  * first; the groups that could be processed already have their packages). It
  * only throws for failures worth retrying (geocoder unreachable, database
- * error), which the worker turns into a backoff.
+ * error, a package re-assigned while it was being removed), which the worker
+ * turns into a backoff.
  *
  * IDEMPOTENT PER ORDER AND GROUP, not just per event. Each package commits
  * with its link to the event, and packages_org_external_fulfillment_key
@@ -135,18 +199,29 @@ export class OrderEventProcessor {
     }
 
     private async decide(event: ClaimedOrderEvent): Promise<OrderEventOutcome> {
-        const { payload } = event;
+        const reroute = event.event_type === ORDER_FULFILLMENT_UPDATED;
 
         // Cancellations and refunds will arrive as their own event types; until
         // they do anything, recording them is all there is to do.
-        if (event.event_type !== ORDER_PAID) {
+        if (event.event_type !== ORDER_PAID && !reroute) {
             return {
                 status: 'skipped',
                 error: `Event type "${event.event_type}" does not create a package.`,
             };
         }
 
-        const delivery = payload.delivery;
+        const routing = await this.loadRouting(event);
+        const paid = reroute
+            ? routing.paid
+            : (event.payload as OrderPaidPayload);
+        if (!paid) {
+            return {
+                status: 'skipped',
+                error: 'No order.paid event has been received for this order yet. When it arrives, the order is dispatched as it is routed then.',
+            };
+        }
+
+        const delivery = paid.delivery;
         if (!delivery?.required || !delivery.address) {
             return {
                 status: 'skipped',
@@ -154,16 +229,54 @@ export class OrderEventProcessor {
             };
         }
 
-        const groups = payload.fulfillment_groups ?? [];
-        return groups.length > 0
-            ? this.decideGroups(event, groups)
-            : this.decideOrder(event);
+        const context: OrderContext = { event, paid };
+        return routing.groups
+            ? this.decideGroups(context, routing.groups, routing.released)
+            : this.decideOrder(context);
+    }
+
+    /**
+     * The order's routing as its recorded events describe it, oldest first so
+     * the newest wins. Events are ordered by when they were received: the
+     * connector reads the routing just before it sends, so that is the order
+     * the routings were read in. Every status counts, a skipped update too:
+     * it still says how the order is routed.
+     */
+    private async loadRouting(event: ClaimedOrderEvent): Promise<OrderRouting> {
+        const rows: {
+            id: string;
+            event_type: string;
+            payload: OrderEventDto;
+        }[] = await this.dataSource.query(
+            `SELECT id, event_type, payload FROM public.integration_order_event
+              WHERE organisation_id = $1 AND platform = $2 AND external_order_id = $3
+                AND event_type = ANY($4::text[])
+              ORDER BY created_at, id`,
+            [
+                event.organisation_id,
+                event.platform,
+                event.payload.order.id,
+                [ORDER_PAID, ORDER_FULFILLMENT_UPDATED],
+            ],
+        );
+        // The event being processed is always in the ledger; should the read
+        // miss it anyway, it is the newest thing known.
+        if (!rows.some((row) => row.id === event.id)) {
+            rows.push({
+                id: event.id,
+                event_type: event.event_type,
+                payload: event.payload,
+            });
+        }
+        return routingOf(rows);
     }
 
     /** The whole order as one package, from the warehouse nearest the recipient. */
     private async decideOrder(
-        event: ClaimedOrderEvent,
+        context: OrderContext,
     ): Promise<OrderEventOutcome> {
+        const { event, paid } = context;
+
         // The same order already became a package (or packages) through
         // another event.
         const existing = await this.findPackagesForOrder(event);
@@ -178,7 +291,7 @@ export class OrderEventProcessor {
 
         let point: GeocodedPoint;
         try {
-            point = await this.locate(event.payload);
+            point = await this.locate(paid);
         } catch (err) {
             if (err instanceof UngeocodableAddressError) {
                 return { status: 'needs_attention', error: err.message };
@@ -186,7 +299,7 @@ export class OrderEventProcessor {
             throw err;
         }
 
-        const customerId = await this.upsertRecipient(event, point);
+        const customerId = await this.upsertRecipient(context, point);
 
         const warehouse = await this.nearestWarehouse(
             event.organisation_id,
@@ -200,10 +313,10 @@ export class OrderEventProcessor {
             };
         }
 
-        const packageIds = await this.createAndAssign(event, customerId, [
+        const packageIds = await this.createAndAssign(context, customerId, [
             {
                 warehouse,
-                weightKg: weightKg(event.payload),
+                weightKg: weightKg(paid),
                 fulfillmentId: null,
             },
         ]);
@@ -211,18 +324,23 @@ export class OrderEventProcessor {
     }
 
     /**
-     * One package per delivered group, from its location's warehouse. Groups
-     * that already have a package (an earlier attempt, a retry, the same order
-     * under another key) are linked, not made again. The outcome is the worst
-     * across the groups: any group that needs a human makes the event
-     * `needs_attention`, but every group that could be processed still gets
-     * its package.
+     * One package per delivered group, from its location's warehouse. On
+     * order.paid, groups that already have a package (an earlier attempt, a
+     * retry, the same order under another key) are linked, not made again. On
+     * order.fulfillment_updated, a package that no longer matches its group,
+     * or whose group was released, is replaced or removed first.
+     *
+     * The outcome is the worst across the groups: any group that needs a
+     * human makes the event `needs_attention`, but every group that could be
+     * processed still gets its package.
      */
     private async decideGroups(
-        event: ClaimedOrderEvent,
+        context: OrderContext,
         groups: OrderFulfillmentGroupDto[],
+        released: Set<string>,
     ): Promise<OrderEventOutcome> {
-        const { payload } = event;
+        const { event, paid } = context;
+        const reroute = event.event_type === ORDER_FULFILLMENT_UPDATED;
         const platform = platformLabel(event.platform);
 
         const existing = await this.findPackagesForOrder(event);
@@ -235,45 +353,63 @@ export class OrderEventProcessor {
         );
         if (whole.length > 0) {
             await this.link(this.dataSource, event.id, whole);
+            const packageIds = whole.map((p) => p.id);
+            const customerId = whole[0].to_customer;
+            if (!reroute) {
+                return { status: 'processed', customerId, packageIds };
+            }
             return {
-                status: 'processed',
-                customerId: whole[0].to_customer,
-                packageIds: whole.map((p) => p.id),
+                status: 'needs_attention',
+                error: `The order was dispatched as one package (${trackingNumbers(whole)}) before ${platform} routed it by location, so its re-routing was not applied. Check the package by hand.`,
+                customerId,
+                packageIds,
             };
         }
 
-        const shopDomain = normaliseShopDomain(payload.source.shop_domain);
+        const shopDomain = normaliseShopDomain(paid.source.shop_domain);
         const mappings = shopDomain
             ? await this.findLocationMappings(event, shopDomain, groups)
             : new Map<string, MappingRow>();
 
-        const linked: OrderPackageRow[] = [];
+        const byGroup = new Map(
+            existing.map((p) => [p.external_fulfillment_id, p]),
+        );
+        const kept: OrderPackageRow[] = [];
+        const toRemove: PackageToRemove[] = [];
         const toCreate: PackageToCreate[] = [];
         const problems = new Set<string>();
         const skips: string[] = [];
 
         for (const group of groups) {
             const location = locationName(group, mappings);
-            if (!DELIVERED_METHODS.has(group.delivery_method)) {
-                skips.push(
-                    `The items from ${platform} location '${location}' are ${
-                        group.delivery_method === 'pickup'
-                            ? 'picked up'
-                            : 'not delivered'
-                    }.`,
-                );
+            const current = byGroup.get(group.id);
+
+            // order.paid never second-guesses a package that exists.
+            if (current && !reroute) {
+                kept.push(current);
                 continue;
             }
 
-            const done = existing.find(
-                (p) => p.external_fulfillment_id === group.id,
-            );
-            if (done) {
-                linked.push(done);
+            if (!DELIVERED_METHODS.has(group.delivery_method)) {
+                const how =
+                    group.delivery_method === 'pickup'
+                        ? 'picked up'
+                        : 'not delivered';
+                skips.push(
+                    `The items from ${platform} location '${location}' are ${how}.`,
+                );
+                if (current) {
+                    toRemove.push({ pkg: current, reason: `now ${how}` });
+                }
                 continue;
             }
 
             if (!shopDomain) {
+                // Without the shop there is no mapping to judge a package by.
+                if (current) {
+                    kept.push(current);
+                    continue;
+                }
                 problems.add(
                     `The order has no shop domain, so its ${platform} locations cannot be matched to Hikyaku warehouses. Send source.shop_domain, then retry.`,
                 );
@@ -285,39 +421,106 @@ export class OrderEventProcessor {
                 skips.push(
                     `${platform} location '${location}' is not delivered by Hikyaku.`,
                 );
+                if (current) {
+                    toRemove.push({
+                        pkg: current,
+                        reason: `now ships from '${location}', which Hikyaku does not deliver for`,
+                    });
+                }
                 continue;
             }
             if (mapping?.mode !== 'warehouse' || !mapping.warehouse_id) {
                 problems.add(
                     `${platform} location '${location}' isn't mapped to a Hikyaku warehouse. Map it in the ${platform} app, then retry.`,
                 );
+                if (current) {
+                    toRemove.push({
+                        pkg: current,
+                        reason: `now ships from unmapped location '${location}'`,
+                    });
+                }
                 continue;
             }
 
-            toCreate.push({
+            const wanted: PackageToCreate = {
                 warehouse: { ...mapping, id: mapping.warehouse_id },
-                weightKg: groupWeightKg(payload, group),
+                weightKg: groupWeightKg(paid, group),
                 fulfillmentId: group.id,
-            });
+            };
+            if (current) {
+                const change = packageChange(current, wanted);
+                if (!change) {
+                    kept.push(current);
+                    continue;
+                }
+                toRemove.push({ pkg: current, reason: change });
+            }
+            toCreate.push(wanted);
         }
 
-        await this.link(this.dataSource, event.id, linked);
-        const packageIds = linked.map((p) => p.id);
+        // A released group the storefront no longer lists: its items were
+        // moved out, merged into another group, or cancelled. A group that is
+        // merely missing (fulfilled, say) keeps its package.
+        const listed = new Set(groups.map((g) => g.id));
+        for (const pkg of existing) {
+            const groupId = pkg.external_fulfillment_id;
+            if (reroute && groupId && !listed.has(groupId)) {
+                if (released.has(groupId)) {
+                    toRemove.push({ pkg, reason: 'released' });
+                }
+            }
+        }
+
+        // Any touched parcel that is already loaded or delivered stops the
+        // whole change: the new groups may well hold the same items.
+        const moving = toRemove.filter(
+            ({ pkg }) => !REMOVABLE_STATUSES.has(pkg.status ?? 'PENDING'),
+        );
+        if (moving.length > 0) {
+            const packageIds = existing.map((p) => p.id);
+            await this.link(this.dataSource, event.id, existing);
+            return {
+                status: 'needs_attention',
+                error: `${platform} re-routed items that have already left the depot, so nothing was changed: ${moving
+                    .map(
+                        ({ pkg }) =>
+                            `package ${pkg.tracking_number} is ${pkg.status}`,
+                    )
+                    .join(
+                        ', ',
+                    )}. Sort the order out by hand, then retry if it still needs new packages.`,
+                customerId: existing[0]?.to_customer,
+                packageIds,
+            };
+        }
+
+        for (const { pkg, reason } of toRemove) {
+            await this.packages.deleteUndispatched(
+                event.organisation_id,
+                pkg.id,
+            );
+            this.logger.log(
+                `Order event ${event.id}: removed package ${pkg.id} (${pkg.tracking_number}) for fulfillment group ${pkg.external_fulfillment_id}: ${reason}.`,
+            );
+        }
+
+        await this.link(this.dataSource, event.id, kept);
+        const packageIds = kept.map((p) => p.id);
         let customerId: string | undefined = existing[0]?.to_customer;
 
         if (toCreate.length > 0) {
             let point: GeocodedPoint | null = null;
             try {
-                point = await this.locate(payload);
+                point = await this.locate(paid);
             } catch (err) {
                 if (!(err instanceof UngeocodableAddressError)) throw err;
                 problems.add(err.message);
             }
             if (point) {
-                customerId = await this.upsertRecipient(event, point);
+                customerId = await this.upsertRecipient(context, point);
                 packageIds.push(
                     ...(await this.createAndAssign(
-                        event,
+                        context,
                         customerId,
                         toCreate,
                     )),
@@ -333,15 +536,20 @@ export class OrderEventProcessor {
                 packageIds,
             };
         }
-        if (packageIds.length > 0 && customerId) {
+        // A re-routing that removed packages did something even when nothing
+        // is left to deliver.
+        if (customerId && (packageIds.length > 0 || toRemove.length > 0)) {
             return { status: 'processed', customerId, packageIds };
         }
-        return { status: 'skipped', error: skips.join(' ') };
+        return {
+            status: 'skipped',
+            error: skips.join(' ') || 'Nothing is left to deliver.',
+        };
     }
 
     /** Coordinates from the storefront when it sent them, else Photon. */
-    private async locate(payload: OrderEventDto): Promise<GeocodedPoint> {
-        const { latitude, longitude, address } = payload.delivery;
+    private async locate(paid: OrderPaidPayload): Promise<GeocodedPoint> {
+        const { latitude, longitude, address } = paid.delivery;
         if (
             typeof latitude === 'number' &&
             typeof longitude === 'number' &&
@@ -361,20 +569,19 @@ export class OrderEventProcessor {
 
     /** The person the parcels go to. */
     private async upsertRecipient(
-        event: ClaimedOrderEvent,
+        { event, paid }: OrderContext,
         point: GeocodedPoint,
     ): Promise<string> {
-        const { payload } = event;
-        const { delivery } = payload;
+        const { delivery } = paid;
         const address = delivery.address!;
         return this.customers.upsertFromExternalOrder(
             event.organisation_id,
             {
-                name: recipientName(payload),
+                name: recipientName(paid),
                 phone: toE164OrNull(
-                    delivery.phone ?? payload.customer?.phone ?? '',
+                    delivery.phone ?? paid.customer?.phone ?? '',
                 ),
-                email: delivery.email ?? payload.customer?.email ?? null,
+                email: delivery.email ?? paid.customer?.email ?? null,
                 address: {
                     lon: point.lon,
                     lat: point.lat,
@@ -389,10 +596,10 @@ export class OrderEventProcessor {
                 peliasGid: point.gid,
                 peliasRaw: point.raw,
             },
-            payload.customer?.id
+            paid.customer?.id
                 ? {
                       platform: event.platform,
-                      externalCustomerId: payload.customer.id,
+                      externalCustomerId: paid.customer.id,
                   }
                 : null,
         );
@@ -459,10 +666,10 @@ export class OrderEventProcessor {
      * the same store and depot shares it rather than minting a new one.
      */
     private async upsertSender(
-        event: ClaimedOrderEvent,
+        { event, paid }: OrderContext,
         warehouse: WarehouseRow,
     ): Promise<string> {
-        const store = event.payload.source.shop_domain ?? event.platform;
+        const store = paid.source.shop_domain ?? event.platform;
         return this.customers.upsertFromExternalOrder(
             event.organisation_id,
             {
@@ -492,16 +699,17 @@ export class OrderEventProcessor {
      * replan worker either way.
      */
     private async createAndAssign(
-        event: ClaimedOrderEvent,
+        context: OrderContext,
         recipientId: string,
         specs: PackageToCreate[],
     ): Promise<string[]> {
+        const { event } = context;
         const ids: string[] = [];
         const made: string[] = [];
         for (const spec of specs) {
-            const senderId = await this.upsertSender(event, spec.warehouse);
+            const senderId = await this.upsertSender(context, spec.warehouse);
             const created = await this.createPackage(
-                event,
+                context,
                 spec,
                 senderId,
                 recipientId,
@@ -529,12 +737,11 @@ export class OrderEventProcessor {
      * instead.
      */
     private async createPackage(
-        event: ClaimedOrderEvent,
+        { event, paid }: OrderContext,
         spec: PackageToCreate,
         senderId: string,
         recipientId: string,
     ): Promise<{ id: string; raced: boolean }> {
-        const { payload } = event;
         const runner = this.dataSource.createQueryRunner();
         await runner.connect();
         await runner.startTransaction();
@@ -547,7 +754,7 @@ export class OrderEventProcessor {
                         warehouseId: spec.warehouse.id,
                         fromCustomerId: senderId,
                         toCustomerId: recipientId,
-                        deliveryNotes: payload.delivery.instructions ?? null,
+                        deliveryNotes: paid.delivery.instructions ?? null,
                         weightKg: spec.weightKg,
                         lengthCm: DEFAULT_DIMENSIONS_CM.length,
                         widthCm: DEFAULT_DIMENSIONS_CM.width,
@@ -558,8 +765,8 @@ export class OrderEventProcessor {
                         deadlineAt: null,
                         externalOrder: {
                             platform: event.platform,
-                            id: payload.order.id,
-                            name: payload.order.name ?? null,
+                            id: paid.order.id,
+                            name: paid.order.name ?? null,
                             fulfillmentId: spec.fulfillmentId,
                         },
                     },
@@ -585,14 +792,29 @@ export class OrderEventProcessor {
         }
     }
 
-    /** Every package already made from this storefront order, oldest first. */
+    /**
+     * Every package already made from this storefront order, oldest first,
+     * with what a re-routing compares: its warehouse, weight and status.
+     */
     private async findPackagesForOrder(
         event: ClaimedOrderEvent,
     ): Promise<OrderPackageRow[]> {
         return this.dataSource.query(
-            `SELECT id, to_customer, external_fulfillment_id FROM packages
-              WHERE organisation_id = $1 AND external_platform = $2 AND external_order_id = $3
-              ORDER BY created_at, id`,
+            `SELECT p.id, p.to_customer, p.external_fulfillment_id,
+                    p.tracking_number, p.warehouse_id, d.weight_kg,
+                    latest.enums AS status
+               FROM packages p
+               LEFT JOIN package_dimensions d ON d.package_id = p.id
+               LEFT JOIN LATERAL (
+                    SELECT ps.enums
+                      FROM package_timeline pt
+                      JOIN package_status  ps ON ps.id = pt.package_status
+                     WHERE pt.package_id = p.id
+                     ORDER BY pt.created_at DESC, pt.id DESC
+                     LIMIT 1
+               ) latest ON true
+              WHERE p.organisation_id = $1 AND p.external_platform = $2 AND p.external_order_id = $3
+              ORDER BY p.created_at, p.id`,
             [event.organisation_id, event.platform, event.payload.order.id],
         );
     }
@@ -643,19 +865,75 @@ export class OrderEventProcessor {
     }
 }
 
+/**
+ * Folds an order's order.paid and order.fulfillment_updated events, oldest
+ * first, into its current routing. The newest order.paid gives the order;
+ * the newest event with groups gives the groups (an order.paid only counts
+ * when it has some, an update always does, even with none left); released
+ * ids add up across updates, less any group listed again.
+ */
+export function routingOf(
+    events: { event_type: string; payload: OrderEventDto }[],
+): OrderRouting {
+    let paid: OrderPaidPayload | null = null;
+    let groups: OrderFulfillmentGroupDto[] | null = null;
+    const released = new Set<string>();
+
+    for (const { event_type: type, payload } of events) {
+        if (type === ORDER_PAID) {
+            paid = payload as OrderPaidPayload;
+            if (payload.fulfillment_groups?.length) {
+                groups = payload.fulfillment_groups;
+            }
+        } else if (type === ORDER_FULFILLMENT_UPDATED) {
+            groups = payload.fulfillment_groups ?? [];
+            for (const id of payload.released_group_ids ?? []) {
+                released.add(id);
+            }
+        }
+    }
+    for (const group of groups ?? []) released.delete(group.id);
+
+    return { paid, groups, released };
+}
+
+/**
+ * Why a group's package no longer matches it, or null when it does: another
+ * warehouse (the group moved, or its location was mapped elsewhere), or
+ * another weight (items split off or merged in).
+ */
+function packageChange(
+    pkg: OrderPackageRow,
+    wanted: PackageToCreate,
+): string | null {
+    if (pkg.warehouse_id !== wanted.warehouse.id) {
+        return `now ships from warehouse ${wanted.warehouse.warehouse_name}`;
+    }
+    const weight = Number(pkg.weight_kg);
+    if (
+        pkg.weight_kg === null ||
+        !Number.isFinite(weight) ||
+        Math.abs(weight - wanted.weightKg) > WEIGHT_TOLERANCE_KG
+    ) {
+        return `now weighs ${wanted.weightKg} kg`;
+    }
+    return null;
+}
+
+function trackingNumbers(packages: OrderPackageRow[]): string {
+    return packages.map((p) => p.tracking_number).join(', ');
+}
+
 /** delivery.recipient_name, then the customer's name, then the order number. */
-function recipientName(payload: OrderEventDto): string {
-    const fromCustomer = [
-        payload.customer?.first_name,
-        payload.customer?.last_name,
-    ]
+function recipientName(paid: OrderPaidPayload): string {
+    const fromCustomer = [paid.customer?.first_name, paid.customer?.last_name]
         .filter((part) => part?.trim())
         .join(' ');
     return (
-        payload.delivery.recipient_name?.trim() ||
+        paid.delivery.recipient_name?.trim() ||
         fromCustomer ||
-        payload.delivery.address?.company?.trim() ||
-        `Order ${payload.order.name}`
+        paid.delivery.address?.company?.trim() ||
+        `Order ${paid.order.name}`
     );
 }
 
@@ -694,11 +972,11 @@ function normaliseShopDomain(domain: string | null | undefined): string {
  * package_dimensions.weight_kg must be positive, and a digital line item
  * weighs nothing, so only items that ship are counted.
  */
-export function weightKg(payload: OrderEventDto): number {
-    const total = payload.order.total_weight_grams;
+export function weightKg(paid: OrderPaidPayload): number {
+    const total = paid.order.total_weight_grams;
     if (typeof total === 'number' && total > 0) return total / 1000;
 
-    const items = (payload.order.line_items ?? [])
+    const items = (paid.order.line_items ?? [])
         .filter((item) => item.requires_shipping)
         .reduce((sum, item) => sum + item.grams * item.quantity, 0);
     if (items > 0) return items / 1000;
@@ -709,17 +987,18 @@ export function weightKg(payload: OrderEventDto): number {
 /**
  * One group's weight: its own total, else its shippable line items' grams
  * times the quantity this group fulfils (less than the line item's own
- * quantity when a line is split across locations), else a default.
+ * quantity when a line is split across locations), else a default. Line items
+ * the order does not list (added by a later order edit) count for nothing.
  */
 export function groupWeightKg(
-    payload: OrderEventDto,
+    paid: OrderPaidPayload,
     group: OrderFulfillmentGroupDto,
 ): number {
     const total = group.total_weight_grams;
     if (typeof total === 'number' && total > 0) return total / 1000;
 
     const byId = new Map(
-        (payload.order.line_items ?? []).map((item) => [item.id, item]),
+        (paid.order.line_items ?? []).map((item) => [item.id, item]),
     );
     const items = group.line_items.reduce((sum, ref) => {
         const item = byId.get(ref.line_item_id);

@@ -5,11 +5,13 @@ import type {
     OrderDeliveryAddressDto,
     OrderEventDto,
     OrderFulfillmentGroupDto,
+    OrderPaidPayload,
 } from './dto/order-event.dto';
 import {
     OrderEventProcessor,
     groupWeightKg,
     platformLabel,
+    routingOf,
     weightKg,
     type ClaimedOrderEvent,
 } from './order-event.processor';
@@ -21,7 +23,7 @@ import {
 
 type QueryMock = jest.Mock<Promise<unknown>, [string, unknown[]?]>;
 
-const payload = (overrides: Record<string, unknown> = {}): OrderEventDto =>
+const payload = (overrides: Record<string, unknown> = {}): OrderPaidPayload =>
     ({
         event: {
             id: 'evt-1',
@@ -69,7 +71,7 @@ const payload = (overrides: Record<string, unknown> = {}): OrderEventDto =>
             instructions: 'Leave at reception',
         },
         ...overrides,
-    }) as unknown as OrderEventDto;
+    }) as unknown as OrderPaidPayload;
 
 const event = (
     overrides: Partial<ClaimedOrderEvent> = {},
@@ -105,6 +107,16 @@ interface PackageRow {
     id: string;
     to_customer: string;
     external_fulfillment_id: string | null;
+    tracking_number?: string;
+    warehouse_id?: string | null;
+    weight_kg?: string | null;
+    status?: string | null;
+}
+
+interface LedgerRow {
+    id: string;
+    event_type: string;
+    payload: OrderEventDto;
 }
 
 interface MappingRow {
@@ -157,7 +169,7 @@ const groupedPayload = (
             { line_item_id: 'li-2', quantity: 1 },
         ]),
     ],
-): OrderEventDto =>
+): OrderPaidPayload =>
     payload({
         order: {
             id: 'gid://shopify/Order/1',
@@ -186,6 +198,8 @@ describe('OrderEventProcessor', () => {
         packages: PackageRow[];
         warehouse: Warehouse | null;
         mappings: ReturnType<typeof mapping>[];
+        /** integration_order_event rows for the order, oldest first. */
+        ledger: LedgerRow[];
     };
     let query: QueryMock;
     let runner: {
@@ -212,6 +226,10 @@ describe('OrderEventProcessor', () => {
             Promise<void>,
             Parameters<PackagesService['assignCreated']>
         >;
+        deleteUndispatched: jest.Mock<
+            Promise<void>,
+            Parameters<PackagesService['deleteUndispatched']>
+        >;
     };
     let geocoder: {
         geocodeAddress: jest.Mock<
@@ -237,9 +255,21 @@ describe('OrderEventProcessor', () => {
 
     const specs = () => packages.createMany.mock.calls.map(([, , s]) => s[0]);
 
+    /** Packages made so far, for ids that stay unique after a delete. */
+    let made: number;
+
     beforeEach(() => {
-        state = { packages: [], warehouse: WAREHOUSE, mappings: [] };
+        made = 0;
+        state = {
+            packages: [],
+            warehouse: WAREHOUSE,
+            mappings: [],
+            ledger: [],
+        };
         query = jest.fn((sql: string, params?: unknown[]): Promise<unknown> => {
+            if (sql.includes('FROM public.integration_order_event')) {
+                return Promise.resolve([...state.ledger]);
+            }
             if (sql.includes('FROM public.integration_location_mapping')) {
                 const ids = params![3] as string[];
                 return Promise.resolve(
@@ -296,12 +326,17 @@ describe('OrderEventProcessor', () => {
                 Promise<string[]>,
                 Parameters<PackagesService['createMany']>
             >((_runner, _org, [spec]) => {
-                const id = `pkg-${state.packages.length + 1}`;
+                const id = `pkg-${++made}`;
                 state.packages.push({
                     id,
                     to_customer: spec.toCustomerId,
                     external_fulfillment_id:
                         spec.externalOrder?.fulfillmentId ?? null,
+                    tracking_number: `HK-${made}`,
+                    warehouse_id: spec.warehouseId,
+                    // numeric comes back from node-postgres as a string.
+                    weight_kg: spec.weightKg.toFixed(3),
+                    status: 'PENDING',
                 });
                 return Promise.resolve([id]);
             }),
@@ -311,6 +346,13 @@ describe('OrderEventProcessor', () => {
                     Parameters<PackagesService['assignCreated']>
                 >()
                 .mockResolvedValue(undefined),
+            deleteUndispatched: jest.fn<
+                Promise<void>,
+                Parameters<PackagesService['deleteUndispatched']>
+            >((_org, id) => {
+                state.packages = state.packages.filter((p) => p.id !== id);
+                return Promise.resolve();
+            }),
         };
         geocoder = {
             geocodeAddress: jest
@@ -1085,6 +1127,448 @@ describe('OrderEventProcessor', () => {
             )!;
             expect(params![2]).toBe('hikyaku.myshopify.com');
         });
+    });
+
+    describe('a re-routing after payment (order.fulfillment_updated)', () => {
+        const MEL_ITEMS = [{ line_item_id: 'li-1', quantity: 2 }];
+        const SYD_ITEMS = [{ line_item_id: 'li-2', quantity: 1 }];
+
+        /** The order.paid row, recorded in the ledger as the worker sees it. */
+        const paidEvent = (groups?: OrderFulfillmentGroupDto[]) => {
+            const paid = event({ payload: groupedPayload(groups) });
+            state.ledger.push({
+                id: paid.id,
+                event_type: paid.event_type,
+                payload: paid.payload,
+            });
+            return paid;
+        };
+
+        /** An order.fulfillment_updated row, recorded after everything before it. */
+        const update = (
+            groups: OrderFulfillmentGroupDto[],
+            released: string[] = [],
+            id = `ledger-u${state.ledger.length + 1}`,
+        ): ClaimedOrderEvent => {
+            const body = {
+                event: {
+                    id: `evt-${id}`,
+                    type: 'order.fulfillment_updated',
+                    occurred_at: '2026-09-28T00:00:00Z',
+                    api_version: '2025-01',
+                },
+                source: {
+                    platform: 'shopify',
+                    shop_domain: 'hikyaku.myshopify.com',
+                    app_version: '0.1.0',
+                },
+                order: { id: 'gid://shopify/Order/1', name: '#1001' },
+                fulfillment_groups: groups,
+                released_group_ids: released,
+            } as unknown as OrderEventDto;
+            state.ledger.push({
+                id,
+                event_type: 'order.fulfillment_updated',
+                payload: body,
+            });
+            return event({
+                id,
+                event_type: 'order.fulfillment_updated',
+                payload: body,
+            });
+        };
+
+        /** Melbourne and Sydney both mapped, and order.paid made pkg-1 and pkg-2. */
+        const paidAndDispatchedFromBoth = async () => {
+            state.mappings = [
+                mapping('loc-mel', 'Melbourne DC', 'warehouse', MELBOURNE),
+                mapping('loc-syd', 'Sydney DC', 'warehouse', SYDNEY),
+            ];
+            await processor.process(paidEvent());
+            expect(state.packages.map((p) => p.id)).toEqual(['pkg-1', 'pkg-2']);
+            jest.clearAllMocks();
+        };
+
+        it('replaces the package of a group moved whole to another location, keeping the others', async () => {
+            await paidAndDispatchedFromBoth();
+
+            // Shopify moved fo-2 to Melbourne under the same id.
+            const outcome = await processor.process(
+                update([
+                    group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS),
+                    group('fo-2', 'loc-mel', 'Melbourne DC', SYD_ITEMS),
+                ]),
+            );
+
+            expect(outcome).toEqual({
+                status: 'processed',
+                customerId: 'cust-recipient',
+                packageIds: ['pkg-1', 'pkg-3'],
+            });
+            expect(packages.deleteUndispatched.mock.calls).toEqual([
+                ['org-1', 'pkg-2'],
+            ]);
+            expect(specs()).toEqual([
+                expect.objectContaining({
+                    warehouseId: 'wh-mel',
+                    fromCustomerId: 'cust-sender-melbourne-dc',
+                    toCustomerId: 'cust-recipient',
+                    weightKg: 1,
+                    // Recipient, notes and order come from the order.paid.
+                    deliveryNotes: 'Leave at reception',
+                    externalOrder: {
+                        platform: 'shopify',
+                        id: 'gid://shopify/Order/1',
+                        name: '#1001',
+                        fulfillmentId: 'fo-2',
+                    },
+                }),
+            ]);
+            expect(customers.upsertFromExternalOrder.mock.calls[0][1]).toEqual(
+                expect.objectContaining({ name: 'Test Recipient' }),
+            );
+            expect(packages.assignCreated).toHaveBeenCalledWith('org-1', [
+                'pkg-3',
+            ]);
+            expect(links(query)).toEqual([['ledger-u2', ['pkg-1'], ['fo-1']]]);
+            expect(links(runner.query)).toEqual([
+                ['ledger-u2', ['pkg-3'], ['fo-2']],
+            ]);
+        });
+
+        it('replaces a package whose group lost items to a partial move, and makes one for the moved items', async () => {
+            await paidAndDispatchedFromBoth();
+
+            // One of fo-1's two units moved to Sydney as fo-3.
+            const outcome = await processor.process(
+                update([
+                    group('fo-1', 'loc-mel', 'Melbourne DC', [
+                        { line_item_id: 'li-1', quantity: 1 },
+                    ]),
+                    group('fo-2', 'loc-syd', 'Sydney DC', SYD_ITEMS),
+                    group('fo-3', 'loc-syd', 'Sydney DC', [
+                        { line_item_id: 'li-1', quantity: 1 },
+                    ]),
+                ]),
+            );
+
+            expect(outcome).toEqual({
+                status: 'processed',
+                customerId: 'cust-recipient',
+                packageIds: ['pkg-2', 'pkg-3', 'pkg-4'],
+            });
+            expect(packages.deleteUndispatched.mock.calls).toEqual([
+                ['org-1', 'pkg-1'],
+            ]);
+            expect(specs()).toEqual([
+                expect.objectContaining({
+                    warehouseId: 'wh-mel',
+                    weightKg: 0.2,
+                    externalOrder: expect.objectContaining({
+                        fulfillmentId: 'fo-1',
+                    }) as unknown,
+                }),
+                expect.objectContaining({
+                    warehouseId: 'wh-syd',
+                    weightKg: 0.2,
+                    externalOrder: expect.objectContaining({
+                        fulfillmentId: 'fo-3',
+                    }) as unknown,
+                }),
+            ]);
+        });
+
+        it('removes the package of a cancelled group and keeps the rest', async () => {
+            await paidAndDispatchedFromBoth();
+
+            const outcome = await processor.process(
+                update(
+                    [group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS)],
+                    ['fo-2'],
+                ),
+            );
+
+            expect(outcome).toEqual({
+                status: 'processed',
+                customerId: 'cust-recipient',
+                packageIds: ['pkg-1'],
+            });
+            expect(packages.deleteUndispatched.mock.calls).toEqual([
+                ['org-1', 'pkg-2'],
+            ]);
+            expect(packages.createMany).not.toHaveBeenCalled();
+            expect(geocoder.geocodeAddress).not.toHaveBeenCalled();
+        });
+
+        it('processes an update that leaves nothing to deliver, with the recipient and no packages', async () => {
+            await paidAndDispatchedFromBoth();
+
+            const outcome = await processor.process(
+                update([], ['fo-1', 'fo-2']),
+            );
+
+            expect(outcome).toEqual({
+                status: 'processed',
+                customerId: 'cust-recipient',
+                packageIds: [],
+            });
+            expect(state.packages).toEqual([]);
+            expect(ledgerUpdates(query)).toEqual([
+                ['ledger-u2', 'processed', 'cust-recipient', null, null],
+            ]);
+        });
+
+        it('keeps the package of a group that is no longer listed but was not released (fulfilled)', async () => {
+            await paidAndDispatchedFromBoth();
+
+            const outcome = await processor.process(
+                update([group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS)]),
+            );
+
+            expect(outcome).toMatchObject({
+                status: 'processed',
+                packageIds: ['pkg-1'],
+            });
+            expect(packages.deleteUndispatched).not.toHaveBeenCalled();
+            expect(state.packages.map((p) => p.id)).toEqual(['pkg-1', 'pkg-2']);
+        });
+
+        it('changes nothing and needs attention when a touched package has left the depot', async () => {
+            await paidAndDispatchedFromBoth();
+            state.packages[1].status = 'IN_TRANSIT';
+
+            const outcome = await processor.process(
+                update(
+                    [group('fo-2', 'loc-mel', 'Melbourne DC', SYD_ITEMS)],
+                    ['fo-1'],
+                ),
+            );
+
+            expect(outcome).toEqual({
+                status: 'needs_attention',
+                error: 'Shopify re-routed items that have already left the depot, so nothing was changed: package HK-2 is IN_TRANSIT. Sort the order out by hand, then retry if it still needs new packages.',
+                customerId: 'cust-recipient',
+                packageIds: ['pkg-1', 'pkg-2'],
+            });
+            // Not even the still-removable fo-1 package.
+            expect(packages.deleteUndispatched).not.toHaveBeenCalled();
+            expect(packages.createMany).not.toHaveBeenCalled();
+        });
+
+        it('leaves a delivered package alone when the change does not touch it', async () => {
+            await paidAndDispatchedFromBoth();
+            state.packages[0].status = 'DELIVERED';
+
+            const outcome = await processor.process(
+                update([
+                    group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS),
+                    group('fo-2', 'loc-mel', 'Melbourne DC', SYD_ITEMS),
+                ]),
+            );
+
+            expect(outcome).toMatchObject({
+                status: 'processed',
+                packageIds: ['pkg-1', 'pkg-3'],
+            });
+            expect(packages.deleteUndispatched.mock.calls).toEqual([
+                ['org-1', 'pkg-2'],
+            ]);
+        });
+
+        it('removes the package of a group moved to an unmapped location and needs attention for it', async () => {
+            await paidAndDispatchedFromBoth();
+
+            const outcome = await processor.process(
+                update([
+                    group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS),
+                    group('fo-2', 'loc-bne', 'Brisbane', SYD_ITEMS),
+                ]),
+            );
+
+            expect(outcome).toEqual({
+                status: 'needs_attention',
+                error: "Shopify location 'Brisbane' isn't mapped to a Hikyaku warehouse. Map it in the Shopify app, then retry.",
+                customerId: 'cust-recipient',
+                packageIds: ['pkg-1'],
+            });
+            expect(packages.deleteUndispatched.mock.calls).toEqual([
+                ['org-1', 'pkg-2'],
+            ]);
+        });
+
+        it('removes the package of a group that turned into a pickup', async () => {
+            await paidAndDispatchedFromBoth();
+
+            const outcome = await processor.process(
+                update([
+                    group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS),
+                    group('fo-2', 'loc-syd', 'Sydney DC', SYD_ITEMS, {
+                        delivery_method: 'pickup',
+                    }),
+                ]),
+            );
+
+            expect(outcome).toMatchObject({
+                status: 'processed',
+                packageIds: ['pkg-1'],
+            });
+            expect(packages.deleteUndispatched.mock.calls).toEqual([
+                ['org-1', 'pkg-2'],
+            ]);
+        });
+
+        it('skips an update for an order whose order.paid has not arrived', async () => {
+            const outcome = await processor.process(
+                update([group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS)]),
+            );
+
+            expect(outcome).toEqual({
+                status: 'skipped',
+                error: 'No order.paid event has been received for this order yet. When it arrives, the order is dispatched as it is routed then.',
+            });
+            expect(
+                query.mock.calls.some(([s]) => s.includes('FROM packages')),
+            ).toBe(false);
+        });
+
+        it('builds the newest routing when order.paid is retried after a re-routing', async () => {
+            // Sydney is unmapped at payment, so fo-2 waits.
+            state.mappings = [
+                mapping('loc-mel', 'Melbourne DC', 'warehouse', MELBOURNE),
+            ];
+            const paid = paidEvent();
+            await expect(processor.process(paid)).resolves.toMatchObject({
+                status: 'needs_attention',
+                packageIds: ['pkg-1'],
+            });
+
+            // The merchant moves fo-2 to Melbourne instead.
+            await expect(
+                processor.process(
+                    update([
+                        group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS),
+                        group('fo-2', 'loc-mel', 'Melbourne DC', SYD_ITEMS),
+                    ]),
+                ),
+            ).resolves.toEqual({
+                status: 'processed',
+                customerId: 'cust-recipient',
+                packageIds: ['pkg-1', 'pkg-2'],
+            });
+            expect(specs()[1]).toMatchObject({
+                warehouseId: 'wh-mel',
+                externalOrder: { fulfillmentId: 'fo-2' },
+            });
+
+            // Retrying the order.paid now finds nothing left to do, rather
+            // than reporting Sydney unmapped again.
+            packages.createMany.mockClear();
+            await expect(processor.process(paid)).resolves.toEqual({
+                status: 'processed',
+                customerId: 'cust-recipient',
+                packageIds: ['pkg-1', 'pkg-2'],
+            });
+            expect(packages.createMany).not.toHaveBeenCalled();
+            expect(packages.deleteUndispatched).not.toHaveBeenCalled();
+        });
+
+        it('needs attention for an order that was dispatched as one package', async () => {
+            state.ledger.push({
+                id: 'ledger-1',
+                event_type: 'order.paid',
+                payload: payload(),
+            });
+            state.packages = [
+                {
+                    id: 'pkg-whole',
+                    to_customer: 'cust-old',
+                    external_fulfillment_id: null,
+                    tracking_number: 'HK-W',
+                },
+            ];
+
+            const outcome = await processor.process(update([], ['fo-1']));
+
+            expect(outcome).toEqual({
+                status: 'needs_attention',
+                error: 'The order was dispatched as one package (HK-W) before Shopify routed it by location, so its re-routing was not applied. Check the package by hand.',
+                customerId: 'cust-old',
+                packageIds: ['pkg-whole'],
+            });
+            expect(packages.deleteUndispatched).not.toHaveBeenCalled();
+        });
+
+        it('rethrows when a package is re-assigned while it is removed, so the worker retries', async () => {
+            await paidAndDispatchedFromBoth();
+            const raced = new Error('put back on a shift');
+            packages.deleteUndispatched.mockRejectedValueOnce(raced);
+
+            await expect(
+                processor.process(
+                    update(
+                        [group('fo-1', 'loc-mel', 'Melbourne DC', MEL_ITEMS)],
+                        ['fo-2'],
+                    ),
+                ),
+            ).rejects.toBe(raced);
+            expect(ledgerUpdates(query)).toHaveLength(0);
+        });
+    });
+});
+
+describe('routingOf', () => {
+    const paidRow = (groups?: OrderFulfillmentGroupDto[]) => ({
+        event_type: 'order.paid',
+        payload: groupedPayload(groups) as OrderEventDto,
+    });
+    const updateRow = (
+        groups: OrderFulfillmentGroupDto[],
+        released: string[],
+    ) => ({
+        event_type: 'order.fulfillment_updated',
+        payload: {
+            fulfillment_groups: groups,
+            released_group_ids: released,
+        } as unknown as OrderEventDto,
+    });
+    const g = (id: string) => group(id, 'loc', null, []);
+
+    it('takes the groups of the newest event that has any', () => {
+        const routing = routingOf([
+            paidRow([g('a'), g('b')]),
+            updateRow([g('a')], ['b']),
+        ]);
+        expect(routing.groups?.map((x) => x.id)).toEqual(['a']);
+        expect([...routing.released]).toEqual(['b']);
+        expect(routing.paid?.order.id).toBe('gid://shopify/Order/1');
+    });
+
+    it('lets an update with no groups left win, and adds up released ids', () => {
+        const routing = routingOf([
+            paidRow([g('a'), g('b')]),
+            updateRow([g('a'), g('c')], ['b']),
+            updateRow([], ['a', 'c']),
+        ]);
+        expect(routing.groups).toEqual([]);
+        expect([...routing.released].sort()).toEqual(['a', 'b', 'c']);
+    });
+
+    it('never counts a group as released while it is listed', () => {
+        const routing = routingOf([updateRow([g('a')], ['a'])]);
+        expect(routing.released.size).toBe(0);
+        expect(routing.paid).toBeNull();
+    });
+
+    it('ships the order whole when no event has groups', () => {
+        expect(routingOf([paidRow([])]).groups).toBeNull();
+    });
+
+    it('ignores other event types', () => {
+        const routing = routingOf([
+            paidRow([g('a')]),
+            { event_type: 'order.cancelled', payload: payload() },
+        ]);
+        expect(routing.groups?.map((x) => x.id)).toEqual(['a']);
     });
 });
 
