@@ -30,11 +30,9 @@ import {
 export const ORDER_PAID = 'order.paid';
 
 /**
- * The storefront re-routed an order's items after payment (moved them to
- * another location, split or merged its groups, cancelled one). Carries the
- * order's current fulfillment groups in full, not the change, and refers to
- * the order by id only: its recipient and line items come from the order.paid
- * event already recorded for it.
+ * The storefront re-routed the order after payment. Carries all current
+ * fulfillment groups, not a diff, and only the order id; the rest comes from
+ * the recorded order.paid.
  */
 export const ORDER_FULFILLMENT_UPDATED = 'order.fulfillment_updated';
 
@@ -73,12 +71,8 @@ export class OrderEventInfoDto {
 
     @ApiProperty({
         description:
-            'Event type. "order.paid" creates the packages; ' +
-            '"order.fulfillment_updated" re-routes them after the storefront ' +
-            'moved, split, merged or cancelled fulfillment groups. An open ' +
-            'string, not a closed enum, so a connector can introduce a new ' +
-            'event type without a hikyaku-api change; other types are ' +
-            'recorded and skipped.',
+            '"order.paid" creates packages. "order.fulfillment_updated" ' +
+            're-routes them. Other types are recorded and skipped.',
         example: 'order.paid',
     })
     @IsString()
@@ -257,14 +251,10 @@ export class OrderInfoDto {
     line_items: OrderLineItemDto[];
 }
 
-/**
- * The order an `order.fulfillment_updated` event is about. Only the id is
- * needed: everything else was recorded with the order's `order.paid` event.
- */
+/** The order in an `order.fulfillment_updated` event. */
 export class OrderReferenceDto {
     @ApiProperty({
-        description:
-            'The same `order.id` the order.paid event for this order carried.',
+        description: 'The `order.id` sent in the order.paid event.',
     })
     @IsString()
     @IsNotEmpty()
@@ -420,9 +410,8 @@ export class OrderDeliveryDto {
 }
 
 /**
- * How the storefront hands over the items in one fulfillment group. Only
- * `shipping` and `local` leave Hikyaku anything to deliver; a `pickup` or
- * `none` group has nothing to dispatch.
+ * How a fulfillment group reaches the customer. Hikyaku delivers only
+ * `shipping` and `local`.
  */
 export const FULFILLMENT_DELIVERY_METHODS = [
     'shipping',
@@ -446,9 +435,8 @@ export class OrderFulfillmentGroupLineItemDto {
         type: 'integer',
         minimum: 1,
         description:
-            'How many units of that line item this group fulfils. May be ' +
-            "less than the line item's own quantity when a line is split " +
-            'across locations.',
+            'Units of the line item in this group. Less than the line item ' +
+            'quantity when a line is split across locations.',
     })
     @IsInt()
     @Min(1)
@@ -456,14 +444,14 @@ export class OrderFulfillmentGroupLineItemDto {
 }
 
 /**
- * The items one storefront location fulfils for this order. The location is
- * resolved to a Hikyaku warehouse through PUT /api/v1/integrations/locations.
+ * The items one storefront location fulfils. PUT
+ * /api/v1/integrations/locations maps the location to a warehouse.
  */
 export class OrderFulfillmentGroupDto {
     @ApiProperty({
         description:
-            "The storefront's own id for this group (its fulfillment order, " +
-            'shipment or equivalent).',
+            "The storefront's id for the group (fulfillment order, shipment " +
+            'or similar).',
         example: 'gid://shopify/FulfillmentOrder/1',
     })
     @IsString()
@@ -472,8 +460,8 @@ export class OrderFulfillmentGroupDto {
 
     @ApiProperty({
         description:
-            "The fulfilling location's id in the storefront's own system, as " +
-            'sent to PUT /api/v1/integrations/locations.',
+            "The location's storefront id, as sent to PUT " +
+            '/api/v1/integrations/locations.',
         example: 'gid://shopify/Location/123',
     })
     @IsString()
@@ -502,9 +490,9 @@ export class OrderFulfillmentGroupDto {
 }
 
 /**
- * Every `fulfillment_groups[].line_items[].line_item_id` must name an
- * `order.line_items[].id`. Shape errors (a missing array, a non-string id)
- * are left to the property validators, so this only reports dangling ids.
+ * Every `fulfillment_groups[].line_items[].line_item_id` must match an
+ * `order.line_items[].id`. Reports only unknown ids; the property validators
+ * report shape errors.
  */
 @ValidatorConstraint({ name: 'FulfillmentLineItemsInOrder', async: false })
 export class FulfillmentLineItemsInOrderConstraint implements ValidatorConstraintInterface {
@@ -543,11 +531,11 @@ function unknownLineItemIds(groups: unknown, dto: object): string[] {
 }
 
 /**
- * One body for every event type. `order.paid` carries the whole order;
- * `order.fulfillment_updated` carries only `order.id`, the order's current
- * `fulfillment_groups` and `released_group_ids`, and leaves out `customer` and
- * `delivery`. The shape of `order` is picked from `event.type` before
- * validation, so each type is held to its own required fields.
+ * One body for every event type. `order.paid` carries the whole order.
+ * `order.fulfillment_updated` carries `order.id`, `fulfillment_groups` and
+ * `released_group_ids`, without `customer` and `delivery`. `event.type`
+ * selects the `order` class before validation, so each type has its own
+ * required fields.
  */
 @ApiExtraModels(OrderInfoDto, OrderReferenceDto)
 export class OrderEventDto {
@@ -567,8 +555,8 @@ export class OrderEventDto {
             { $ref: getSchemaPath(OrderReferenceDto) },
         ],
         description:
-            'The whole order for `order.paid`; just its id (and optionally ' +
-            'its name) for `order.fulfillment_updated`.',
+            'The full order for `order.paid`. Only `id` and optional `name` ' +
+            'for `order.fulfillment_updated`.',
     })
     @ValidateNested()
     @Type((options) =>
@@ -599,22 +587,15 @@ export class OrderEventDto {
     @ApiPropertyOptional({
         type: () => [OrderFulfillmentGroupDto],
         description:
-            'Which storefront location fulfils which items, for a store that ' +
-            'ships from more than one. Each group with `delivery_method` ' +
-            '`shipping` or `local` becomes its own package, dispatched from ' +
-            'the warehouse its location is mapped to through PUT ' +
-            '/api/v1/integrations/locations; a group whose location is not ' +
-            'mapped puts the event in `needs_attention` instead of falling ' +
-            'back to another warehouse. On `order.paid`, every ' +
-            '`line_items[].line_item_id` must reference an ' +
-            '`order.line_items[].id`, or the event is rejected with 400; omit ' +
-            'it, or send an empty array, to have the whole order dispatched ' +
-            'as one package from the nearest warehouse. Required on ' +
-            '`order.fulfillment_updated`, where it lists every group that is ' +
-            'still to be delivered after the change (empty when none is): a ' +
-            'package whose group now ships from another warehouse, or ' +
-            'weighs something else, is replaced, and a group without a ' +
-            'package gets one.',
+            'Items per storefront location. Each `shipping` or `local` group ' +
+            'becomes one package, sent from the warehouse its location maps ' +
+            'to (PUT /api/v1/integrations/locations). An unmapped location ' +
+            'puts the event in `needs_attention`. Omit or send [] to ship ' +
+            'the order as one package from the nearest warehouse. On ' +
+            '`order.paid`, each `line_item_id` must match an ' +
+            '`order.line_items[].id`, else 400. Required on ' +
+            '`order.fulfillment_updated`: every group still to deliver, ' +
+            'possibly none.',
     })
     @ValidateIf(
         (body: OrderEventDto) =>
@@ -629,14 +610,11 @@ export class OrderEventDto {
     @ApiPropertyOptional({
         type: [String],
         description:
-            'Only on `order.fulfillment_updated`, and required there: the ids ' +
-            'of groups whose items the storefront re-routed or cancelled, ' +
-            'such as the group items were moved out of, groups merged into ' +
-            'another, or a cancelled group. The package of a released group ' +
-            'that is not in `fulfillment_groups` any more is taken off its ' +
-            'shift and deleted. A group that is missing from ' +
-            '`fulfillment_groups` without being released (fulfilled, for ' +
-            'instance) keeps its package.',
+            'Required on `order.fulfillment_updated`, ignored otherwise. Ids ' +
+            'of groups the storefront re-routed, merged away or cancelled. ' +
+            'A released group that is not in `fulfillment_groups` loses its ' +
+            'package. An unlisted group that is not released (for example, ' +
+            'fulfilled) keeps it.',
     })
     @ValidateIf(
         (body: OrderEventDto) =>

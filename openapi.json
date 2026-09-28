@@ -1471,7 +1471,7 @@
     },
     "/api/v1/organisations/me": {
       "get": {
-        "description": "Every organisation the caller is a member of and holds `integrations.orders.write` in, ordered by name. Used by storefront connectors to choose the `X-Organisation-Slug` for POST /api/v1/integrations/orders. Takes no tenant header — the caller has not chosen an organisation yet. Empty array when there are none.",
+        "description": "Organisations where the caller has `integrations.orders.write`, ordered by name. Connectors send the `slug` as `X-Organisation-Slug` on POST /api/v1/integrations/orders. Takes no tenant header.",
         "operationId": "OrganisationsController_listMine",
         "parameters": [],
         "responses": {
@@ -4746,7 +4746,7 @@
     },
     "/api/v1/integrations/orders": {
       "post": {
-        "description": "Validates and durably stores the event, keyed by (organisation, platform, Idempotency-Key), and returns without waiting for anything else. An `order.paid` event that needs delivery is then turned into a customer and its packages, and assigned, in the background; follow it with GET /api/v1/integrations/orders. An `order.fulfillment_updated` event, sent when the storefront re-routes the order after payment, reconciles those packages with the groups it carries: packages that no longer match are taken off their shift and deleted, and new groups get packages. A change that touches a package already loaded or delivered is not applied, and the event needs attention. A replay creates nothing new.",
+        "description": "Stores the event, keyed by (organisation, platform, Idempotency-Key), and returns at once. Processing runs in the background; track it with GET /api/v1/integrations/orders. `order.paid` creates the customer and packages and assigns them. `order.fulfillment_updated` deletes packages that no longer match their group and creates packages for new groups; if a changed package is already loaded, nothing changes and the event needs attention. A replay creates nothing.",
         "operationId": "IntegrationsController_recordOrder",
         "parameters": [
           {
@@ -4852,7 +4852,7 @@
         ]
       },
       "get": {
-        "description": "Newest first. Filter by `status=needs_attention` for the orders that could not become a package without a human (an address that cannot be placed on the map, no warehouse, a storefront location not mapped to a warehouse), each with the reason in `error`.",
+        "description": "Newest first. `status=needs_attention` lists the orders that need a fix (bad address, no warehouse, unmapped location); `error` gives the reason.",
         "operationId": "IntegrationsController_listOrders",
         "parameters": [
           {
@@ -4946,7 +4946,7 @@
     },
     "/api/v1/integrations/orders/{id}/retry": {
       "post": {
-        "description": "Queues the event for processing again with a fresh attempt budget, once the cause in `error` has been fixed. Packages it already produced are kept, and fulfillment groups that already have a package are not made again.",
+        "description": "Re-queues the event with a fresh attempt budget. Fix the cause in `error` first. Existing packages are kept; only groups without a package get one.",
         "operationId": "IntegrationsController_retryOrder",
         "parameters": [
           {
@@ -5020,7 +5020,7 @@
             }
           },
           "409": {
-            "description": "The event is not in `needs_attention` or `failed`, so there is nothing to retry.",
+            "description": "The event is not `needs_attention` or `failed`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5043,7 +5043,7 @@
     },
     "/api/v1/integrations/locations": {
       "get": {
-        "description": "Ordered by platform, shop, then live locations before stale ones. Stale locations (no longer reported by the storefront) are included, with `stale_at` set.",
+        "description": "Ordered by platform and shop, live locations first. Includes stale locations (`stale_at` set).",
         "operationId": "LocationMappingsController_list",
         "parameters": [
           {
@@ -5128,7 +5128,7 @@
         ]
       },
       "put": {
-        "description": "Creates or updates each location of one shop, keyed by (platform, shop_domain, external_location_id), in one transaction. A location sent without `mode` keeps its current mode and warehouse (a new one starts `unmapped`). With `mark_missing_stale`, the shop's locations not in the body are marked stale, never deleted. Returns every location of the shop afterwards.",
+        "description": "Upserts one shop's locations in one transaction, keyed by (platform, shop_domain, external_location_id). Returns all the shop's locations.",
         "operationId": "LocationMappingsController_upsert",
         "parameters": [
           {
@@ -5194,7 +5194,7 @@
             }
           },
           "404": {
-            "description": "A `warehouse_id` is not a warehouse of this organisation (another organisation's warehouse gets the same answer as a missing one).",
+            "description": "A `warehouse_id` is not a warehouse of this organisation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5217,7 +5217,7 @@
     },
     "/api/v1/warehouses": {
       "get": {
-        "description": "Ordered by name. Used by storefront connectors to offer a warehouse picker when mapping their locations (PUT /api/v1/integrations/locations). Empty `data` when the organisation has none.",
+        "description": "Ordered by name. Storefront connectors use it to map locations to warehouses (PUT /api/v1/integrations/locations).",
         "operationId": "WarehousesController_list",
         "parameters": [
           {
@@ -6722,7 +6722,7 @@
           "name": {
             "type": "string",
             "nullable": true,
-            "description": "NULL for a personal organisation that was never named.",
+            "description": "NULL for an unnamed personal organisation.",
             "example": "Acme Logistics"
           },
           "orgType": {
@@ -9354,7 +9354,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The same `order.id` the order.paid event for this order carried."
+            "description": "The `order.id` sent in the order.paid event."
           },
           "name": {
             "type": "string",
@@ -9375,7 +9375,7 @@
           },
           "type": {
             "type": "string",
-            "description": "Event type. \"order.paid\" creates the packages; \"order.fulfillment_updated\" re-routes them after the storefront moved, split, merged or cancelled fulfillment groups. An open string, not a closed enum, so a connector can introduce a new event type without a hikyaku-api change; other types are recorded and skipped.",
+            "description": "\"order.paid\" creates packages. \"order.fulfillment_updated\" re-routes them. Other types are recorded and skipped.",
             "example": "order.paid"
           },
           "occurred_at": {
@@ -9573,7 +9573,7 @@
           "quantity": {
             "type": "integer",
             "minimum": 1,
-            "description": "How many units of that line item this group fulfils. May be less than the line item's own quantity when a line is split across locations."
+            "description": "Units of the line item in this group. Less than the line item quantity when a line is split across locations."
           }
         },
         "required": [
@@ -9586,12 +9586,12 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The storefront's own id for this group (its fulfillment order, shipment or equivalent).",
+            "description": "The storefront's id for the group (fulfillment order, shipment or similar).",
             "example": "gid://shopify/FulfillmentOrder/1"
           },
           "external_location_id": {
             "type": "string",
-            "description": "The fulfilling location's id in the storefront's own system, as sent to PUT /api/v1/integrations/locations.",
+            "description": "The location's storefront id, as sent to PUT /api/v1/integrations/locations.",
             "example": "gid://shopify/Location/123"
           },
           "external_location_name": {
@@ -9645,7 +9645,7 @@
                 "$ref": "#/components/schemas/OrderReferenceDto"
               }
             ],
-            "description": "The whole order for `order.paid`; just its id (and optionally its name) for `order.fulfillment_updated`."
+            "description": "The full order for `order.paid`. Only `id` and optional `name` for `order.fulfillment_updated`."
           },
           "customer": {
             "description": "Required, except on `order.fulfillment_updated`.",
@@ -9664,14 +9664,14 @@
             ]
           },
           "fulfillment_groups": {
-            "description": "Which storefront location fulfils which items, for a store that ships from more than one. Each group with `delivery_method` `shipping` or `local` becomes its own package, dispatched from the warehouse its location is mapped to through PUT /api/v1/integrations/locations; a group whose location is not mapped puts the event in `needs_attention` instead of falling back to another warehouse. On `order.paid`, every `line_items[].line_item_id` must reference an `order.line_items[].id`, or the event is rejected with 400; omit it, or send an empty array, to have the whole order dispatched as one package from the nearest warehouse. Required on `order.fulfillment_updated`, where it lists every group that is still to be delivered after the change (empty when none is): a package whose group now ships from another warehouse, or weighs something else, is replaced, and a group without a package gets one.",
+            "description": "Items per storefront location. Each `shipping` or `local` group becomes one package, sent from the warehouse its location maps to (PUT /api/v1/integrations/locations). An unmapped location puts the event in `needs_attention`. Omit or send [] to ship the order as one package from the nearest warehouse. On `order.paid`, each `line_item_id` must match an `order.line_items[].id`, else 400. Required on `order.fulfillment_updated`: every group still to deliver, possibly none.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OrderFulfillmentGroupDto"
             }
           },
           "released_group_ids": {
-            "description": "Only on `order.fulfillment_updated`, and required there: the ids of groups whose items the storefront re-routed or cancelled, such as the group items were moved out of, groups merged into another, or a cancelled group. The package of a released group that is not in `fulfillment_groups` any more is taken off its shift and deleted. A group that is missing from `fulfillment_groups` without being released (fulfilled, for instance) keeps its package.",
+            "description": "Required on `order.fulfillment_updated`, ignored otherwise. Ids of groups the storefront re-routed, merged away or cancelled. A released group that is not in `fulfillment_groups` loses its package. An unlisted group that is not released (for example, fulfilled) keeps it.",
             "type": "array",
             "items": {
               "type": "string"
@@ -9714,7 +9714,7 @@
           },
           "externalOrderId": {
             "type": "string",
-            "description": "The order's id in the storefront's system."
+            "description": "The order's storefront id."
           },
           "orderName": {
             "type": "string",
@@ -9731,12 +9731,12 @@
               "needs_attention",
               "failed"
             ],
-            "description": "`pending`/`processing`: not done yet. `processed`: `packageIds` and `customerId` say what it produced. `skipped`: nothing to deliver. `needs_attention`: a human has to fix something (see `error`), then retry; for an order split by fulfillment group, the groups that could be processed already have their packages in `packageIds`. `failed`: transient failures exhausted the retry budget; retry once the cause is fixed."
+            "description": "`pending`, `processing`: in progress. `processed`: see `packageIds` and `customerId`. `skipped`: nothing to deliver. `needs_attention`: fix the cause in `error`, then retry; groups that succeeded are already in `packageIds`. `failed`: retries exhausted; fix the cause, then retry."
           },
           "error": {
             "type": "string",
             "nullable": true,
-            "description": "Why the event was skipped, needs attention, failed, or is waiting to be retried."
+            "description": "Reason for `skipped`, `needs_attention` or `failed`, or for a pending retry."
           },
           "attempts": {
             "type": "number",
@@ -9751,10 +9751,10 @@
             "type": "string",
             "format": "uuid",
             "nullable": true,
-            "description": "The first of `packageIds`. Kept for clients written before an order could produce more than one package."
+            "description": "The first of `packageIds`, for older clients."
           },
           "packageIds": {
-            "description": "Every package this event produced or was matched to: one for a whole order, one per delivered fulfillment group for an order that ships from several locations. Empty when it produced none.",
+            "description": "Packages linked to this event: one for a whole order, or one per delivered fulfillment group. Empty if none.",
             "type": "array",
             "items": {
               "type": "string",
@@ -9836,19 +9836,19 @@
               "not_delivered",
               "unmapped"
             ],
-            "description": "`warehouse`: dispatch this location's items from `warehouse_id`. `not_delivered`: Hikyaku does not deliver this location's items. `unmapped`: not decided yet; its orders need attention."
+            "description": "`warehouse`: ship from `warehouse_id`. `not_delivered`: Hikyaku does not deliver these items. `unmapped`: not decided; orders need attention."
           },
           "warehouse_id": {
             "type": "string",
             "format": "uuid",
             "nullable": true,
-            "description": "Set exactly when `mode` is `warehouse`. Deleting the warehouse moves the location back to `unmapped`."
+            "description": "Set only when `mode` is `warehouse`. Deleting the warehouse sets `mode` to `unmapped`."
           },
           "stale_at": {
             "type": "string",
             "format": "date-time",
             "nullable": true,
-            "description": "When a full sync (`mark_missing_stale`) last left this location out. NULL while the storefront still reports it."
+            "description": "When a full sync (`mark_missing_stale`) last omitted this location. NULL while the storefront reports it."
           },
           "updated_at": {
             "type": "string",
@@ -9858,7 +9858,7 @@
             "type": "string",
             "format": "uuid",
             "nullable": true,
-            "description": "User whose request last changed the row. NULL when the database changed it, e.g. after its warehouse was deleted."
+            "description": "User who last changed the row. NULL for a database change, such as a warehouse delete."
           }
         },
         "required": [
@@ -9894,19 +9894,19 @@
         "properties": {
           "external_location_id": {
             "type": "string",
-            "description": "The location's id in the storefront's own system.",
+            "description": "The location's storefront id.",
             "example": "gid://shopify/Location/123"
           },
           "external_location_name": {
             "type": "string",
             "nullable": true,
-            "description": "Display name, refreshed on every sync. Omit (or send null) to keep the stored name.",
+            "description": "Display name. Omit or send null to keep the stored name.",
             "example": "Melbourne warehouse"
           },
           "country_code": {
             "type": "string",
             "nullable": true,
-            "description": "ISO 3166-1 alpha-2 country of the location, stored upper case. Omit (or send null) to keep the stored value.",
+            "description": "ISO 3166-1 alpha-2, stored upper case. Omit or send null to keep the stored value.",
             "example": "AU"
           },
           "mode": {
@@ -9916,13 +9916,13 @@
               "not_delivered",
               "unmapped"
             ],
-            "description": "`warehouse`: dispatch this location's items from `warehouse_id`. `not_delivered`: Hikyaku does not deliver this location's items. `unmapped`: not decided yet; its orders need attention. Omit to leave an existing location's mode and warehouse as they are (a new one starts `unmapped`), which is how a connector refreshes names without undoing what the merchant chose."
+            "description": "`warehouse`: ship from `warehouse_id`. `not_delivered`: Hikyaku does not deliver these items. `unmapped`: not decided; orders need attention. Omit to keep the stored mode and warehouse (a new location starts `unmapped`)."
           },
           "warehouse_id": {
             "type": "string",
             "format": "uuid",
             "nullable": true,
-            "description": "Required when `mode` is `warehouse`, and only then. Must be a warehouse of the organisation in `X-Organisation-Slug`."
+            "description": "Required when `mode` is `warehouse`, and only then. Must belong to the organisation in `X-Organisation-Slug`."
           }
         },
         "required": [
@@ -9934,16 +9934,16 @@
         "properties": {
           "platform": {
             "type": "string",
-            "description": "Lowercase connector slug. An open value, never a closed enum, as on POST /api/v1/integrations/orders.",
+            "description": "Lowercase connector slug, as on POST /api/v1/integrations/orders.",
             "example": "shopify"
           },
           "shop_domain": {
             "type": "string",
-            "description": "The storefront the locations belong to. Compared case insensitively and stored lower case.",
+            "description": "Storefront domain. Case-insensitive; stored lower case.",
             "example": "store.myshopify.com"
           },
           "locations": {
-            "description": "Up to 1000 locations, each at most once.",
+            "description": "Up to 1000 locations, no duplicates.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/IntegrationLocationInputDto"
@@ -9952,7 +9952,7 @@
           "mark_missing_stale": {
             "type": "boolean",
             "default": false,
-            "description": "`true` when `locations` is every location the shop has right now: any stored location of this shop missing from it is marked stale (`stale_at`), keeping its mapping. Leave `false` to upsert a few locations without touching the rest."
+            "description": "Set `true` when `locations` is the shop's full list. Stored locations missing from it get `stale_at` and keep their mapping."
           }
         },
         "required": [
@@ -9990,7 +9990,7 @@
           },
           "country": {
             "type": "string",
-            "description": "Country as entered on the warehouse, a name such as \"Australia\" rather than an ISO code.",
+            "description": "Country name as entered, not an ISO code.",
             "example": "Australia"
           },
           "timezone": {

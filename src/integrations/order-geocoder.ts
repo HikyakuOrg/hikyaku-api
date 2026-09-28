@@ -2,10 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { GeocodeService } from 'src/geocode/geocode.service';
 import type { OrderDeliveryAddressDto } from './dto/order-event.dto';
 
-/** How long one Photon lookup may take before it counts as a transient failure. */
+/** Photon lookup timeout. A timeout is a transient failure. */
 const GEOCODE_TIMEOUT_MS = 30_000;
 
-/** Candidates asked of Photon. The first one that passes {@link matches} wins. */
+/** Candidates to request from Photon. The first that {@link matches} wins. */
 const CANDIDATES = 5;
 
 /** A delivery point, and how sure we are of it. */
@@ -33,13 +33,12 @@ interface PhotonFeature {
     };
 }
 
-/** The address could not be placed. Not transient: retrying will not help. */
+/** No candidate matches the address. Not transient, so do not retry. */
 export class UngeocodableAddressError extends Error {}
 
 /**
- * Street-type abbreviations storefronts commonly send, mapped to the word
- * OpenStreetMap spells out. Both sides of a comparison go through this, so
- * "Collins St" and "Collins Street" compare equal.
+ * Street-type abbreviations and their OpenStreetMap spelling, so "Collins St"
+ * and "Collins Street" compare equal.
  */
 const STREET_TYPES: Record<string, string> = {
     st: 'street',
@@ -80,9 +79,9 @@ function normaliseToken(value: string | null | undefined): string {
 }
 
 /**
- * Splits an address line into its house number and street, including the
- * Australian `unit/number` form ("3/45 Smith St"). No leading number means a
- * street-only line, and a house number of null.
+ * Splits an address line into house number and street. Accepts the
+ * Australian `unit/number` form ("3/45 Smith St"). A line without a leading
+ * number gives a null house number.
  */
 export function parseStreetLine(line: string): {
     houseNumber: string | null;
@@ -96,15 +95,11 @@ export function parseStreetLine(line: string): {
 }
 
 /**
- * Whether a Photon candidate is actually the address that was asked for.
- *
- * Photon is a fuzzy search engine, not an address validator: asked for
- * "1 Test Street, Melbourne VIC 3000" it will happily return "IELTS Test
- * Centre, 170 Queen Street". A wrong point is worse than no point (a driver
- * goes to the wrong door, and nobody knows), so a candidate only counts when
- * the country, the postcode and the street name all agree, and, for a
- * house-level candidate, the house number too. A street-level candidate is
- * only accepted inside the right postcode, and at lower confidence.
+ * Whether a Photon candidate is the requested address. Photon is a fuzzy
+ * search: for "1 Test Street, Melbourne VIC 3000" it can return "IELTS Test
+ * Centre, 170 Queen Street". A wrong point is worse than no point, so the
+ * country, postcode and street must match, and the house number for a
+ * house-level candidate. A street-level candidate gets lower confidence.
  */
 export function matches(
     feature: PhotonFeature,
@@ -159,11 +154,10 @@ export function matches(
 }
 
 /**
- * Forward-geocodes a storefront delivery address through the Photon proxy.
- *
- * Throws {@link UngeocodableAddressError} when Photon answered but nothing it
- * returned is this address, and rethrows anything else (Photon down, timed
- * out, PHOTON_URL unset) as a transient failure for the worker to retry.
+ * Geocodes a delivery address through Photon. Throws
+ * {@link UngeocodableAddressError} when no candidate matches. Other errors
+ * (Photon down, timeout, PHOTON_URL unset) are transient; the worker retries
+ * them.
  */
 @Injectable()
 export class OrderGeocoder {

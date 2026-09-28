@@ -42,11 +42,9 @@ export interface PackageSpec {
     /** skills.id this delivery requires. Validated against the org catalog. */
     skillIds?: string[];
     /**
-     * The storefront order this package was created from, and the fulfillment
-     * group within it when the order ships from several locations. Unique per
-     * organisation, platform, order and group
-     * (packages_org_external_fulfillment_key), so a second insert for the
-     * same order and group fails with 23505.
+     * The storefront order and fulfillment group this package is for. A second
+     * insert for the same order and group fails with 23505
+     * (packages_org_external_fulfillment_key).
      */
     externalOrder?: {
         platform: string;
@@ -259,22 +257,18 @@ export class PackagesService {
     }
 
     /**
-     * Takes a package that has not been loaded off its shift and deletes it:
-     * the path for a storefront order whose items were re-routed or
-     * cancelled before dispatch.
+     * Unassigns and deletes a package that is not loaded yet. Used when a
+     * storefront re-routes or cancels items before dispatch.
      *
-     * Unassigning goes through AssignmentService, so the shift's route is
-     * rewritten without the stop and a replan is queued, exactly as when a
-     * dispatcher removes it by hand. It refuses (ConflictException) a package
-     * that is IN_TRANSIT or later: removing it from the plan would not remove
-     * it from the van.
+     * AssignmentService.unassign removes the stop and queues a replan, as a
+     * manual removal does. It throws ConflictException for a package that is
+     * IN_TRANSIT or later.
      *
-     * The delete then re-checks, under a row lock, that nothing put the
-     * package back on a shift in between (the replan worker picks up PENDING
-     * packages); if something did, it throws ConflictException and deletes
-     * nothing, and the caller tries again later. A package that is already
-     * gone counts as deleted. Its dimensions, delivery window, timeline and
-     * links go with it (ON DELETE CASCADE).
+     * The delete then re-checks under a row lock that the package is still
+     * off a shift, because the replan worker can re-assign it. If not, it
+     * throws ConflictException and the caller retries later. A missing
+     * package counts as deleted. Dependent rows go with it (ON DELETE
+     * CASCADE).
      */
     async deleteUndispatched(
         organisationId: string,

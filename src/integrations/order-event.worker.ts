@@ -19,10 +19,8 @@ export const ORDER_EVENT_CHANNEL = 'hikyaku_order_event';
 const DEBOUNCE_MS = 500;
 
 /**
- * Backstop sweep, in ms. Catches a NOTIFY delivered to nobody (listener
- * reconnecting), a row whose retry backoff has elapsed, and a claim left
- * behind by a worker that died mid-row. Same reasoning as ReplanWorker's
- * SWEEP_MS.
+ * Backstop sweep, in ms. Catches a missed NOTIFY, a row whose backoff has
+ * elapsed, and a stale claim. See ReplanWorker's SWEEP_MS.
  */
 const SWEEP_MS = 60_000;
 
@@ -39,13 +37,12 @@ export const MAX_ATTEMPTS = 5;
 const BACKOFF_SECONDS = [60, 300, 900, 3600];
 
 /**
- * Drains integration_order_event: claims due rows and hands each to
+ * Claims due integration_order_event rows and hands each to
  * OrderEventProcessor.
  *
- * The ledger is the queue. Claiming is one UPDATE ... FOR UPDATE SKIP LOCKED,
- * so replicas never take the same row, and a claim carries a timestamp so a
- * row whose worker crashed is taken again after STALE_CLAIM_MINUTES rather
- * than stuck in `processing` forever.
+ * The ledger is the queue. FOR UPDATE SKIP LOCKED stops two replicas taking
+ * the same row. A claim older than STALE_CLAIM_MINUTES is taken again, so a
+ * crashed worker does not leave a row in `processing`.
  */
 @Injectable()
 export class OrderEventWorker
@@ -66,7 +63,7 @@ export class OrderEventWorker
         this.notify.subscribe({
             channel: ORDER_EVENT_CHANNEL,
             debounceMs: DEBOUNCE_MS,
-            // The payload (a row id) is ignored: the table is the work list.
+            // Ignores the payload (a row id): drain reads the table.
             onWake: () => this.drain(),
         });
 
@@ -147,9 +144,8 @@ export class OrderEventWorker
     }
 
     /**
-     * A transient failure: back to pending with a backoff, or failed once the
-     * attempts run out. The error is kept either way, so a row waiting for its
-     * next attempt still says why.
+     * Records a transient failure: back to pending with a backoff, or failed
+     * after MAX_ATTEMPTS. Keeps the error in both cases.
      */
     private async fail(row: ClaimedOrderEvent, err: unknown): Promise<void> {
         const message = err instanceof Error ? err.message : String(err);

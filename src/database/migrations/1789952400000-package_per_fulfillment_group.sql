@@ -1,26 +1,21 @@
--- One storefront order can now become several packages. A store that fulfils
--- from more than one location sends fulfillment_groups on its order events,
--- and each group becomes its own package, dispatched from the warehouse its
--- location is mapped to in integration_location_mapping. See
+-- One storefront order can become several packages: one per fulfillment
+-- group, each from the warehouse its location maps to. See
 -- src/integrations/order-event.processor.ts.
 --
--- What ships here:
---   1. packages.external_fulfillment_id, the storefront group a package was
---      made for.
---   2. packages_org_external_order_key, which allowed one package per order,
---      replaced by packages_org_external_fulfillment_key, which allows one
---      package per order and group.
---   3. integration_order_event_package, linking an event to every package it
---      produced, backfilled from integration_order_event.package_id.
+-- Contents:
+--   1. packages.external_fulfillment_id, the group a package is for.
+--   2. packages_org_external_fulfillment_key (one package per order and
+--      group) replaces packages_org_external_order_key (one per order).
+--   3. integration_order_event_package, linking an event to all its
+--      packages, backfilled from integration_order_event.package_id.
 
 SET lock_timeout = '5s';
 SET statement_timeout = '30s';
 
 -- ── 1. packages.external_fulfillment_id ─────────────────────────────────────
 --
--- NULL for a package made from a whole order (a store with one location, or a
--- connector that sends no groups), and for every package created by hand or
--- by a booking. A group only exists inside an order, hence the CHECK.
+-- NULL for a whole-order package and for packages created by hand or by a
+-- booking. The CHECK requires an order for a group.
 
 ALTER TABLE "public"."packages"
     ADD COLUMN IF NOT EXISTS "external_fulfillment_id" "text";
@@ -40,16 +35,14 @@ COMMENT ON COLUMN "public"."packages"."external_order_id" IS
 
 -- ── 2. One package per order and group ──────────────────────────────────────
 --
--- COALESCE folds a whole-order package (NULL group) into the same key space,
--- so an order still gets at most one whole-order package, and at most one per
--- group. That is what keeps a webhook delivered twice, under the same or a
--- different Idempotency-Key, from putting the same parcel on a van twice.
+-- COALESCE puts the whole-order package (NULL group) in the same key space:
+-- at most one whole-order package per order, and one per group. A webhook
+-- sent twice, under any Idempotency-Key, cannot make a second package.
 --
--- Every existing package has a NULL group, and the old index already held
--- them unique per order, so building this one cannot fail on existing rows.
--- It is built before the old one is dropped, so no moment in this migration
--- goes without a guarantee. Its leading columns also serve the processor's
--- "every package of this order" lookup.
+-- Existing packages all have a NULL group and are already unique per order,
+-- so the build cannot fail. The new index is built before the old one is
+-- dropped, so the guarantee holds throughout. Its leading columns also serve
+-- the processor's per-order package lookup.
 
 CREATE UNIQUE INDEX IF NOT EXISTS "packages_org_external_fulfillment_key"
     ON "public"."packages" (
@@ -64,22 +57,18 @@ DROP INDEX IF EXISTS "public"."packages_org_external_order_key";
 
 -- ── 3. integration_order_event_package ──────────────────────────────────────
 --
--- A link table rather than a package_ids uuid[] on the event: each link has
--- real foreign keys (a deleted package drops out of the list instead of
--- leaving a dangling id), a package can be traced back to its event through
--- an index, and a later change to one group (moved to another location,
--- cancelled) touches one row rather than rewriting an array.
+-- A link table, not a package_ids array on the event: real foreign keys, an
+-- index from package to event, and a one-row change per group.
 --
--- The link is written on the same transaction as the package, so a package
--- made from an event is never without its link, even if the worker dies
--- before it writes the event's final status.
+-- The link commits in the same transaction as the package, so a package is
+-- never without its link, even if the worker dies before it writes the
+-- event status.
 --
--- CASCADE on the package: deleting a package a dispatcher no longer wants
--- removes it from the list, while the event row itself, the evidence that the
--- order was received, stays.
+-- CASCADE on the package: deleting a package removes its link, and the event
+-- row stays as the record of the order.
 --
--- external_fulfillment_id repeats the package's own, so the groups of an
--- event can be matched to their links without a join to packages.
+-- external_fulfillment_id copies the package's value, so links match groups
+-- without a join to packages.
 
 CREATE TABLE IF NOT EXISTS "public"."integration_order_event_package" (
     "event_id"                uuid        NOT NULL,
@@ -113,8 +102,7 @@ COMMENT ON TABLE "public"."integration_order_event_package" IS
 COMMENT ON COLUMN "public"."integration_order_event_package"."external_fulfillment_id" IS
     'The fulfillment group the package was made for, as on packages.external_fulfillment_id. NULL for a whole-order package.';
 
--- Events processed before this migration linked their one package through
--- integration_order_event.package_id.
+-- Backfill older events from integration_order_event.package_id.
 INSERT INTO "public"."integration_order_event_package"
     ("event_id", "package_id", "external_fulfillment_id", "created_at")
 SELECT "id", "package_id", NULL, COALESCE("processed_at", "created_at")
@@ -128,8 +116,7 @@ COMMENT ON COLUMN "public"."integration_order_event"."package_id" IS
 COMMENT ON COLUMN "public"."integration_order_event"."status" IS
     'Processing state. pending: waiting for the worker (again, after a transient failure, once next_attempt_at passes). processing: claimed by a worker at claimed_at. processed: integration_order_event_package and customer_id say what it produced. skipped: nothing to deliver (digital or pickup-only order, every group picked up or from a location Hikyaku does not deliver for, or an event type that creates nothing); error says why. needs_attention: cannot be fully processed without a human (ungeocodable address, no warehouse, a fulfillment location not mapped to a warehouse); error says why, the groups that could be processed already have their packages, and POST /api/v1/integrations/orders/:id/retry re-queues the rest. failed: transient failures exhausted the retry budget.';
 
--- RLS enabled with no policies, and revoked from anon and authenticated, like
--- integration_order_event: only hikyaku-api (service_role) reads or writes it.
+-- RLS and grants: hikyaku-api only, like integration_order_event.
 
 ALTER TABLE "public"."integration_order_event_package" ENABLE ROW LEVEL SECURITY;
 

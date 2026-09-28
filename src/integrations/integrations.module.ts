@@ -12,11 +12,10 @@ import { OrderEventWorker } from './order-event.worker';
 import { OrderGeocoder } from './order-geocoder';
 
 /**
- * Storefront orders in, packages out. The controller only records; the
- * worker, woken by a NOTIFY on insert (PgNotifyService, from DispatchModule),
- * geocodes, upserts the customer and creates and assigns the package.
- * LocationMappingsController keeps which warehouse each storefront location
- * ships from.
+ * Storefront orders in, packages out. IntegrationsController records events.
+ * OrderEventWorker, woken by NOTIFY (PgNotifyService from DispatchModule),
+ * turns them into packages. LocationMappingsController maps storefront
+ * locations to warehouses.
  */
 @Module({
     imports: [CustomersModule, DispatchModule, GeocodeModule, PackagesModule],

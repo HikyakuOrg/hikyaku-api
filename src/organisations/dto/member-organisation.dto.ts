@@ -2,12 +2,9 @@ import { ApiProperty } from '@nestjs/swagger';
 import type { MemberOrganisation } from '../organisations.service';
 
 /**
- * Swagger view of `MemberOrganisation` in `organisations.service.ts`. The
- * interface there stays the source of truth; `implements` is what stops the
- * two drifting.
+ * One entry of GET /api/v1/organisations/me. `MemberOrganisation` stays the
+ * source of truth; `implements` keeps the two in sync.
  */
-
-/** One entry of GET /api/v1/organisations/me. */
 export class MemberOrganisationDto implements MemberOrganisation {
     @ApiProperty({ format: 'uuid' })
     id: string;
@@ -22,7 +19,7 @@ export class MemberOrganisationDto implements MemberOrganisation {
     @ApiProperty({
         type: String,
         nullable: true,
-        description: 'NULL for a personal organisation that was never named.',
+        description: 'NULL for an unnamed personal organisation.',
         example: 'Acme Logistics',
     })
     name: string | null;

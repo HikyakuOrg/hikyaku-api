@@ -16,9 +16,8 @@ export class PackagePerFulfillmentGroup1789952400000 implements MigrationInterfa
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {
-        // Restoring one package per order fails while any order already has
-        // more than one. That is deliberate: which of them to keep is a
-        // decision for a person, not for a revert.
+        // Fails if an order has several packages. This is deliberate: a
+        // person must choose which to keep.
         await queryRunner.query(`
             CREATE UNIQUE INDEX IF NOT EXISTS "packages_org_external_order_key"
                 ON "public"."packages" ("organisation_id", "external_platform", "external_order_id")

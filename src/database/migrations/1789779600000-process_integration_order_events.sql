@@ -1,18 +1,14 @@
--- Turns integration_order_event from a record-only ledger into a work queue:
--- every recorded order event is now processed, asynchronously, into a
--- customer + package that is then assigned to a shift. See
--- src/integrations/order-event.worker.ts.
+-- Turns integration_order_event into a work queue. A worker processes each
+-- recorded event into a customer and package, and assigns the package to a
+-- shift. See src/integrations/order-event.worker.ts.
 --
--- The ledger row itself is the unit of work. The webhook endpoint stays
--- record-only and fast (Shopify gives the whole round trip 5 s, and a single
--- Photon lookup alone can take longer than that), and a worker claims pending
--- rows afterwards with FOR UPDATE SKIP LOCKED, so any number of API replicas
--- can drain it without processing a row twice.
+-- The webhook endpoint only records, because Shopify allows 5 s per round
+-- trip and one Photon lookup can take longer. The worker claims rows with
+-- FOR UPDATE SKIP LOCKED, so replicas never process a row twice.
 
 -- ── Ledger: processing state ─────────────────────────────────────────────────
 
--- Existing rows take the default and become 'pending', so an event recorded
--- before this migration ran is processed like any other.
+-- Existing rows default to 'pending' and are processed too.
 ALTER TABLE "public"."integration_order_event"
     ADD COLUMN "status"          "text"      NOT NULL DEFAULT 'pending',
     ADD COLUMN "attempts"        integer     NOT NULL DEFAULT 0,
@@ -25,8 +21,7 @@ ALTER TABLE "public"."integration_order_event"
     ADD CONSTRAINT "integration_order_event_status_check" CHECK (
         "status" IN ('pending', 'processing', 'processed', 'skipped', 'needs_attention', 'failed')
     ),
-    -- SET NULL, never CASCADE: deleting the package a dispatcher no longer
-    -- wants must not erase the evidence that the order was received.
+    -- SET NULL, not CASCADE: deleting a package keeps the record of the order.
     ADD CONSTRAINT "integration_order_event_customer_id_fkey"
         FOREIGN KEY ("customer_id") REFERENCES "public"."customer" ("id") ON DELETE SET NULL,
     ADD CONSTRAINT "integration_order_event_package_id_fkey"
@@ -41,8 +36,7 @@ COMMENT ON COLUMN "public"."integration_order_event"."next_attempt_at" IS
 COMMENT ON TABLE "public"."integration_order_event" IS
     'Durable, idempotent ledger of inbound order events from external storefronts (Shopify today; WooCommerce/Magento/MedusaJS later), and the work queue that turns each into a customer + package. See src/integrations/.';
 
--- The worker's claim query: pending rows that are due, plus processing rows
--- whose claim has gone stale (a worker that died mid-row).
+-- The worker's claim query: due pending rows and stale processing rows.
 CREATE INDEX "integration_order_event_work_idx"
     ON "public"."integration_order_event" ("next_attempt_at")
     WHERE "status" IN ('pending', 'processing');
@@ -53,12 +47,10 @@ CREATE INDEX "integration_order_event_org_status_idx"
 
 -- ── Wake-up ──────────────────────────────────────────────────────────────────
 
--- NOTIFY is the doorbell, the table is the truth: the worker also sweeps on a
--- timer, so a notification delivered to nobody (listener reconnecting) costs
--- latency, never an order. Firing on UPDATE too means a row put back to
--- pending by hand, or by the retry endpoint, is picked up immediately.
--- Postgres holds the NOTIFY until COMMIT, so the worker never wakes for a row
--- it cannot see yet.
+-- NOTIFY only wakes the worker. The worker also sweeps on a timer, so a
+-- missed NOTIFY adds latency but loses no order. The UPDATE trigger wakes it
+-- for rows set back to pending (by hand or by the retry endpoint). Postgres
+-- sends NOTIFY at COMMIT, so the row is visible when the worker wakes.
 CREATE OR REPLACE FUNCTION "public"."integration_order_event_notify"()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -81,10 +73,9 @@ CREATE TRIGGER "integration_order_event_notify"
 
 -- ── Packages: the storefront order they came from ────────────────────────────
 
--- So ops can match a package back to the order in the storefront admin, and
--- so the database itself guarantees one package per external order: a
--- webhook delivered twice under two different Idempotency-Keys still cannot
--- put the same parcel on a van twice.
+-- Links a package to its storefront order. The unique index allows one
+-- package per order, even for a webhook sent twice with different
+-- Idempotency-Keys.
 ALTER TABLE "public"."packages"
     ADD COLUMN "external_platform"   "text",
     ADD COLUMN "external_order_id"   "text",

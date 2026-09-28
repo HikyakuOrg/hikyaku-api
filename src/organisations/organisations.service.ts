@@ -162,11 +162,9 @@ export class OrganisationsService {
     }
 
     /**
-     * The organisations the user is a member of and holds `permission` in,
-     * ordered by name. Membership is read from team_members, the same source
-     * PermissionGuard checks, so every org returned here is one the guard will
-     * admit the user to; the permission is checked with EXISTS so an org is
-     * never repeated. Unnamed orgs sort last.
+     * Organisations where the user is a member and holds `permission`, by
+     * name, unnamed last. Membership comes from team_members, as in
+     * PermissionGuard, so the guard admits the user to every result.
      */
     async listForMember(
         userId: string,

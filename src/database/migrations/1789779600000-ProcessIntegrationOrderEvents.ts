@@ -16,8 +16,7 @@ export class ProcessIntegrationOrderEvents1789779600000 implements MigrationInte
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {
-        // Packages created from orders survive the revert; only the reference
-        // back to the storefront order is lost with the columns.
+        // Keeps packages made from orders, but drops their order reference.
         await queryRunner.query(`
             DROP INDEX IF EXISTS "public"."packages_org_external_order_key";
             ALTER TABLE "public"."packages"

@@ -14,10 +14,7 @@ import {
     ValidateNested,
 } from 'class-validator';
 
-/**
- * What happens to the items a storefront fulfils from one of its locations.
- * Mirrors integration_location_mapping_mode_chk.
- */
+/** Mirrors integration_location_mapping_mode_chk. */
 export const LOCATION_MAPPING_MODES = [
     'warehouse',
     'not_delivered',
@@ -30,14 +27,14 @@ export type LocationMappingMode = (typeof LOCATION_MAPPING_MODES)[number];
 export const MAX_LOCATIONS_PER_UPSERT = 1000;
 
 const MODE_DESCRIPTION =
-    "`warehouse`: dispatch this location's items from `warehouse_id`. " +
-    "`not_delivered`: Hikyaku does not deliver this location's items. " +
-    '`unmapped`: not decided yet; its orders need attention.';
+    '`warehouse`: ship from `warehouse_id`. ' +
+    '`not_delivered`: Hikyaku does not deliver these items. ' +
+    '`unmapped`: not decided; orders need attention.';
 
 /** One storefront location in PUT /api/v1/integrations/locations. */
 export class IntegrationLocationInputDto {
     @ApiProperty({
-        description: "The location's id in the storefront's own system.",
+        description: "The location's storefront id.",
         example: 'gid://shopify/Location/123',
     })
     @IsString()
@@ -48,9 +45,7 @@ export class IntegrationLocationInputDto {
     @ApiPropertyOptional({
         type: String,
         nullable: true,
-        description:
-            'Display name, refreshed on every sync. Omit (or send null) to ' +
-            'keep the stored name.',
+        description: 'Display name. Omit or send null to keep the stored name.',
         example: 'Melbourne warehouse',
     })
     @IsOptional()
@@ -62,8 +57,8 @@ export class IntegrationLocationInputDto {
         type: String,
         nullable: true,
         description:
-            'ISO 3166-1 alpha-2 country of the location, stored upper case. ' +
-            'Omit (or send null) to keep the stored value.',
+            'ISO 3166-1 alpha-2, stored upper case. Omit or send null to keep ' +
+            'the stored value.',
         example: 'AU',
     })
     @IsOptional()
@@ -75,10 +70,8 @@ export class IntegrationLocationInputDto {
     @ApiPropertyOptional({
         enum: LOCATION_MAPPING_MODES,
         description:
-            `${MODE_DESCRIPTION} Omit to leave an existing location's mode ` +
-            'and warehouse as they are (a new one starts `unmapped`), which ' +
-            'is how a connector refreshes names without undoing what the ' +
-            'merchant chose.',
+            `${MODE_DESCRIPTION} Omit to keep the stored mode and warehouse ` +
+            '(a new location starts `unmapped`).',
     })
     @IsOptional()
     @IsIn(LOCATION_MAPPING_MODES)
@@ -89,8 +82,8 @@ export class IntegrationLocationInputDto {
         format: 'uuid',
         nullable: true,
         description:
-            'Required when `mode` is `warehouse`, and only then. Must be a ' +
-            'warehouse of the organisation in `X-Organisation-Slug`.',
+            'Required when `mode` is `warehouse`, and only then. Must belong ' +
+            'to the organisation in `X-Organisation-Slug`.',
     })
     @IsOptional()
     @IsUUID()
@@ -101,8 +94,7 @@ export class IntegrationLocationInputDto {
 export class UpsertIntegrationLocationsDto {
     @ApiProperty({
         description:
-            'Lowercase connector slug. An open value, never a closed enum, ' +
-            'as on POST /api/v1/integrations/orders.',
+            'Lowercase connector slug, as on POST /api/v1/integrations/orders.',
         example: 'shopify',
     })
     @IsString()
@@ -112,9 +104,7 @@ export class UpsertIntegrationLocationsDto {
     platform: string;
 
     @ApiProperty({
-        description:
-            'The storefront the locations belong to. Compared case ' +
-            'insensitively and stored lower case.',
+        description: 'Storefront domain. Case-insensitive; stored lower case.',
         example: 'store.myshopify.com',
     })
     @IsString()
@@ -124,7 +114,7 @@ export class UpsertIntegrationLocationsDto {
 
     @ApiProperty({
         type: [IntegrationLocationInputDto],
-        description: `Up to ${MAX_LOCATIONS_PER_UPSERT} locations, each at most once.`,
+        description: `Up to ${MAX_LOCATIONS_PER_UPSERT} locations, no duplicates.`,
     })
     @IsArray()
     @ArrayMaxSize(MAX_LOCATIONS_PER_UPSERT)
@@ -135,10 +125,8 @@ export class UpsertIntegrationLocationsDto {
     @ApiPropertyOptional({
         default: false,
         description:
-            '`true` when `locations` is every location the shop has right ' +
-            'now: any stored location of this shop missing from it is marked ' +
-            'stale (`stale_at`), keeping its mapping. Leave `false` to upsert ' +
-            'a few locations without touching the rest.',
+            "Set `true` when `locations` is the shop's full list. Stored " +
+            'locations missing from it get `stale_at` and keep their mapping.',
     })
     @IsOptional()
     @IsBoolean()
@@ -176,8 +164,8 @@ export class IntegrationLocationDto {
         format: 'uuid',
         nullable: true,
         description:
-            'Set exactly when `mode` is `warehouse`. Deleting the warehouse ' +
-            'moves the location back to `unmapped`.',
+            'Set only when `mode` is `warehouse`. Deleting the warehouse sets ' +
+            '`mode` to `unmapped`.',
     })
     warehouse_id: string | null;
 
@@ -186,8 +174,8 @@ export class IntegrationLocationDto {
         format: 'date-time',
         nullable: true,
         description:
-            'When a full sync (`mark_missing_stale`) last left this location ' +
-            'out. NULL while the storefront still reports it.',
+            'When a full sync (`mark_missing_stale`) last omitted this ' +
+            'location. NULL while the storefront reports it.',
     })
     stale_at: string | null;
 
@@ -199,8 +187,8 @@ export class IntegrationLocationDto {
         format: 'uuid',
         nullable: true,
         description:
-            'User whose request last changed the row. NULL when the ' +
-            'database changed it, e.g. after its warehouse was deleted.',
+            'User who last changed the row. NULL for a database change, such ' +
+            'as a warehouse delete.',
     })
     updated_by: string | null;
 }

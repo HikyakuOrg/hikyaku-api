@@ -17,9 +17,8 @@ interface WarehouseRow {
 }
 
 /**
- * Read side of `warehouse` for API clients. The dashboard reads warehouses
- * straight through PostgREST under RLS; this is for callers that only speak
- * to hikyaku-api, such as storefront connectors.
+ * Reads `warehouse` for API-only clients, such as storefront connectors. The
+ * dashboard reads warehouses through PostgREST.
  */
 @Injectable()
 export class WarehousesService {

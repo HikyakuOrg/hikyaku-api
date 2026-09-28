@@ -1,10 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
 
 /**
- * 200/201 body of `POST /api/v1/integrations/orders`. Recording is all the
- * request does; the customer and package are made afterwards by the order
- * event worker, so the ledger row's id is the only thing known yet. Follow it
- * with `GET /api/v1/integrations/orders`.
+ * 200/201 body of `POST /api/v1/integrations/orders`. Processing happens
+ * later, so only the ledger row id is known. Track it with
+ * `GET /api/v1/integrations/orders`.
  */
 export class RecordedOrderEventDto {
     @ApiProperty({
@@ -37,7 +36,7 @@ export class OrderEventRecordDto {
     eventType: string;
 
     @ApiProperty({
-        description: "The order's id in the storefront's system.",
+        description: "The order's storefront id.",
     })
     externalOrderId: string;
 
@@ -51,14 +50,11 @@ export class OrderEventRecordDto {
     @ApiProperty({
         enum: ORDER_EVENT_STATUSES,
         description:
-            '`pending`/`processing`: not done yet. `processed`: ' +
-            '`packageIds` and `customerId` say what it produced. `skipped`: ' +
-            'nothing to deliver. `needs_attention`: a human has to fix ' +
-            'something (see `error`), then retry; for an order split by ' +
-            'fulfillment group, the groups that could be processed already ' +
-            'have their packages in `packageIds`. `failed`: transient ' +
-            'failures exhausted the retry budget; retry once the cause is ' +
-            'fixed.',
+            '`pending`, `processing`: in progress. `processed`: see ' +
+            '`packageIds` and `customerId`. `skipped`: nothing to deliver. ' +
+            '`needs_attention`: fix the cause in `error`, then retry; groups ' +
+            'that succeeded are already in `packageIds`. `failed`: retries ' +
+            'exhausted; fix the cause, then retry.',
     })
     status: OrderEventStatus;
 
@@ -66,8 +62,8 @@ export class OrderEventRecordDto {
         type: String,
         nullable: true,
         description:
-            'Why the event was skipped, needs attention, failed, or is ' +
-            'waiting to be retried.',
+            'Reason for `skipped`, `needs_attention` or `failed`, or for a ' +
+            'pending retry.',
     })
     error: string | null;
 
@@ -81,9 +77,7 @@ export class OrderEventRecordDto {
         type: String,
         format: 'uuid',
         nullable: true,
-        description:
-            'The first of `packageIds`. Kept for clients written before an ' +
-            'order could produce more than one package.',
+        description: 'The first of `packageIds`, for older clients.',
     })
     packageId: string | null;
 
@@ -91,9 +85,8 @@ export class OrderEventRecordDto {
         type: [String],
         format: 'uuid',
         description:
-            'Every package this event produced or was matched to: one for a ' +
-            'whole order, one per delivered fulfillment group for an order ' +
-            'that ships from several locations. Empty when it produced none.',
+            'Packages linked to this event: one for a whole order, or one per ' +
+            'delivered fulfillment group. Empty if none.',
     })
     packageIds: string[];
 

@@ -298,7 +298,7 @@ describe('LocationMappingsService', () => {
 
         it("rejects another organisation's warehouse with 404 before writing anything", async () => {
             // The lookup is scoped to the caller's org, so the other org's
-            // warehouse is simply not found.
+            // warehouse is not found.
             dataSource.query.mockResolvedValueOnce([]);
 
             await expect(

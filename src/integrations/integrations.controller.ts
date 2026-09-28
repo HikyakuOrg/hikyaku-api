@@ -48,10 +48,9 @@ interface StatusReply {
 }
 
 /**
- * Generic ecommerce connector ingestion. One route, never named
- * after a platform: `platform` is a data value on the body, read from
- * `source.platform`, not a path segment. Every storefront connector (Shopify
- * today; WooCommerce/Magento/MedusaJS later) POSTs its translated event here.
+ * Generic ecommerce connector ingestion. No route is named after a platform:
+ * `platform` comes from `source.platform` in the body. Every storefront
+ * connector POSTs its translated event here.
  */
 @ApiTags('integrations')
 @ApiBearerAuth('bearer')
@@ -68,18 +67,14 @@ export class IntegrationsController {
     @ApiOperation({
         summary: 'Record an external order event.',
         description:
-            'Validates and durably stores the event, keyed by (organisation, ' +
-            'platform, Idempotency-Key), and returns without waiting for ' +
-            'anything else. An `order.paid` event that needs delivery is then ' +
-            'turned into a customer and its packages, and assigned, in the ' +
-            'background; follow it with GET /api/v1/integrations/orders. An ' +
-            '`order.fulfillment_updated` event, sent when the storefront ' +
-            're-routes the order after payment, reconciles those packages ' +
-            'with the groups it carries: packages that no longer match are ' +
-            'taken off their shift and deleted, and new groups get packages. ' +
-            'A change that touches a package already loaded or delivered is ' +
-            'not applied, and the event needs attention. A replay creates ' +
-            'nothing new.',
+            'Stores the event, keyed by (organisation, platform, ' +
+            'Idempotency-Key), and returns at once. Processing runs in the ' +
+            'background; track it with GET /api/v1/integrations/orders. ' +
+            '`order.paid` creates the customer and packages and assigns ' +
+            'them. `order.fulfillment_updated` deletes packages that no ' +
+            'longer match their group and creates packages for new groups; ' +
+            'if a changed package is already loaded, nothing changes and the ' +
+            'event needs attention. A replay creates nothing.',
     })
     @ApiHeader({
         name: 'Idempotency-Key',
@@ -135,11 +130,9 @@ export class IntegrationsController {
     @ApiOperation({
         summary: 'List recorded order events and what they produced.',
         description:
-            'Newest first. Filter by `status=needs_attention` for the orders ' +
-            'that could not become a package without a human (an address ' +
-            'that cannot be placed on the map, no warehouse, a storefront ' +
-            'location not mapped to a warehouse), each with the reason in ' +
-            '`error`.',
+            'Newest first. `status=needs_attention` lists the orders that ' +
+            'need a fix (bad address, no warehouse, unmapped location); ' +
+            '`error` gives the reason.',
     })
     @ApiQuery({ name: 'status', required: false, enum: ORDER_EVENT_STATUSES })
     @ApiQuery({
@@ -187,10 +180,9 @@ export class IntegrationsController {
     @ApiOperation({
         summary: 'Retry an order event that needs attention or has failed.',
         description:
-            'Queues the event for processing again with a fresh attempt ' +
-            'budget, once the cause in `error` has been fixed. Packages it ' +
-            'already produced are kept, and fulfillment groups that already ' +
-            'have a package are not made again.',
+            'Re-queues the event with a fresh attempt budget. Fix the cause ' +
+            'in `error` first. Existing packages are kept; only groups ' +
+            'without a package get one.',
     })
     @ApiResponse({
         status: 200,
@@ -204,9 +196,7 @@ export class IntegrationsController {
     })
     @ApiResponse({
         status: 409,
-        description:
-            'The event is not in `needs_attention` or `failed`, so there is ' +
-            'nothing to retry.',
+        description: 'The event is not `needs_attention` or `failed`.',
         type: ApiErrorDto,
     })
     retryOrder(

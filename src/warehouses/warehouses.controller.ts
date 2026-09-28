@@ -21,17 +21,14 @@ import { WarehousesService } from './warehouses.service';
 export class WarehousesController {
     constructor(private readonly warehouses: WarehousesService) {}
 
-    // warehouse.view is what the dashboard's own reads already need: it is
-    // the permission the "warehouse select org or own" RLS policy checks.
+    // The same permission as the "warehouse select org or own" RLS policy.
     @Get()
     @RequirePermission('warehouse.view')
     @ApiOperation({
         summary: "List the organisation's warehouses.",
         description:
-            'Ordered by name. Used by storefront connectors to offer a ' +
-            'warehouse picker when mapping their locations (PUT ' +
-            '/api/v1/integrations/locations). Empty `data` when the ' +
-            'organisation has none.',
+            'Ordered by name. Storefront connectors use it to map locations ' +
+            'to warehouses (PUT /api/v1/integrations/locations).',
     })
     @ApiOkResponse({ type: WarehouseListDto })
     async list(

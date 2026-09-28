@@ -26,7 +26,7 @@ interface MappingRow {
     updated_by: string | null;
 }
 
-/** One location as it is written, after validation and normalising. */
+/** A validated, normalised location, ready to write. */
 interface LocationWrite {
     external_location_id: string;
     external_location_name: string | null;
@@ -43,13 +43,12 @@ const ORDER_BY = `ORDER BY platform, shop_domain, stale_at IS NOT NULL,
     external_location_name NULLS LAST, external_location_id`;
 
 /**
- * Which Hikyaku warehouse dispatches the items a storefront fulfils from each
- * of its locations, stored in `integration_location_mapping`. Connectors
- * register their locations here and the merchant maps each one; order
- * processing reads it back to pick the dispatching warehouse.
+ * Reads and writes `integration_location_mapping`: the warehouse that
+ * dispatches each storefront location's items. Connectors register
+ * locations, and the merchant maps them.
  *
- * Every query carries an explicit organisation_id predicate: this runs as
- * service_role, so RLS is not what keeps tenants apart.
+ * Runs as service_role, which bypasses RLS, so every query filters on
+ * organisation_id.
  */
 @Injectable()
 export class LocationMappingsService {
@@ -78,20 +77,17 @@ export class LocationMappingsService {
     }
 
     /**
-     * Upserts one shop's locations and returns every stored location of that
-     * shop afterwards, stale ones included.
+     * Upserts one shop's locations. Returns all the shop's locations, stale
+     * ones included.
      *
-     * A location sent without `mode` keeps its stored mode and warehouse
-     * (a new one starts `unmapped`), so a connector can refresh names and
-     * countries without undoing the merchant's choices. Every location sent
-     * counts as reported, which clears its `stale_at`. With
-     * `mark_missing_stale`, the shop's other locations are marked stale
-     * rather than deleted: orders placed before a location closed can still
-     * arrive, and it may come back.
+     * A location without `mode` keeps its stored mode and warehouse (a new
+     * one starts `unmapped`), so a connector can refresh names without
+     * undoing the merchant's mapping. Each sent location clears its
+     * `stale_at`. `mark_missing_stale` marks the shop's other locations stale
+     * but does not delete them: old orders can still arrive, and the location
+     * can come back.
      *
-     * A warehouse id that is not one of this organisation's warehouses is a
-     * 404, the same answer as one that does not exist at all, so the caller
-     * learns nothing about other organisations.
+     * Another organisation's warehouse gives a 404, the same as a missing one.
      */
     async upsert(
         organisationId: string,
@@ -142,8 +138,8 @@ export class LocationMappingsService {
             return rows.map(toDto);
         } catch (err) {
             if (runner.isTransactionActive) await runner.rollbackTransaction();
-            // The composite warehouse foreign key: the warehouse was deleted
-            // between assertOwnWarehouses and the write.
+            // Composite warehouse foreign key: the warehouse was deleted
+            // after assertOwnWarehouses.
             if ((err as { code?: string })?.code === '23503') {
                 throw new NotFoundException(
                     'A warehouse in this request no longer exists in this organisation.',
@@ -156,9 +152,8 @@ export class LocationMappingsService {
     }
 
     /**
-     * One query for every warehouse id in the request. The composite foreign
-     * key refuses another organisation's warehouse on its own; checking here
-     * first turns that into a 404 naming the ids instead of a 500.
+     * The composite foreign key already refuses another organisation's
+     * warehouse. This check gives a 404 that names the ids, not a 500.
      */
     private async assertOwnWarehouses(
         organisationId: string,
@@ -204,12 +199,10 @@ export class LocationMappingsService {
 }
 
 /**
- * The INSERT ... ON CONFLICT for one batch. `setMode` decides whether an
- * existing row's mode and warehouse are overwritten; without it they are left
- * alone and only a new row takes the `unmapped` default. Name and country
- * fall back to the stored value when the caller sends none. The WHERE on the
- * update skips rows the request would not change, so a connector re-syncing
- * the same list does not rewrite updated_at on every call.
+ * INSERT ... ON CONFLICT for one batch. With `setMode`, overwrites the mode
+ * and warehouse of existing rows; without it, only a new row gets
+ * `unmapped`. A null name or country keeps the stored value. The WHERE skips
+ * unchanged rows, so a re-sync does not touch updated_at.
  */
 function upsertSql(setMode: boolean): string {
     const name =
@@ -241,8 +234,8 @@ function upsertSql(setMode: boolean): string {
 }
 
 /**
- * Validates the mode/warehouse pairing the database CHECK also enforces, so
- * the caller gets a 400 that says which location is wrong rather than a 500.
+ * Checks the mode/warehouse pairing before the database CHECK does, to give a
+ * 400 that names the location, not a 500.
  */
 function toWrite(location: IntegrationLocationInputDto): LocationWrite {
     const mode = location.mode ?? null;

@@ -1,10 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 
-/**
- * One warehouse of the organisation, as GET /api/v1/warehouses lists it: the
- * fields a connector needs to let a merchant pick where a storefront location
- * ships from.
- */
+/** One entry of GET /api/v1/warehouses. */
 export class WarehouseDto {
     @ApiProperty({ format: 'uuid' })
     id: string;
@@ -25,9 +21,7 @@ export class WarehouseDto {
     postcode: string;
 
     @ApiProperty({
-        description:
-            'Country as entered on the warehouse, a name such as "Australia" ' +
-            'rather than an ISO code.',
+        description: 'Country name as entered, not an ISO code.',
         example: 'Australia',
     })
     country: string;

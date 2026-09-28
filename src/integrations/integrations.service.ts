@@ -33,9 +33,8 @@ interface RecordRow {
 }
 
 /**
- * Every column the record DTO needs, for a query that names the ledger `e`.
- * package_ids comes from integration_order_event_package, in the order the
- * packages were linked; package_id is the first of them.
+ * Columns for OrderEventRecordDto. The query must alias the ledger as `e`.
+ * package_ids is in link order.
  */
 const RECORD_COLS = `e.id, e.platform, e.event_type, e.external_order_id,
     e.payload->'order'->>'name' AS order_name, e.status, e.error, e.attempts,
@@ -49,12 +48,9 @@ const RECORD_COLS = `e.id, e.platform, e.event_type, e.external_order_id,
 const RETRYABLE: OrderEventStatus[] = ['needs_attention', 'failed'];
 
 /**
- * Ingestion for external order events. Recording stores every event in
- * `integration_order_event`, keyed by
- * `(organisation_id, platform, idempotency_key)`, and returns: the customer
- * and package are made afterwards by OrderEventWorker, which a trigger on the
- * insert wakes. This service also reads the ledger back for the dashboard
- * and re-queues events a human has fixed.
+ * Records external order events in `integration_order_event`, keyed by
+ * `(organisation_id, platform, idempotency_key)`. OrderEventWorker processes
+ * them later. Also lists events and re-queues them for retry.
  */
 @Injectable()
 export class IntegrationsService {
@@ -173,15 +169,11 @@ export class IntegrationsService {
     }
 
     /**
-     * Sends a `needs_attention` or `failed` event back to the worker, with a
-     * fresh attempt budget: the person retrying has presumably fixed the
-     * cause (corrected the address, added a warehouse, mapped a location).
-     * The status change fires the wake-up trigger, so it is picked up at once.
+     * Re-queues a `needs_attention` or `failed` event with a fresh attempt
+     * budget. The status change fires the wake-up trigger.
      *
-     * Packages the event already produced stay linked. Processing it again
-     * finds them by order and fulfillment group and makes only the missing
-     * ones, so retrying after mapping one location never duplicates the
-     * package another location already has.
+     * Existing packages stay linked. Processing makes packages only for the
+     * groups that have none, so a retry never duplicates a package.
      */
     async retryOrderEvent(
         organisationId: string,

@@ -1,14 +1,10 @@
--- Re-routing after payment. A storefront that moves, splits, merges or
--- cancels an order's fulfillment groups after payment sends an
--- order.fulfillment_updated event carrying the order's current groups, and
--- the order's packages are reconciled with them. See
--- src/integrations/order-event.processor.ts.
+-- Re-routing after payment: an order.fulfillment_updated event carries the
+-- order's current groups, and the processor reconciles the order's packages
+-- with them. See src/integrations/order-event.processor.ts.
 --
--- Every event for an order is now read back when any of them is processed
--- (the newest routing wins), so the ledger gets an index on the order. No
--- column changes: a package that is re-routed before dispatch is deleted, not
--- marked, which also frees packages_org_external_fulfillment_key for the
--- group's replacement.
+-- Processing reads all events of an order, so the ledger gets an index on
+-- the order. No column changes: a re-routed package is deleted, not marked,
+-- which frees packages_org_external_fulfillment_key for its replacement.
 
 SET lock_timeout = '5s';
 SET statement_timeout = '30s';

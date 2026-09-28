@@ -19,26 +19,23 @@ import {
 } from './order-geocoder';
 
 /**
- * Parcel size used when the storefront sends none, which is always: no
- * platform we connect to knows a box's dimensions. Only weight feeds the
- * capacity match; length/width/height are stored because package_dimensions
- * requires them.
+ * Storefronts send no parcel dimensions. Capacity matching uses only weight;
+ * these values exist because package_dimensions requires them.
  */
 const DEFAULT_DIMENSIONS_CM = { length: 30, width: 20, height: 15 };
 
 /** Weight used when neither the order nor its line items carry one. */
 const DEFAULT_WEIGHT_KG = 1;
 
-/** Fulfillment groups that leave Hikyaku a parcel to deliver. */
+/** Delivery methods that give Hikyaku a parcel to deliver. */
 const DELIVERED_METHODS: ReadonlySet<FulfillmentDeliveryMethod> = new Set([
     'shipping',
     'local',
 ]);
 
 /**
- * Statuses a package can still be taken off its shift and deleted in: it has
- * not been loaded. Past them the parcel is in a van or delivered, and only a
- * person can sort out a re-routing.
+ * Statuses of a package that is not loaded yet. A re-routing can remove only
+ * these packages.
  */
 const REMOVABLE_STATUSES: ReadonlySet<string> = new Set([
     'PENDING',
@@ -48,7 +45,7 @@ const REMOVABLE_STATUSES: ReadonlySet<string> = new Set([
 /** Package weights closer than this, in kg, are the same parcel. */
 const WEIGHT_TOLERANCE_KG = 0.001;
 
-/** A claimed ledger row, as the worker hands it over. */
+/** A ledger row claimed by the worker. */
 export interface ClaimedOrderEvent {
     id: string;
     organisation_id: string;
@@ -59,9 +56,9 @@ export interface ClaimedOrderEvent {
 }
 
 /**
- * What processing decided. `packageIds` lists every package the event is
- * linked to, whether made now or found from an earlier event or attempt, so a
- * `needs_attention` outcome can carry the packages its other groups produced.
+ * `packageIds` lists every package linked to the event, new or found. A
+ * `needs_attention` outcome also carries the packages of the groups that
+ * succeeded.
  */
 export type OrderEventOutcome =
     | { status: 'processed'; customerId: string; packageIds: string[] }
@@ -91,7 +88,7 @@ interface OrderPackageRow {
     external_fulfillment_id: string | null;
     tracking_number: string;
     warehouse_id: string | null;
-    /** numeric, so node-postgres hands it over as a string. */
+    /** node-postgres returns numeric as a string. */
     weight_kg: string | number | null;
     /** Latest timeline status; null reads as PENDING. */
     status: string | null;
@@ -105,36 +102,35 @@ interface MappingRow extends Omit<WarehouseRow, 'id'> {
     warehouse_id: string | null;
 }
 
-/** One package to make: where from, what it weighs, which group it is. */
 interface PackageToCreate {
     warehouse: WarehouseRow;
     weightKg: number;
     fulfillmentId: string | null;
 }
 
-/** A package to take off its shift and delete, and why, for the log. */
+/** A package to unassign and delete. `reason` goes to the log. */
 interface PackageToRemove {
     pkg: OrderPackageRow;
     reason: string;
 }
 
 /**
- * The event being processed, and the order.paid body the order's recipient,
- * items and address come from: the event itself for `order.paid`, the order's
- * newest recorded `order.paid` for `order.fulfillment_updated`.
+ * The event, and the order.paid body that supplies the recipient, items and
+ * address. For `order.fulfillment_updated`, `paid` is the newest recorded
+ * order.paid.
  */
 interface OrderContext {
     event: ClaimedOrderEvent;
     paid: OrderPaidPayload;
 }
 
-/** What the ledger says about an order's routing, across all its events. */
+/** An order's current routing, from all its recorded events. */
 export interface OrderRouting {
     /** The newest order.paid body, or null when none has arrived yet. */
     paid: OrderPaidPayload | null;
     /**
-     * The order's current fulfillment groups: those of the newest event that
-     * carries any. Null when no event does, so the order ships whole.
+     * Groups from the newest event that has them. Null means the order ships
+     * as one package.
      */
     groups: OrderFulfillmentGroupDto[] | null;
     /** Groups the storefront re-routed or cancelled, and no longer lists. */
@@ -142,44 +138,29 @@ export interface OrderRouting {
 }
 
 /**
- * Turns recorded order events into a customer and packages, and keeps the
- * packages in step with the storefront's routing: the second half of the
- * generic ecommerce connector.
+ * Turns recorded order events into a customer and packages.
  *
  * `order.paid`: an order without fulfillment groups becomes one package from
- * the warehouse nearest the recipient. An order with them becomes one package
- * per group that is delivered (`shipping` or `local`), each from the warehouse
- * its storefront location is mapped to. A group whose location is not mapped
- * never falls back to the nearest warehouse: the merchant has said where the
- * items are, so guessing would send a van to a depot that does not have them.
- * A package that already exists for a group is kept as it is.
+ * the nearest warehouse. An order with groups becomes one package per
+ * delivered group, from the warehouse its location is mapped to. An unmapped
+ * location never falls back to the nearest warehouse, because that warehouse
+ * may not have the items.
  *
- * `order.fulfillment_updated`: the storefront re-routed the order after
- * payment. Its packages are reconciled with the order's current groups: a
- * package whose group now ships from another warehouse, weighs something
- * else, or was released (moved out of, merged away, cancelled) is taken off
- * its shift and deleted, and every current group without a package gets one.
- * If any package the change touches has already been loaded, nothing is
- * changed and the event needs attention: taking a parcel off the plan does not
- * take it out of the van.
+ * `order.fulfillment_updated`: reconciles the order's packages with its
+ * current groups (see decideGroups). If a package to change is already
+ * loaded, nothing changes and the event needs attention.
  *
- * Both work from the order's current routing, not only their own body: the
- * groups of the newest event that has any (see loadRouting). So an order.paid
- * processed or retried after a re-routing builds the routing as it is now.
+ * Both event types use the order's current routing (see routingOf), so a
+ * retried order.paid uses the latest groups.
  *
- * Every outcome it can decide on is written back to the ledger row here:
- * `processed` (with the customer and packages it produced), `skipped`
- * (nothing to deliver) or `needs_attention` (a human has to fix something
- * first; the groups that could be processed already have their packages). It
- * only throws for failures worth retrying (geocoder unreachable, database
- * error, a package re-assigned while it was being removed), which the worker
- * turns into a backoff.
+ * Writes every outcome to the ledger row. Throws only for failures to retry
+ * (geocoder down, database error, a package put back on a shift during
+ * removal); the worker backs off on these.
  *
- * IDEMPOTENT PER ORDER AND GROUP, not just per event. Each package commits
- * with its link to the event, and packages_org_external_fulfillment_key
- * allows one package per storefront order and group, so neither a worker that
- * dies halfway, a retry after a location is mapped, nor the same order
- * arriving under a second Idempotency-Key can put two parcels on a van.
+ * Idempotent per order and group: packages_org_external_fulfillment_key
+ * allows one package per order and group, and each package commits with its
+ * event link. A crash, a retry or a second Idempotency-Key cannot create a
+ * second package.
  */
 @Injectable()
 export class OrderEventProcessor {
@@ -201,8 +182,7 @@ export class OrderEventProcessor {
     private async decide(event: ClaimedOrderEvent): Promise<OrderEventOutcome> {
         const reroute = event.event_type === ORDER_FULFILLMENT_UPDATED;
 
-        // Cancellations and refunds will arrive as their own event types; until
-        // they do anything, recording them is all there is to do.
+        // Other event types (cancellations, refunds) are only recorded for now.
         if (event.event_type !== ORDER_PAID && !reroute) {
             return {
                 status: 'skipped',
@@ -236,11 +216,9 @@ export class OrderEventProcessor {
     }
 
     /**
-     * The order's routing as its recorded events describe it, oldest first so
-     * the newest wins. Events are ordered by when they were received: the
-     * connector reads the routing just before it sends, so that is the order
-     * the routings were read in. Every status counts, a skipped update too:
-     * it still says how the order is routed.
+     * Reads the order's routing from all its recorded events. Orders by
+     * receive time, because the connector reads the routing just before it
+     * sends. Events of every status count, skipped ones too.
      */
     private async loadRouting(event: ClaimedOrderEvent): Promise<OrderRouting> {
         const rows: {
@@ -259,8 +237,7 @@ export class OrderEventProcessor {
                 [ORDER_PAID, ORDER_FULFILLMENT_UPDATED],
             ],
         );
-        // The event being processed is always in the ledger; should the read
-        // miss it anyway, it is the newest thing known.
+        // If the read misses the current event, add it as the newest.
         if (!rows.some((row) => row.id === event.id)) {
             rows.push({
                 id: event.id,
@@ -277,8 +254,7 @@ export class OrderEventProcessor {
     ): Promise<OrderEventOutcome> {
         const { event, paid } = context;
 
-        // The same order already became a package (or packages) through
-        // another event.
+        // Another event already made packages for this order.
         const existing = await this.findPackagesForOrder(event);
         if (existing.length > 0) {
             await this.link(this.dataSource, event.id, existing);
@@ -324,15 +300,13 @@ export class OrderEventProcessor {
     }
 
     /**
-     * One package per delivered group, from its location's warehouse. On
-     * order.paid, groups that already have a package (an earlier attempt, a
-     * retry, the same order under another key) are linked, not made again. On
-     * order.fulfillment_updated, a package that no longer matches its group,
-     * or whose group was released, is replaced or removed first.
+     * One package per delivered group, from its location's warehouse.
+     * order.paid links groups that already have a package. On
+     * order.fulfillment_updated, a package whose group changed or was
+     * released is replaced or removed first.
      *
-     * The outcome is the worst across the groups: any group that needs a
-     * human makes the event `needs_attention`, but every group that could be
-     * processed still gets its package.
+     * If one group needs a human, the event is `needs_attention`, but the
+     * other groups still get their packages.
      */
     private async decideGroups(
         context: OrderContext,
@@ -345,9 +319,8 @@ export class OrderEventProcessor {
 
         const existing = await this.findPackagesForOrder(event);
 
-        // The order already became one whole-order package, through an event
-        // sent before the store split it by location. Splitting it now would
-        // put the same items on a van twice.
+        // An earlier event made one whole-order package before the store split
+        // the order. Splitting now would ship the same items twice.
         const whole = existing.filter(
             (p) => p.external_fulfillment_id === null,
         );
@@ -384,7 +357,7 @@ export class OrderEventProcessor {
             const location = locationName(group, mappings);
             const current = byGroup.get(group.id);
 
-            // order.paid never second-guesses a package that exists.
+            // order.paid keeps existing packages.
             if (current && !reroute) {
                 kept.push(current);
                 continue;
@@ -405,7 +378,7 @@ export class OrderEventProcessor {
             }
 
             if (!shopDomain) {
-                // Without the shop there is no mapping to judge a package by.
+                // No shop domain, so no mapping to compare the package with.
                 if (current) {
                     kept.push(current);
                     continue;
@@ -458,9 +431,8 @@ export class OrderEventProcessor {
             toCreate.push(wanted);
         }
 
-        // A released group the storefront no longer lists: its items were
-        // moved out, merged into another group, or cancelled. A group that is
-        // merely missing (fulfilled, say) keeps its package.
+        // Remove the packages of released groups. An unlisted group that is
+        // not released (fulfilled, for example) keeps its package.
         const listed = new Set(groups.map((g) => g.id));
         for (const pkg of existing) {
             const groupId = pkg.external_fulfillment_id;
@@ -471,8 +443,8 @@ export class OrderEventProcessor {
             }
         }
 
-        // Any touched parcel that is already loaded or delivered stops the
-        // whole change: the new groups may well hold the same items.
+        // If a package to remove is loaded or delivered, change nothing. The
+        // new groups can contain the same items.
         const moving = toRemove.filter(
             ({ pkg }) => !REMOVABLE_STATUSES.has(pkg.status ?? 'PENDING'),
         );
@@ -536,8 +508,7 @@ export class OrderEventProcessor {
                 packageIds,
             };
         }
-        // A re-routing that removed packages did something even when nothing
-        // is left to deliver.
+        // A re-routing that only removed packages is still processed.
         if (customerId && (packageIds.length > 0 || toRemove.length > 0)) {
             return { status: 'processed', customerId, packageIds };
         }
@@ -625,9 +596,8 @@ export class OrderEventProcessor {
     }
 
     /**
-     * The stored mapping of every location the groups ship from, keyed by
-     * external_location_id, each with its warehouse when it is mapped to one.
-     * A location with no row at all is simply missing from the map.
+     * Mappings of the groups' locations, keyed by external_location_id. A
+     * location with no row is absent from the map.
      */
     private async findLocationMappings(
         event: ClaimedOrderEvent,
@@ -658,12 +628,10 @@ export class OrderEventProcessor {
     }
 
     /**
-     * The package's sender: the store, at the warehouse it ships from.
-     *
-     * packages.from_customer is NOT NULL, and a storefront order has no sender
-     * in the payload: the merchant is the sender. One customer row per store
-     * and warehouse, matched on name (no phone, no email), so every order from
-     * the same store and depot shares it rather than minting a new one.
+     * The sender: the store, at the warehouse it ships from.
+     * packages.from_customer is NOT NULL, and the payload has no sender. The
+     * row matches on name only, so all orders from one store and warehouse
+     * share it.
      */
     private async upsertSender(
         { event, paid }: OrderContext,
@@ -691,12 +659,11 @@ export class OrderEventProcessor {
     }
 
     /**
-     * Makes each package, then assigns the ones this call made. Returns every
-     * package id in the order given, with a lost race resolved to its winner.
+     * Creates each package, then assigns the new ones. Returns the ids in
+     * input order; a lost race returns the winner's id.
      *
-     * Assignment runs after the commits and is never fatal: a van with no room
-     * today is a dispatch problem, and the package stays PENDING for the
-     * replan worker either way.
+     * An assignment failure is not fatal. The package stays PENDING for the
+     * replan worker.
      */
     private async createAndAssign(
         context: OrderContext,
@@ -731,10 +698,9 @@ export class OrderEventProcessor {
     }
 
     /**
-     * Writes one package and links the ledger row to it on one transaction.
-     * Losing a race to another event for the same order and group (23505 on
-     * packages_org_external_fulfillment_key) links this row to the winner
-     * instead.
+     * Creates one package and its event link in one transaction. On a race
+     * for the same order and group (23505 on
+     * packages_org_external_fulfillment_key), links the winner instead.
      */
     private async createPackage(
         { event, paid }: OrderContext,
@@ -759,9 +725,9 @@ export class OrderEventProcessor {
                         lengthCm: DEFAULT_DIMENSIONS_CM.length,
                         widthCm: DEFAULT_DIMENSIONS_CM.width,
                         heightCm: DEFAULT_DIMENSIONS_CM.height,
-                        // No promise: the storefront sends no delivery date, and
-                        // a package without a deadline is the one allowed to be
-                        // bumped for a package that has one.
+                        // The storefront sends no delivery date. A package
+                        // without a deadline can be bumped for one with a
+                        // deadline.
                         deadlineAt: null,
                         externalOrder: {
                             platform: event.platform,
@@ -793,8 +759,8 @@ export class OrderEventProcessor {
     }
 
     /**
-     * Every package already made from this storefront order, oldest first,
-     * with what a re-routing compares: its warehouse, weight and status.
+     * Packages already made from this order, oldest first, with the warehouse,
+     * weight and status that a re-routing compares.
      */
     private async findPackagesForOrder(
         event: ClaimedOrderEvent,
@@ -841,9 +807,8 @@ export class OrderEventProcessor {
     }
 
     /**
-     * Writes the outcome. package_id keeps the first package for readers
-     * written before an event could produce more than one;
-     * integration_order_event_package has all of them.
+     * Writes the outcome. package_id holds the first package for older
+     * readers; integration_order_event_package holds all of them.
      */
     private async complete(
         eventId: string,
@@ -866,11 +831,11 @@ export class OrderEventProcessor {
 }
 
 /**
- * Folds an order's order.paid and order.fulfillment_updated events, oldest
- * first, into its current routing. The newest order.paid gives the order;
- * the newest event with groups gives the groups (an order.paid only counts
- * when it has some, an update always does, even with none left); released
- * ids add up across updates, less any group listed again.
+ * Folds an order's events, oldest first, into its current routing:
+ * - `paid`: the newest order.paid.
+ * - `groups`: from the newest event with groups. An order.paid counts only if
+ *   it has groups; an update always counts, even with none.
+ * - `released`: ids released by any update, less groups listed again.
  */
 export function routingOf(
     events: { event_type: string; payload: OrderEventDto }[],
@@ -898,9 +863,8 @@ export function routingOf(
 }
 
 /**
- * Why a group's package no longer matches it, or null when it does: another
- * warehouse (the group moved, or its location was mapped elsewhere), or
- * another weight (items split off or merged in).
+ * Why a package no longer matches its group (another warehouse or weight), or
+ * null if it matches.
  */
 function packageChange(
     pkg: OrderPackageRow,
@@ -924,7 +888,7 @@ function trackingNumbers(packages: OrderPackageRow[]): string {
     return packages.map((p) => p.tracking_number).join(', ');
 }
 
-/** delivery.recipient_name, then the customer's name, then the order number. */
+/** recipient_name, else the customer's name, else company, else order name. */
 function recipientName(paid: OrderPaidPayload): string {
     const fromCustomer = [paid.customer?.first_name, paid.customer?.last_name]
         .filter((part) => part?.trim())
@@ -937,11 +901,7 @@ function recipientName(paid: OrderPaidPayload): string {
     );
 }
 
-/**
- * A connector slug as people read it: "shopify" -> "Shopify",
- * "big-commerce" -> "Big Commerce". The slug is caller-supplied data, so
- * there is no table of platform names to look it up in.
- */
+/** Display name of a connector slug: "big-commerce" -> "Big Commerce". */
 export function platformLabel(slug: string): string {
     return slug
         .split('-')
@@ -950,7 +910,7 @@ export function platformLabel(slug: string): string {
         .join(' ');
 }
 
-/** The group's location by name: from the event, else the mapping, else its id. */
+/** Location name from the event, else the mapping, else the location id. */
 function locationName(
     group: OrderFulfillmentGroupDto,
     mappings: Map<string, MappingRow>,
@@ -968,9 +928,8 @@ function normaliseShopDomain(domain: string | null | undefined): string {
 }
 
 /**
- * The order's total weight, else the shippable line items', else a default.
- * package_dimensions.weight_kg must be positive, and a digital line item
- * weighs nothing, so only items that ship are counted.
+ * Order weight in kg: total_weight_grams, else the sum of the shippable line
+ * items, else DEFAULT_WEIGHT_KG.
  */
 export function weightKg(paid: OrderPaidPayload): number {
     const total = paid.order.total_weight_grams;
@@ -985,10 +944,9 @@ export function weightKg(paid: OrderPaidPayload): number {
 }
 
 /**
- * One group's weight: its own total, else its shippable line items' grams
- * times the quantity this group fulfils (less than the line item's own
- * quantity when a line is split across locations), else a default. Line items
- * the order does not list (added by a later order edit) count for nothing.
+ * Group weight in kg: total_weight_grams, else grams x the group's quantity
+ * for each shippable line item, else DEFAULT_WEIGHT_KG. A line item that the
+ * order does not list (added by a later edit) counts as zero.
  */
 export function groupWeightKg(
     paid: OrderPaidPayload,

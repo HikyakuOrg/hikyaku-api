@@ -33,9 +33,8 @@ import {
 import { LocationMappingsService } from './location-mappings.service';
 
 /**
- * Storefront locations and the warehouse each one ships from. Like
- * IntegrationsController, never named after a platform: `platform` is a data
- * value, so every connector shares these two routes.
+ * Storefront locations and the warehouse each ships from. `platform` is a
+ * data value, so all connectors share these routes.
  */
 @ApiTags('integrations')
 @ApiBearerAuth('bearer')
@@ -46,16 +45,15 @@ import { LocationMappingsService } from './location-mappings.service';
 export class LocationMappingsController {
     constructor(private readonly mappings: LocationMappingsService) {}
 
-    // Reads need warehouse.view, the same as GET /api/v1/warehouses: a
-    // mapping is only readable alongside the warehouses it points at.
+    // Same permission as GET /api/v1/warehouses: a mapping exposes its
+    // warehouse.
     @Get()
     @RequirePermission('warehouse.view')
     @ApiOperation({
         summary: 'List storefront locations and where each ships from.',
         description:
-            'Ordered by platform, shop, then live locations before stale ' +
-            'ones. Stale locations (no longer reported by the storefront) ' +
-            'are included, with `stale_at` set.',
+            'Ordered by platform and shop, live locations first. Includes ' +
+            'stale locations (`stale_at` set).',
     })
     @ApiQuery({ name: 'platform', required: false, example: 'shopify' })
     @ApiQuery({
@@ -87,20 +85,13 @@ export class LocationMappingsController {
     @ApiOperation({
         summary: "Upsert a shop's locations and their warehouse mappings.",
         description:
-            'Creates or updates each location of one shop, keyed by ' +
-            '(platform, shop_domain, external_location_id), in one ' +
-            'transaction. A location sent without `mode` keeps its current ' +
-            'mode and warehouse (a new one starts `unmapped`). With ' +
-            "`mark_missing_stale`, the shop's locations not in the body are " +
-            'marked stale, never deleted. Returns every location of the shop ' +
-            'afterwards.',
+            "Upserts one shop's locations in one transaction, keyed by " +
+            '(platform, shop_domain, external_location_id). Returns all the ' +
+            "shop's locations.",
     })
     @ApiBody({ type: UpsertIntegrationLocationsDto })
     @ApiOkResponse({ type: IntegrationLocationListDto })
-    @ApiNotFound(
-        'A `warehouse_id` is not a warehouse of this organisation (another ' +
-            "organisation's warehouse gets the same answer as a missing one).",
-    )
+    @ApiNotFound('A `warehouse_id` is not a warehouse of this organisation.')
     async upsert(
         @Body() dto: UpsertIntegrationLocationsDto,
         @Req() req: Request & { organisationId: string; user: AuthedUser },

@@ -16,8 +16,8 @@ export class CreateIntegrationLocationMapping1789866000000 implements MigrationI
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {
-        // The table takes its trigger and foreign keys with it, which is what
-        // frees warehouse_organisation_id_id_key to be dropped.
+        // Dropping the table drops its trigger and foreign keys, so
+        // warehouse_organisation_id_id_key can then be dropped.
         await queryRunner.query(
             `DROP TABLE IF EXISTS "public"."integration_location_mapping"`,
         );
