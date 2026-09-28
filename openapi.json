@@ -9546,6 +9546,70 @@
           "instructions"
         ]
       },
+      "OrderFulfillmentGroupLineItemDto": {
+        "type": "object",
+        "properties": {
+          "line_item_id": {
+            "type": "string",
+            "description": "The `id` of an entry in `order.line_items`."
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "How many units of that line item this group fulfils. May be less than the line item's own quantity when a line is split across locations."
+          }
+        },
+        "required": [
+          "line_item_id",
+          "quantity"
+        ]
+      },
+      "OrderFulfillmentGroupDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The storefront's own id for this group (its fulfillment order, shipment or equivalent).",
+            "example": "gid://shopify/FulfillmentOrder/1"
+          },
+          "external_location_id": {
+            "type": "string",
+            "description": "The fulfilling location's id in the storefront's own system, as sent to PUT /api/v1/integrations/locations.",
+            "example": "gid://shopify/Location/123"
+          },
+          "external_location_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "delivery_method": {
+            "type": "string",
+            "enum": [
+              "shipping",
+              "local",
+              "pickup",
+              "none"
+            ]
+          },
+          "line_items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderFulfillmentGroupLineItemDto"
+            }
+          },
+          "total_weight_grams": {
+            "type": "number",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "external_location_id",
+          "external_location_name",
+          "delivery_method",
+          "line_items",
+          "total_weight_grams"
+        ]
+      },
       "OrderEventDto": {
         "type": "object",
         "properties": {
@@ -9563,6 +9627,13 @@
           },
           "delivery": {
             "$ref": "#/components/schemas/OrderDeliveryDto"
+          },
+          "fulfillment_groups": {
+            "description": "Which storefront location fulfils which items, for a store that ships from more than one. Every `line_items[].line_item_id` must reference an `order.line_items[].id`, or the event is rejected with 400. Omit it, or send an empty array, to have the whole order dispatched as one package from the nearest warehouse.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderFulfillmentGroupDto"
+            }
           }
         },
         "required": [

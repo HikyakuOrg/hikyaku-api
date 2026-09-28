@@ -3,13 +3,20 @@ import { Type } from 'class-transformer';
 import {
     IsArray,
     IsBoolean,
+    IsIn,
+    IsInt,
     IsISO8601,
     IsNotEmpty,
     IsNumber,
     IsOptional,
     IsString,
     Matches,
+    Min,
+    Validate,
     ValidateNested,
+    ValidatorConstraint,
+    ValidatorConstraintInterface,
+    ValidationArguments,
 } from 'class-validator';
 
 /**
@@ -359,6 +366,129 @@ export class OrderDeliveryDto {
     instructions: string | null;
 }
 
+/**
+ * How the storefront hands over the items in one fulfillment group. Only
+ * `shipping` and `local` leave Hikyaku anything to deliver; a `pickup` or
+ * `none` group has nothing to dispatch.
+ */
+export const FULFILLMENT_DELIVERY_METHODS = [
+    'shipping',
+    'local',
+    'pickup',
+    'none',
+] as const;
+
+export type FulfillmentDeliveryMethod =
+    (typeof FULFILLMENT_DELIVERY_METHODS)[number];
+
+export class OrderFulfillmentGroupLineItemDto {
+    @ApiProperty({
+        description: 'The `id` of an entry in `order.line_items`.',
+    })
+    @IsString()
+    @IsNotEmpty()
+    line_item_id: string;
+
+    @ApiProperty({
+        type: 'integer',
+        minimum: 1,
+        description:
+            'How many units of that line item this group fulfils. May be ' +
+            "less than the line item's own quantity when a line is split " +
+            'across locations.',
+    })
+    @IsInt()
+    @Min(1)
+    quantity: number;
+}
+
+/**
+ * The items one storefront location fulfils for this order. The location is
+ * resolved to a Hikyaku warehouse through PUT /api/v1/integrations/locations.
+ */
+export class OrderFulfillmentGroupDto {
+    @ApiProperty({
+        description:
+            "The storefront's own id for this group (its fulfillment order, " +
+            'shipment or equivalent).',
+        example: 'gid://shopify/FulfillmentOrder/1',
+    })
+    @IsString()
+    @IsNotEmpty()
+    id: string;
+
+    @ApiProperty({
+        description:
+            "The fulfilling location's id in the storefront's own system, as " +
+            'sent to PUT /api/v1/integrations/locations.',
+        example: 'gid://shopify/Location/123',
+    })
+    @IsString()
+    @IsNotEmpty()
+    external_location_id: string;
+
+    @ApiProperty({ type: String, nullable: true })
+    @IsOptional()
+    @IsString()
+    external_location_name: string | null;
+
+    @ApiProperty({ enum: FULFILLMENT_DELIVERY_METHODS })
+    @IsIn(FULFILLMENT_DELIVERY_METHODS)
+    delivery_method: FulfillmentDeliveryMethod;
+
+    @ApiProperty({ type: () => [OrderFulfillmentGroupLineItemDto] })
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => OrderFulfillmentGroupLineItemDto)
+    line_items: OrderFulfillmentGroupLineItemDto[];
+
+    @ApiProperty({ type: Number, nullable: true })
+    @IsOptional()
+    @IsNumber()
+    total_weight_grams: number | null;
+}
+
+/**
+ * Every `fulfillment_groups[].line_items[].line_item_id` must name an
+ * `order.line_items[].id`. Shape errors (a missing array, a non-string id)
+ * are left to the property validators, so this only reports dangling ids.
+ */
+@ValidatorConstraint({ name: 'FulfillmentLineItemsInOrder', async: false })
+export class FulfillmentLineItemsInOrderConstraint implements ValidatorConstraintInterface {
+    validate(value: unknown, args: ValidationArguments): boolean {
+        return unknownLineItemIds(value, args.object).length === 0;
+    }
+
+    defaultMessage(args: ValidationArguments): string {
+        const unknown = unknownLineItemIds(args.value, args.object);
+        return (
+            'fulfillment_groups line_item_id must reference an ' +
+            `order.line_items id; unknown: ${unknown.join(', ')}`
+        );
+    }
+}
+
+function unknownLineItemIds(groups: unknown, dto: object): string[] {
+    const orderLineItems = (dto as { order?: { line_items?: unknown } }).order
+        ?.line_items;
+    if (!Array.isArray(groups) || !Array.isArray(orderLineItems)) return [];
+
+    const known = new Set(
+        orderLineItems.map((item) => (item as { id?: unknown } | null)?.id),
+    );
+    const unknown = new Set<string>();
+    for (const group of groups) {
+        const items = (group as { line_items?: unknown } | null)?.line_items;
+        if (!Array.isArray(items)) continue;
+        for (const item of items) {
+            const id = (item as { line_item_id?: unknown } | null)
+                ?.line_item_id;
+            if (typeof id === 'string' && !known.has(id)) unknown.add(id);
+        }
+    }
+    return [...unknown];
+}
+
 export class OrderEventDto {
     @ApiProperty({ type: () => OrderEventInfoDto })
     @ValidateNested()
@@ -384,4 +514,20 @@ export class OrderEventDto {
     @ValidateNested()
     @Type(() => OrderDeliveryDto)
     delivery: OrderDeliveryDto;
+
+    @ApiPropertyOptional({
+        type: () => [OrderFulfillmentGroupDto],
+        description:
+            'Which storefront location fulfils which items, for a store that ' +
+            'ships from more than one. Every `line_items[].line_item_id` must ' +
+            'reference an `order.line_items[].id`, or the event is rejected ' +
+            'with 400. Omit it, or send an empty array, to have the whole ' +
+            'order dispatched as one package from the nearest warehouse.',
+    })
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => OrderFulfillmentGroupDto)
+    @Validate(FulfillmentLineItemsInOrderConstraint)
+    fulfillment_groups?: OrderFulfillmentGroupDto[];
 }
