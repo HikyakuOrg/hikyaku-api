@@ -164,14 +164,43 @@ describe('IntegrationsService', () => {
 
             const rows = await service.listOrderEvents(
                 'org-1',
-                'needs_attention',
+                { status: 'needs_attention' },
                 20,
             );
 
             expect(rows).toEqual([recordDto]);
             const [sql, params] = dataSource.query.mock.calls[0];
             expect(sql).toContain('ORDER BY e.created_at DESC');
-            expect(params).toEqual(['org-1', 'needs_attention', 20]);
+            expect(params).toEqual([
+                'org-1',
+                'needs_attention',
+                null,
+                null,
+                20,
+            ]);
+        });
+
+        it('lists the events of some orders from one platform', async () => {
+            dataSource.query.mockResolvedValueOnce([recordRow]);
+
+            await service.listOrderEvents(
+                'org-1',
+                {
+                    platform: 'shopify',
+                    externalOrderIds: ['gid://shopify/Order/1'],
+                },
+                200,
+            );
+
+            const [sql, params] = dataSource.query.mock.calls[0];
+            expect(sql).toContain('e.external_order_id = ANY($4::text[])');
+            expect(params).toEqual([
+                'org-1',
+                null,
+                'shopify',
+                ['gid://shopify/Order/1'],
+                200,
+            ]);
         });
 
         it('lists every package an event produced, from the link table', async () => {
@@ -187,7 +216,7 @@ describe('IntegrationsService', () => {
 
             const [split, none] = await service.listOrderEvents(
                 'org-1',
-                undefined,
+                {},
                 50,
             );
 
@@ -201,16 +230,18 @@ describe('IntegrationsService', () => {
             );
         });
 
-        it('passes a null status to list every event', async () => {
+        it('passes nulls to list every event', async () => {
             dataSource.query.mockResolvedValueOnce([
                 { ...recordRow, processed_at: null },
             ]);
 
-            const [row] = await service.listOrderEvents('org-1', undefined, 50);
+            const [row] = await service.listOrderEvents('org-1', {}, 50);
 
             expect(row.processedAt).toBeNull();
             expect(dataSource.query.mock.calls[0][1]).toEqual([
                 'org-1',
+                null,
+                null,
                 null,
                 50,
             ]);
