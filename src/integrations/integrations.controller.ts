@@ -38,6 +38,9 @@ import {
 } from './dto/recorded-order-event.dto';
 import { IntegrationsService } from './integrations.service';
 
+/** The most order ids one GET /orders can filter by. */
+const MAX_EXTERNAL_ORDER_IDS = 100;
+
 /**
  * The slice of the Fastify reply this controller needs — see
  * PackagesController for why this is declared locally rather than imported
@@ -132,9 +135,23 @@ export class IntegrationsController {
         description:
             'Newest first. `status=needs_attention` lists the orders that ' +
             'need a fix (bad address, no warehouse, unmapped location); ' +
-            '`error` gives the reason.',
+            '`error` gives the reason. `external_order_ids` lists the events ' +
+            'of those orders, so a connector can tell which of its orders ' +
+            'Hikyaku already has.',
     })
     @ApiQuery({ name: 'status', required: false, enum: ORDER_EVENT_STATUSES })
+    @ApiQuery({
+        name: 'platform',
+        required: false,
+        type: String,
+        description: 'Only events from this platform, e.g. `shopify`.',
+    })
+    @ApiQuery({
+        name: 'external_order_ids',
+        required: false,
+        type: String,
+        description: `Comma-separated order ids (\`order.id\` of the events), at most ${MAX_EXTERNAL_ORDER_IDS}.`,
+    })
     @ApiQuery({
         name: 'limit',
         required: false,
@@ -146,6 +163,8 @@ export class IntegrationsController {
         @Req() req: Request & { organisationId: string },
         @Query('status') status?: string,
         @Query('limit') limit?: string,
+        @Query('platform') platform?: string,
+        @Query('external_order_ids') externalOrderIdsParam?: string,
     ): Promise<OrderEventRecordListDto> {
         if (
             status !== undefined &&
@@ -166,9 +185,29 @@ export class IntegrationsController {
             );
         }
 
+        let externalOrderIds: string[] | undefined;
+        if (externalOrderIdsParam !== undefined) {
+            externalOrderIds = externalOrderIdsParam
+                .split(',')
+                .map((id) => id.trim())
+                .filter(Boolean);
+            if (
+                externalOrderIds.length === 0 ||
+                externalOrderIds.length > MAX_EXTERNAL_ORDER_IDS
+            ) {
+                throw new BadRequestException(
+                    `external_order_ids must list 1 to ${MAX_EXTERNAL_ORDER_IDS} order ids`,
+                );
+            }
+        }
+
         const data = await this.integrations.listOrderEvents(
             req.organisationId,
-            status as OrderEventStatus | undefined,
+            {
+                status: status as OrderEventStatus | undefined,
+                platform: platform || undefined,
+                externalOrderIds,
+            },
             parsedLimit,
         );
         return { data };

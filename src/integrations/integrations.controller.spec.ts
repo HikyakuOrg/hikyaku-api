@@ -41,6 +41,7 @@ function supabaseGranted() {
 
 async function buildApp(service: {
     recordOrderEvent: jest.Mock;
+    listOrderEvents: jest.Mock;
 }): Promise<NestFastifyApplication> {
     const module: TestingModule = await Test.createTestingModule({
         controllers: [IntegrationsController],
@@ -73,7 +74,7 @@ async function buildApp(service: {
 
 describe('IntegrationsController (integration)', () => {
     let app: NestFastifyApplication;
-    let service: { recordOrderEvent: jest.Mock };
+    let service: { recordOrderEvent: jest.Mock; listOrderEvents: jest.Mock };
 
     const lineItem = (id: string) => ({
         id,
@@ -155,6 +156,7 @@ describe('IntegrationsController (integration)', () => {
                 result: { id: 'ledger-1' },
                 replayed: false,
             }),
+            listOrderEvents: jest.fn().mockResolvedValue([]),
         };
         app = await buildApp(service);
     });
@@ -364,6 +366,62 @@ describe('IntegrationsController (integration)', () => {
                 .send({ ...update, ...patch })
                 .expect(400);
             expect(service.recordOrderEvent).not.toHaveBeenCalled();
+        });
+    });
+    describe('GET /api/v1/integrations/orders', () => {
+        const get = (query: string) =>
+            request(app.getHttpServer())
+                .get(`/api/v1/integrations/orders${query}`)
+                .set('Authorization', 'Bearer t')
+                .set('X-Organisation-Slug', 'acme');
+
+        it('lists every event when nothing narrows it', async () => {
+            const res = await get('');
+
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual({ data: [] });
+            expect(service.listOrderEvents).toHaveBeenCalledWith(
+                ORG_ID,
+                {
+                    status: undefined,
+                    platform: undefined,
+                    externalOrderIds: undefined,
+                },
+                50,
+            );
+        });
+
+        it('filters by platform and order ids', async () => {
+            const res = await get(
+                '?platform=shopify&external_order_ids=gid://shopify/Order/1,%20gid://shopify/Order/2,&limit=200',
+            );
+
+            expect(res.status).toBe(200);
+            expect(service.listOrderEvents).toHaveBeenCalledWith(
+                ORG_ID,
+                {
+                    status: undefined,
+                    platform: 'shopify',
+                    externalOrderIds: [
+                        'gid://shopify/Order/1',
+                        'gid://shopify/Order/2',
+                    ],
+                },
+                200,
+            );
+        });
+
+        it('rejects an empty or oversized order id list', async () => {
+            const tooMany = Array.from(
+                { length: 101 },
+                (_, i) => `gid://shopify/Order/${i}`,
+            ).join(',');
+
+            expect((await get('?external_order_ids=,')).status).toBe(400);
+            expect((await get(`?external_order_ids=${tooMany}`)).status).toBe(
+                400,
+            );
+            expect(service.listOrderEvents).not.toHaveBeenCalled();
         });
     });
 });

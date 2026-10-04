@@ -44,6 +44,14 @@ const RECORD_COLS = `e.id, e.platform, e.event_type, e.external_order_id,
            ORDER BY l.created_at, l.package_id) AS package_ids,
     e.created_at, e.processed_at`;
 
+/** Narrows listOrderEvents. Every field left out matches everything. */
+export interface OrderEventFilter {
+    status?: OrderEventStatus;
+    platform?: string;
+    /** The connector's order ids, e.g. Shopify order GIDs. */
+    externalOrderIds?: string[];
+}
+
 /** Statuses a human can send back to the worker. */
 const RETRYABLE: OrderEventStatus[] = ['needs_attention', 'failed'];
 
@@ -152,18 +160,29 @@ export class IntegrationsService {
         return rows[0];
     }
 
-    /** Recent events, newest first, optionally only those in one status. */
+    /**
+     * Recent events, newest first, optionally only those in one status, from
+     * one platform, or for some orders.
+     */
     async listOrderEvents(
         organisationId: string,
-        status: OrderEventStatus | undefined,
+        filter: OrderEventFilter,
         limit: number,
     ): Promise<OrderEventRecordDto[]> {
         const rows: RecordRow[] = await this.dataSource.query(
             `SELECT ${RECORD_COLS} FROM public.integration_order_event e
               WHERE e.organisation_id = $1 AND ($2::text IS NULL OR e.status = $2)
+                AND ($3::text IS NULL OR e.platform = $3)
+                AND ($4::text[] IS NULL OR e.external_order_id = ANY($4::text[]))
               ORDER BY e.created_at DESC
-              LIMIT $3`,
-            [organisationId, status ?? null, limit],
+              LIMIT $5`,
+            [
+                organisationId,
+                filter.status ?? null,
+                filter.platform ?? null,
+                filter.externalOrderIds ?? null,
+                limit,
+            ],
         );
         return rows.map((row) => this.toRecordDto(row));
     }

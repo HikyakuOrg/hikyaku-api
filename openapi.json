@@ -4852,7 +4852,7 @@
         ]
       },
       "get": {
-        "description": "Newest first. `status=needs_attention` lists the orders that need a fix (bad address, no warehouse, unmapped location); `error` gives the reason.",
+        "description": "Newest first. `status=needs_attention` lists the orders that need a fix (bad address, no warehouse, unmapped location); `error` gives the reason. `external_order_ids` lists the events of those orders, so a connector can tell which of its orders Hikyaku already has.",
         "operationId": "IntegrationsController_listOrders",
         "parameters": [
           {
@@ -4888,6 +4888,24 @@
             "description": "Maximum rows, 1 to 200. Defaults to 50.",
             "schema": {
               "type": "number"
+            }
+          },
+          {
+            "name": "platform",
+            "required": false,
+            "in": "query",
+            "description": "Only events from this platform, e.g. `shopify`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "external_order_ids",
+            "required": false,
+            "in": "query",
+            "description": "Comma-separated order ids (`order.id` of the events), at most 100.",
+            "schema": {
+              "type": "string"
             }
           }
         ],
