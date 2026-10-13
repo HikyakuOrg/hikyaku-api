@@ -10521,13 +10521,18 @@
             "type": "string",
             "nullable": true,
             "description": "Dashboard page where a merchant adds a price in another currency. Null when the API has no dashboard URL configured."
+          },
+          "can_edit": {
+            "type": "boolean",
+            "description": "The caller holds integrations.shipping_rates.write in this organisation, so PUT and DELETE will be allowed."
           }
         },
         "required": [
           "settings",
           "stripe_connected",
           "services",
-          "dashboard_service_url"
+          "dashboard_service_url",
+          "can_edit"
         ]
       },
       "ShippingRateSettingsViewResponseDto": {

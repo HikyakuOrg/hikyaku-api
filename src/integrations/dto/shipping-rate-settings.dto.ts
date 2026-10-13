@@ -145,6 +145,13 @@ export class ShippingRateSettingsViewDto {
             'currency. Null when the API has no dashboard URL configured.',
     })
     dashboard_service_url: string | null;
+
+    @ApiProperty({
+        description:
+            'The caller holds integrations.shipping_rates.write in this ' +
+            'organisation, so PUT and DELETE will be allowed.',
+    })
+    can_edit: boolean;
 }
 
 export class ShippingRateSettingsViewResponseDto {

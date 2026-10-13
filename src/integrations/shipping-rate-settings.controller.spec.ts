@@ -119,6 +119,7 @@ describe('ShippingRateSettingsController (integration)', () => {
         );
         expect(service.getView).toHaveBeenCalledWith(
             ORG_ID,
+            USER_ID,
             'shopify',
             'store.myshopify.com',
             'aud',

@@ -73,6 +73,7 @@ export class ShippingRateSettingsService {
      */
     async getView(
         organisationId: string,
+        userId: string,
         platform: string,
         shopDomain: string,
         currency?: string,
@@ -105,7 +106,23 @@ export class ShippingRateSettingsService {
             stripe_connected: connected,
             services,
             dashboard_service_url: await this.serviceRatesUrl(organisationId),
+            can_edit: await this.canEdit(organisationId, userId),
         };
+    }
+
+    /** Whether the user may PUT and DELETE, so the app can show view-only. */
+    private async canEdit(
+        organisationId: string,
+        userId: string,
+    ): Promise<boolean> {
+        const rows: unknown[] = await this.dataSource.query(
+            `SELECT 1 FROM public.user_permission up
+               JOIN public.app_permission p ON p.id = up.permission_id
+              WHERE up.organisation_id = $1 AND up.user_id = $2
+                AND p.permission = 'integrations.shipping_rates.write'`,
+            [organisationId, userId],
+        );
+        return rows.length > 0;
     }
 
     /** The dashboard's service editor for this organisation, or null. */

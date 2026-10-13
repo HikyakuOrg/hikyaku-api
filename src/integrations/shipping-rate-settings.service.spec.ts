@@ -106,11 +106,12 @@ describe('ShippingRateSettingsService', () => {
 
     describe('getView', () => {
         it('returns defaults and services priced in the requested currency', async () => {
-            query.mockResolvedValueOnce([]);
+            query.mockResolvedValueOnce([]).mockResolvedValueOnce([{}]);
             process.env.APP_URL = 'https://app.hikyaku.org/';
 
             const view = await service.getView(
                 ORG,
+                USER,
                 'shopify',
                 'Store.myshopify.com',
                 'nzd',
@@ -151,11 +152,16 @@ describe('ShippingRateSettingsService', () => {
             expect(view.dashboard_service_url).toBe(
                 'https://app.hikyaku.org/orgs/acme/dashboard/service-rates',
             );
+            expect(view.can_edit).toBe(true);
+            expect(query.mock.calls[1][1]).toEqual([ORG, USER]);
         });
 
-        it('falls back to the stored shop currency', async () => {
-            query.mockResolvedValueOnce([storedRow()]);
-            const view = await service.getView(ORG, 'shopify', 'x');
+        it('falls back to the stored shop currency, and says when the caller cannot edit', async () => {
+            query
+                .mockResolvedValueOnce([storedRow()])
+                .mockResolvedValueOnce([]);
+            const view = await service.getView(ORG, USER, 'shopify', 'x');
+            expect(view.can_edit).toBe(false);
             expect(view.settings.enabled).toBe(true);
             expect(view.services[0]).toEqual(
                 expect.objectContaining({ amount: '1.50', currency: 'AUD' }),
@@ -164,9 +170,9 @@ describe('ShippingRateSettingsService', () => {
         });
 
         it('reports no Stripe and no services without a connected account', async () => {
-            query.mockResolvedValueOnce([]);
+            query.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
             getStripeAccount.mockResolvedValueOnce(null);
-            const view = await service.getView(ORG, 'shopify', 'x');
+            const view = await service.getView(ORG, USER, 'shopify', 'x');
             expect(view.stripe_connected).toBe(false);
             expect(view.services).toEqual([]);
         });
