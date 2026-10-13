@@ -163,8 +163,10 @@ export function matches(
 export class OrderGeocoder {
     constructor(private readonly geocode: GeocodeService) {}
 
+    /** `timeoutMs` bounds the Photon call; checkout passes a short one. */
     async geocodeAddress(
         address: OrderDeliveryAddressDto,
+        timeoutMs: number = GEOCODE_TIMEOUT_MS,
     ): Promise<GeocodedPoint> {
         if (!address.line1?.trim()) {
             throw new UngeocodableAddressError(
@@ -193,7 +195,7 @@ export class OrderGeocoder {
                 limit: String(CANDIDATES),
                 layer: ['house', 'street'],
             },
-            AbortSignal.timeout(GEOCODE_TIMEOUT_MS),
+            AbortSignal.timeout(timeoutMs),
         )) as { features?: PhotonFeature[] } | null;
 
         for (const feature of response?.features ?? []) {

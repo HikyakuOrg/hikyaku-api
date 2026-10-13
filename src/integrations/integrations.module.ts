@@ -5,6 +5,9 @@ import { GeocodeModule } from 'src/geocode/geocode.module';
 import { OrganisationsModule } from 'src/organisations/organisations.module';
 import { PackagesModule } from 'src/packages/packages.module';
 import { ServicesModule } from 'src/services/services.module';
+import { ValhallaModule } from 'src/valhalla/valhalla.module';
+import { CarrierRatesService } from './carrier-rates/carrier-rates.service';
+import { ShopifyCarrierRatesController } from './carrier-rates/shopify-carrier-rates.controller';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationsService } from './integrations.service';
 import { LocationMappingsController } from './location-mappings.controller';
@@ -20,7 +23,8 @@ import { ShippingRateSettingsService } from './shipping-rate-settings.service';
  * OrderEventWorker, woken by NOTIFY (PgNotifyService from DispatchModule),
  * turns them into packages. LocationMappingsController maps storefront
  * locations to warehouses. ShippingRateSettingsController stores which
- * services each shop offers as checkout rates.
+ * services each shop offers as checkout rates, and
+ * ShopifyCarrierRatesController prices them at checkout.
  */
 @Module({
     imports: [
@@ -30,13 +34,16 @@ import { ShippingRateSettingsService } from './shipping-rate-settings.service';
         OrganisationsModule,
         PackagesModule,
         ServicesModule,
+        ValhallaModule,
     ],
     controllers: [
         IntegrationsController,
         LocationMappingsController,
         ShippingRateSettingsController,
+        ShopifyCarrierRatesController,
     ],
     providers: [
+        CarrierRatesService,
         IntegrationsService,
         LocationMappingsService,
         OrderGeocoder,
