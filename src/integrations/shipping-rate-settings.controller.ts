@@ -68,7 +68,7 @@ export class ShippingRateSettingsController {
     @ApiQuery({ name: 'currency', required: false, example: 'AUD' })
     @ApiOkResponse({ type: ShippingRateSettingsViewResponseDto })
     async get(
-        @Req() req: Request & { organisationId: string },
+        @Req() req: Request & { organisationId: string; user: AuthedUser },
         @Query('platform') platform?: string,
         @Query('shop_domain') shopDomain?: string,
         @Query('currency') currency?: string,
@@ -81,6 +81,7 @@ export class ShippingRateSettingsController {
         }
         const data = await this.settings.getView(
             req.organisationId,
+            req.user.id,
             shop.platform,
             shop.shopDomain,
             currency,
