@@ -100,15 +100,23 @@ export class ShippingRateSettingsService {
             };
         });
 
-        const appUrl = process.env.APP_URL?.replace(/\/+$/, '');
         return {
             settings,
             stripe_connected: connected,
             services,
-            dashboard_service_url: appUrl
-                ? `${appUrl}/dashboard/service-rates`
-                : null,
+            dashboard_service_url: await this.serviceRatesUrl(organisationId),
         };
+    }
+
+    /** The dashboard's service editor for this organisation, or null. */
+    private async serviceRatesUrl(
+        organisationId: string,
+    ): Promise<string | null> {
+        const appUrl = process.env.APP_URL?.replace(/\/+$/, '');
+        if (!appUrl) return null;
+        const org = await this.orgs.findById(organisationId);
+        if (!org) return null;
+        return `${appUrl}/orgs/${encodeURIComponent(org.slug)}/dashboard/service-rates`;
     }
 
     /**
