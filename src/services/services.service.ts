@@ -13,6 +13,11 @@ import { CreateServiceDto } from './dto/create-service.dto';
 import { CreateAddonDto } from './dto/create-addon.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
 import { UpdateAddonDto } from './dto/update-addon.dto';
+import {
+    readCurrencyOptions,
+    toStripeCurrencyOptions,
+    type CurrencyAmountInput,
+} from './price-amount';
 
 // Stripe param/return types are derived from the client methods rather than the
 // `Stripe.*` namespace, which doesn't resolve cleanly under `module: nodenext`
@@ -25,6 +30,7 @@ type ProductUpdateParams = NonNullable<
 interface RawProduct {
     id: string;
     name: string;
+    description?: string | null;
     created: number;
     metadata: Record<string, string> | null;
     default_price?:
@@ -34,6 +40,7 @@ interface RawProduct {
               unit_amount: number | null;
               currency: string;
               active: boolean;
+              currency_options?: Record<string, { unit_amount: number | null }>;
           }
         | null;
 }
@@ -47,8 +54,13 @@ interface RawProduct {
 export interface CatalogProduct {
     productId: string;
     name: string;
+    /** Stripe product description, null when unset or empty. */
+    description: string | null;
     amountMinor: number;
     currency: string;
+    /** The price's `currency_options` amounts (minor units) by lower-case
+     *  currency, main currency excluded. See `amountFor`. */
+    currencyOptions: Record<string, number>;
     /** Stripe `created` epoch — used to order the catalog. */
     created: number;
     pricingUnit: string;
@@ -66,7 +78,15 @@ export interface CatalogAddon {
     currency: string;
 }
 
+export interface CatalogCurrencyAmount {
+    currency: string;
+    amount_minor: number;
+}
+
 export interface CatalogService extends CatalogAddon {
+    description: string | null;
+    /** Amounts in other currencies, sorted by currency. */
+    currency_options: CatalogCurrencyAmount[];
     addons: CatalogAddon[];
 }
 
@@ -84,8 +104,13 @@ function readProduct(product: RawProduct): CatalogProduct | null {
     return {
         productId: product.id,
         name: product.name,
+        description: product.description || null,
         amountMinor: price.unit_amount ?? 0,
         currency: price.currency,
+        currencyOptions: readCurrencyOptions(
+            price.currency,
+            price.currency_options,
+        ),
         created: product.created,
         pricingUnit: product.metadata?.pricing_unit ?? 'per_delivery',
         kind,
@@ -143,14 +168,24 @@ export class ServicesService {
         const accountCurrency = await this.requireChargesEnabled(stripeAccount);
         const currency = (dto.currency ?? accountCurrency).toLowerCase();
         const unitAmount = toStripeMinorUnits(dto.amountMajor, currency);
+        const currencyOptions = dto.currencyOptions?.length
+            ? toStripeCurrencyOptions(currency, dto.currencyOptions)
+            : undefined;
 
         // Product + its default price in one call; metadata carries everything we
         // used to keep in the DB row.
         const product = await this.stripe.products.create(
             {
                 name: dto.name,
+                ...(dto.description ? { description: dto.description } : {}),
                 metadata: { kind: 'service', pricing_unit: dto.pricingUnit },
-                default_price_data: { unit_amount: unitAmount, currency },
+                default_price_data: {
+                    unit_amount: unitAmount,
+                    currency,
+                    ...(currencyOptions
+                        ? { currency_options: currencyOptions }
+                        : {}),
+                },
             },
             { stripeAccount },
         );
@@ -276,21 +311,31 @@ export class ServicesService {
      * and `parent` are preserved. A price change creates a new price, points the
      * product's `default_price` at it, and archives the old one (the product id —
      * the public handle — is unchanged). Currency is not editable.
+     *
+     * Changing `currencyOptions` is a price change too. The new price carries
+     * the main amount (new or unchanged) and the extra currencies (the new
+     * list, or the old ones when no list was sent).
      */
     private async applyProductUpdate(
         stripeAccount: string,
         product: CatalogProduct,
-        dto: { name?: string; pricingUnit?: string; amountMajor?: number },
+        dto: {
+            name?: string;
+            description?: string;
+            pricingUnit?: string;
+            amountMajor?: number;
+            currencyOptions?: CurrencyAmountInput[];
+        },
     ): Promise<void> {
         const productUpdate: ProductUpdateParams = {};
         if (dto.name !== undefined) productUpdate.name = dto.name;
+        if (dto.description !== undefined) {
+            productUpdate.description = dto.description;
+        }
         if (dto.pricingUnit !== undefined) {
             productUpdate.metadata = { pricing_unit: dto.pricingUnit };
         }
-        if (
-            productUpdate.name !== undefined ||
-            productUpdate.metadata !== undefined
-        ) {
+        if (Object.keys(productUpdate).length > 0) {
             await this.stripe.products.update(
                 product.productId,
                 productUpdate,
@@ -300,16 +345,36 @@ export class ServicesService {
             );
         }
 
-        if (dto.amountMajor !== undefined) {
-            const unitAmount = toStripeMinorUnits(
-                dto.amountMajor,
-                product.currency,
-            );
+        if (
+            dto.amountMajor !== undefined ||
+            dto.currencyOptions !== undefined
+        ) {
+            const unitAmount =
+                dto.amountMajor !== undefined
+                    ? toStripeMinorUnits(dto.amountMajor, product.currency)
+                    : product.amountMinor;
+            const currencyOptions =
+                dto.currencyOptions !== undefined
+                    ? toStripeCurrencyOptions(
+                          product.currency,
+                          dto.currencyOptions,
+                      )
+                    : Object.fromEntries(
+                          Object.entries(product.currencyOptions).map(
+                              ([code, amount]) => [
+                                  code,
+                                  { unit_amount: amount },
+                              ],
+                          ),
+                      );
             const newPrice = await this.stripe.prices.create(
                 {
                     product: product.productId,
                     unit_amount: unitAmount,
                     currency: product.currency,
+                    ...(Object.keys(currencyOptions).length > 0
+                        ? { currency_options: currencyOptions }
+                        : {}),
                 },
                 { stripeAccount },
             );
@@ -366,6 +431,13 @@ export class ServicesService {
             .sort((a, b) => a.created - b.created)
             .map((service) => ({
                 ...toAddon(service),
+                description: service.description,
+                currency_options: Object.entries(service.currencyOptions)
+                    .sort(([a], [b]) => a.localeCompare(b))
+                    .map(([currency, amount_minor]) => ({
+                        currency,
+                        amount_minor,
+                    })),
                 addons: (addonsByParent.get(service.productId) ?? [])
                     .sort((a, b) => a.created - b.created)
                     .map(toAddon),
@@ -376,7 +448,7 @@ export class ServicesService {
 
     /**
      * All active catalog products on the connected account, keyed by product id,
-     * with their `default_price` expanded. Auto-paginates so catalogs over 100
+     * with their `default_price` and its `currency_options` expanded. Auto-paginates so catalogs over 100
      * items still resolve fully. Reused by catalog reads + booking.
      */
     async fetchActiveProductMap(
@@ -384,7 +456,14 @@ export class ServicesService {
     ): Promise<Map<string, CatalogProduct>> {
         const map = new Map<string, CatalogProduct>();
         for await (const product of this.stripe.products.list(
-            { active: true, limit: 100, expand: ['data.default_price'] },
+            {
+                active: true,
+                limit: 100,
+                expand: [
+                    'data.default_price',
+                    'data.default_price.currency_options',
+                ],
+            },
             { stripeAccount },
         )) {
             const parsed = readProduct(product);

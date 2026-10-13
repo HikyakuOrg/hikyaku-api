@@ -73,7 +73,8 @@ export class ServicesController {
     @ApiOperation({
         summary: 'Update a service.',
         description:
-            'Name and pricing unit are patched in place. A price change mints a ' +
+            'Name, description and pricing unit are patched in place. A change ' +
+            'to the amount or to `currencyOptions` mints a ' +
             'new Stripe price and archives the old one — the returned id is ' +
             'unchanged either way. Currency is not editable.',
     })

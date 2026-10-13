@@ -22,6 +22,7 @@ import {
     unitSuffix,
     type QuantityContext,
 } from './pricing';
+import { amountFor } from './price-amount';
 import { QuoteBookingDto } from './dto/quote-booking.dto';
 import { PayBookingDto } from './dto/pay-booking.dto';
 
@@ -239,8 +240,10 @@ export class BookingService {
 
         return items.map((item) => {
             const quantity = quantityForUnit(item.pricingUnit, ctx);
-            const amountMinor = Math.round(item.amountMinor * quantity);
-            const rate = fromStripeMinorUnits(item.amountMinor, item.currency);
+            // The public booking page always charges the main currency.
+            const unitMinor = amountFor(item, item.currency) ?? 0;
+            const amountMinor = Math.round(unitMinor * quantity);
+            const rate = fromStripeMinorUnits(unitMinor, item.currency);
             return {
                 id: item.productId,
                 name: item.name,
