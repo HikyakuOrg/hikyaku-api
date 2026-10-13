@@ -12,6 +12,7 @@ import {
     groupWeightKg,
     platformLabel,
     routingOf,
+    shippingRateColumns,
     weightKg,
     type ClaimedOrderEvent,
 } from './order-event.processor';
@@ -374,6 +375,37 @@ describe('OrderEventProcessor', () => {
             packages as unknown as PackagesService,
             geocoder as unknown as OrderGeocoder,
         );
+    });
+
+    describe('the Hikyaku checkout rate', () => {
+        const shippingUpdates = () =>
+            paramsOf(runner.query, 'SET shipping_service_id');
+
+        it('is stored on the package, in the same transaction', async () => {
+            await processor.process(
+                event({
+                    payload: payload({
+                        shipping_rate: {
+                            service_id: 'prod_km',
+                            path: 'live',
+                            price: '12.50',
+                            discounted_price: '10',
+                            currency: 'aud',
+                            title: 'Same-day',
+                        },
+                    }),
+                }),
+            );
+            expect(shippingUpdates()).toEqual([
+                ['pkg-1', 'prod_km', 'Same-day', 1250, 1000, 'AUD', 'live'],
+            ]);
+            expect(runner.commitTransaction).toHaveBeenCalled();
+        });
+
+        it('leaves the columns alone without one', async () => {
+            await processor.process(event());
+            expect(shippingUpdates()).toEqual([]);
+        });
     });
 
     describe('an order without fulfillment groups', () => {
@@ -1569,6 +1601,33 @@ describe('routingOf', () => {
             { event_type: 'order.cancelled', payload: payload() },
         ]);
         expect(routing.groups?.map((x) => x.id)).toEqual(['a']);
+    });
+});
+
+describe('shippingRateColumns', () => {
+    const rate = {
+        service_id: 'prod_flat',
+        path: 'static' as const,
+        price: '1500',
+        discounted_price: '0',
+        currency: 'jpy',
+        title: 'Hikyaku · Flat',
+    };
+
+    it('converts decimal prices with the currency exponent', () => {
+        expect(shippingRateColumns(rate)).toEqual({
+            serviceId: 'prod_flat',
+            serviceName: 'Hikyaku · Flat',
+            priceMinor: 1500,
+            discountedPriceMinor: 0,
+            currency: 'JPY',
+            path: 'static',
+        });
+    });
+
+    it('is null without a rate', () => {
+        expect(shippingRateColumns(null)).toBeNull();
+        expect(shippingRateColumns(undefined)).toBeNull();
     });
 });
 

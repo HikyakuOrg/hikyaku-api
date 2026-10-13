@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, QueryRunner } from 'typeorm';
+import { decimalStringToMinor } from 'src/common/money';
 import { toE164OrNull } from 'src/common/phone';
 import { CustomersService } from 'src/customers/customers.service';
 import { PackagesService } from 'src/packages/packages.service';
@@ -11,6 +12,7 @@ import {
     type OrderEventDto,
     type OrderFulfillmentGroupDto,
     type OrderPaidPayload,
+    type OrderShippingRateDto,
 } from './dto/order-event.dto';
 import {
     OrderGeocoder,
@@ -738,6 +740,26 @@ export class OrderEventProcessor {
                     },
                 ],
             );
+            const shipping = shippingRateColumns(paid.shipping_rate);
+            if (shipping) {
+                await runner.query(
+                    `UPDATE packages
+                        SET shipping_service_id = $2, shipping_service_name = $3,
+                            shipping_price_minor = $4,
+                            shipping_discounted_price_minor = $5,
+                            shipping_currency = $6, shipping_rate_path = $7
+                      WHERE id = $1`,
+                    [
+                        id,
+                        shipping.serviceId,
+                        shipping.serviceName,
+                        shipping.priceMinor,
+                        shipping.discountedPriceMinor,
+                        shipping.currency,
+                        shipping.path,
+                    ],
+                );
+            }
             await this.link(runner, event.id, [
                 { id, external_fulfillment_id: spec.fulfillmentId },
             ]);
@@ -925,6 +947,42 @@ function locationName(
 /** The form LocationMappingsService stores shop domains in. */
 function normaliseShopDomain(domain: string | null | undefined): string {
     return domain?.trim().toLowerCase() ?? '';
+}
+
+/** What a package stores of the order's Hikyaku checkout rate. */
+export interface ShippingRateColumns {
+    serviceId: string;
+    serviceName: string;
+    priceMinor: number;
+    discountedPriceMinor: number;
+    currency: string;
+    path: 'live' | 'static';
+}
+
+/**
+ * The checkout rate as package columns, or null when the order has none or
+ * its prices are unreadable (validation already checked the shape, so that
+ * means a bad currency for the amount, and the package is still made).
+ */
+export function shippingRateColumns(
+    rate: OrderShippingRateDto | null | undefined,
+): ShippingRateColumns | null {
+    if (!rate) return null;
+    const currency = rate.currency.toUpperCase();
+    const priceMinor = decimalStringToMinor(rate.price, currency);
+    const discountedPriceMinor = decimalStringToMinor(
+        rate.discounted_price,
+        currency,
+    );
+    if (priceMinor === null || discountedPriceMinor === null) return null;
+    return {
+        serviceId: rate.service_id,
+        serviceName: rate.title,
+        priceMinor,
+        discountedPriceMinor,
+        currency,
+        path: rate.path,
+    };
 }
 
 /**
