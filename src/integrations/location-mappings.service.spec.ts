@@ -24,6 +24,7 @@ const storedRow = {
     country_code: 'AU',
     mode: 'warehouse',
     warehouse_id: WAREHOUSE,
+    address: null,
     stale_at: null,
     updated_at: new Date('2026-09-28T01:00:00.000Z'),
     updated_by: USER,
@@ -116,6 +117,83 @@ describe('LocationMappingsService', () => {
             shop_domain: 'Store.MyShopify.com',
             locations,
             ...extra,
+        });
+
+        it('writes a sent address after the upsert, normalised, and leaves omitted ones alone', async () => {
+            runner.query
+                .mockResolvedValueOnce([]) // upsert
+                .mockResolvedValueOnce([]) // address update
+                .mockResolvedValueOnce([storedRow]); // read back
+
+            await service.upsert(
+                ORG,
+                USER,
+                dto([
+                    {
+                        external_location_id: 'gid://shopify/Location/1',
+                        address: {
+                            address1: ' 1 Main St ',
+                            address2: '',
+                            city: 'Melbourne',
+                            zip: '3000',
+                            country_code: 'au',
+                        },
+                    },
+                    { external_location_id: 'gid://shopify/Location/2' },
+                ]),
+            );
+
+            const [upsertSql, upsertParams] = runner.query.mock.calls[0];
+            expect(upsertSql).not.toContain('address');
+            const upserted = JSON.parse(
+                upsertParams?.[4] as string,
+            ) as object[];
+            expect(upserted[0]).not.toHaveProperty('address');
+
+            const [addressSql, addressParams] = runner.query.mock.calls[1];
+            expect(addressSql).toContain('SET address = l.address');
+            expect(addressSql).toContain(
+                'm.address IS DISTINCT FROM l.address',
+            );
+            expect(JSON.parse(addressParams?.[4] as string)).toEqual([
+                {
+                    external_location_id: 'gid://shopify/Location/1',
+                    address: {
+                        address1: '1 Main St',
+                        address2: null,
+                        city: 'Melbourne',
+                        province_code: null,
+                        zip: '3000',
+                        country_code: 'AU',
+                    },
+                },
+            ]);
+        });
+
+        it('clears the address when sent null', async () => {
+            runner.query
+                .mockResolvedValueOnce([])
+                .mockResolvedValueOnce([])
+                .mockResolvedValueOnce([storedRow]);
+
+            await service.upsert(
+                ORG,
+                USER,
+                dto([
+                    {
+                        external_location_id: 'gid://shopify/Location/1',
+                        address: null,
+                    },
+                ]),
+            );
+
+            const [, addressParams] = runner.query.mock.calls[1];
+            expect(JSON.parse(addressParams?.[4] as string)).toEqual([
+                {
+                    external_location_id: 'gid://shopify/Location/1',
+                    address: null,
+                },
+            ]);
         });
 
         it('writes a location with a mode, mode and warehouse included, in one transaction scoped to the org and shop', async () => {

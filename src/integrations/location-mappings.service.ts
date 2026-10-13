@@ -8,9 +8,20 @@ import { DataSource, QueryRunner } from 'typeorm';
 import type {
     IntegrationLocationDto,
     IntegrationLocationInputDto,
+    LocationAddressDto,
     LocationMappingMode,
     UpsertIntegrationLocationsDto,
 } from './dto/integration-location.dto';
+
+/** A stored location address, every key present. */
+export interface StoredLocationAddress {
+    address1: string | null;
+    address2: string | null;
+    city: string | null;
+    province_code: string | null;
+    zip: string | null;
+    country_code: string | null;
+}
 
 interface MappingRow {
     id: string;
@@ -21,6 +32,7 @@ interface MappingRow {
     country_code: string | null;
     mode: LocationMappingMode;
     warehouse_id: string | null;
+    address: StoredLocationAddress | null;
     stale_at: string | Date | null;
     updated_at: string | Date;
     updated_by: string | null;
@@ -33,11 +45,14 @@ interface LocationWrite {
     country_code: string | null;
     mode: LocationMappingMode | null;
     warehouse_id: string | null;
+    /** True when the request sent `address` (null included). */
+    address_set: boolean;
+    address: StoredLocationAddress | null;
 }
 
 const MAPPING_COLS = `id, platform, shop_domain, external_location_id,
-    external_location_name, country_code, mode, warehouse_id, stale_at,
-    updated_at, updated_by`;
+    external_location_name, country_code, mode, warehouse_id, address,
+    stale_at, updated_at, updated_by`;
 
 const ORDER_BY = `ORDER BY platform, shop_domain, stale_at IS NOT NULL,
     external_location_name NULLS LAST, external_location_id`;
@@ -112,14 +127,18 @@ export class LocationMappingsService {
             if (withMode.length > 0) {
                 await runner.query(upsertSql(true), [
                     ...scope,
-                    JSON.stringify(withMode),
+                    JSON.stringify(withMode.map(upsertFields)),
                 ]);
             }
             if (withoutMode.length > 0) {
                 await runner.query(upsertSql(false), [
                     ...scope,
-                    JSON.stringify(withoutMode),
+                    JSON.stringify(withoutMode.map(upsertFields)),
                 ]);
+            }
+            const withAddress = locations.filter((l) => l.address_set);
+            if (withAddress.length > 0) {
+                await this.writeAddresses(runner, scope, withAddress);
             }
             if (dto.mark_missing_stale) {
                 await this.markMissingStale(
@@ -180,6 +199,37 @@ export class LocationMappingsService {
                 `No warehouse in this organisation with id ${missing.join(', ')}.`,
             );
         }
+    }
+
+    /**
+     * Sets the address of the locations that sent one, after the upsert so
+     * every row exists. Kept out of the upsert because an omitted address
+     * must keep the stored one, and INSERT ... ON CONFLICT cannot tell an
+     * omitted value from null. Unchanged addresses are skipped.
+     */
+    private async writeAddresses(
+        runner: QueryRunner,
+        scope: unknown[],
+        locations: LocationWrite[],
+    ): Promise<void> {
+        await runner.query(
+            `UPDATE public.integration_location_mapping m
+                SET address = l.address, updated_at = now(), updated_by = $4::uuid
+               FROM jsonb_to_recordset($5::jsonb) AS l(
+                    external_location_id text, address jsonb)
+              WHERE m.organisation_id = $1 AND m.platform = $2 AND m.shop_domain = $3
+                AND m.external_location_id = l.external_location_id
+                AND m.address IS DISTINCT FROM l.address`,
+            [
+                ...scope,
+                JSON.stringify(
+                    locations.map((l) => ({
+                        external_location_id: l.external_location_id,
+                        address: l.address,
+                    })),
+                ),
+            ],
+        );
     }
 
     private async markMissingStale(
@@ -257,6 +307,22 @@ function toWrite(location: IntegrationLocationInputDto): LocationWrite {
         country_code: location.country_code?.toUpperCase() ?? null,
         mode,
         warehouse_id: warehouseId,
+        address_set: location.address !== undefined,
+        address: location.address ? toStoredAddress(location.address) : null,
+    };
+}
+
+/** Every key present, blanks as null, country upper case. */
+function toStoredAddress(address: LocationAddressDto): StoredLocationAddress {
+    const clean = (v: string | null | undefined): string | null =>
+        v?.trim() ? v.trim() : null;
+    return {
+        address1: clean(address.address1),
+        address2: clean(address.address2),
+        city: clean(address.city),
+        province_code: clean(address.province_code),
+        zip: clean(address.zip),
+        country_code: clean(address.country_code)?.toUpperCase() ?? null,
     };
 }
 
@@ -291,8 +357,18 @@ function toDto(row: MappingRow): IntegrationLocationDto {
         country_code: row.country_code,
         mode: row.mode,
         warehouse_id: row.warehouse_id,
+        address: row.address ?? null,
         stale_at: row.stale_at ? toIso(row.stale_at) : null,
         updated_at: toIso(row.updated_at),
         updated_by: row.updated_by,
     };
+}
+
+/** The columns upsertSql reads; the address is written separately. */
+function upsertFields(
+    location: LocationWrite,
+): Omit<LocationWrite, 'address' | 'address_set'> {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { address, address_set, ...fields } = location;
+    return fields;
 }
