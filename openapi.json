@@ -3141,7 +3141,7 @@
     },
     "/api/v1/services/{id}": {
       "patch": {
-        "description": "Name and pricing unit are patched in place. A price change mints a new Stripe price and archives the old one — the returned id is unchanged either way. Currency is not editable.",
+        "description": "Name, description and pricing unit are patched in place. A change to the amount or to `currencyOptions` mints a new Stripe price and archives the old one — the returned id is unchanged either way. Currency is not editable.",
         "operationId": "ServicesController_update",
         "parameters": [
           {
@@ -7815,6 +7815,25 @@
           "ok"
         ]
       },
+      "CurrencyAmountDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 code, any case. Not the main currency.",
+            "example": "eur"
+          },
+          "amountMajor": {
+            "type": "number",
+            "description": "Per-unit rate in this currency’s major units.",
+            "example": 11.5
+          }
+        },
+        "required": [
+          "currency",
+          "amountMajor"
+        ]
+      },
       "CreateServiceDto": {
         "type": "object",
         "properties": {
@@ -7839,6 +7858,18 @@
           "currency": {
             "type": "string",
             "description": "ISO currency code; defaults to the account default."
+          },
+          "description": {
+            "type": "string",
+            "description": "Shown to shoppers with the rate, e.g. at storefront checkout. Stored as the Stripe product description. Send an empty string to clear it on update.",
+            "maxLength": 500
+          },
+          "currencyOptions": {
+            "description": "Amounts in currencies other than the main one (Stripe `currency_options`). On update, the list replaces the stored set; send `[]` to remove them all.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CurrencyAmountDto"
+            }
           }
         },
         "required": [
@@ -7880,6 +7911,18 @@
               "per_lb",
               "per_recipient"
             ]
+          },
+          "description": {
+            "type": "string",
+            "description": "Shown to shoppers with the rate, e.g. at storefront checkout. Stored as the Stripe product description. Send an empty string to clear it on update.",
+            "maxLength": 500
+          },
+          "currencyOptions": {
+            "description": "Amounts in currencies other than the main one (Stripe `currency_options`). On update, the list replaces the stored set; send `[]` to remove them all.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CurrencyAmountDto"
+            }
           }
         }
       },
@@ -7933,6 +7976,25 @@
             ]
           }
         }
+      },
+      "CatalogCurrencyAmountDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "description": "Lower-case ISO 4217 code, Stripe-style.",
+            "example": "eur"
+          },
+          "amount_minor": {
+            "type": "number",
+            "description": "Per-unit rate in this currency’s minor units.",
+            "example": 1150
+          }
+        },
+        "required": [
+          "currency",
+          "amount_minor"
+        ]
       },
       "CatalogAddonDto": {
         "type": "object",
@@ -8013,6 +8075,19 @@
             "description": "Lower-case ISO 4217 code, Stripe-style.",
             "example": "usd"
           },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Stripe product description, shown to shoppers with the rate. Null when unset.",
+            "example": "Delivered by our own drivers, same day."
+          },
+          "currency_options": {
+            "description": "Amounts in currencies other than `currency`, from the price’s Stripe `currency_options`, sorted by currency. Lets a storefront in another currency use this service without FX conversion. The public booking page always charges `currency`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogCurrencyAmountDto"
+            }
+          },
           "addons": {
             "description": "Add-ons belonging to this service, oldest first. Only these are accepted in `addonIds` when quoting or paying for it.",
             "type": "array",
@@ -8027,6 +8102,8 @@
           "pricing_unit",
           "amount_minor",
           "currency",
+          "description",
+          "currency_options",
           "addons"
         ]
       },

@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { PRICING_UNITS } from '../pricing';
 import type {
     CatalogAddon,
+    CatalogCurrencyAmount,
     CatalogResponse,
     CatalogService,
 } from '../services.service';
@@ -53,11 +54,46 @@ export class CatalogAddonDto implements CatalogAddon {
     currency: string;
 }
 
+/** An amount in one of a price's extra currencies (Stripe `currency_options`). */
+export class CatalogCurrencyAmountDto implements CatalogCurrencyAmount {
+    @ApiProperty({
+        description: 'Lower-case ISO 4217 code, Stripe-style.',
+        example: 'eur',
+    })
+    currency: string;
+
+    @ApiProperty({
+        description: 'Per-unit rate in this currency’s minor units.',
+        example: 1150,
+    })
+    amount_minor: number;
+}
+
 /** A bookable service plus the add-ons that can be selected alongside it. */
 export class CatalogServiceDto
     extends CatalogAddonDto
     implements CatalogService
 {
+    @ApiProperty({
+        type: String,
+        nullable: true,
+        description:
+            'Stripe product description, shown to shoppers with the rate. ' +
+            'Null when unset.',
+        example: 'Delivered by our own drivers, same day.',
+    })
+    description: string | null;
+
+    @ApiProperty({
+        type: [CatalogCurrencyAmountDto],
+        description:
+            'Amounts in currencies other than `currency`, from the price’s ' +
+            'Stripe `currency_options`, sorted by currency. Lets a storefront ' +
+            'in another currency use this service without FX conversion. The ' +
+            'public booking page always charges `currency`.',
+    })
+    currency_options: CatalogCurrencyAmountDto[];
+
     @ApiProperty({
         type: [CatalogAddonDto],
         description:
