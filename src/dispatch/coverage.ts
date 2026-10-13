@@ -478,17 +478,18 @@ const COVERING_AREAS_CTE = `covering_areas AS (
                 pts.geom)
 )`;
 
-export const COVERING_DRIVERS_SQL = `
-WITH ${pointsCte('$3', '$4')},
-${ELIGIBLE_DRIVERS_CTE},
-${COVERING_AREAS_CTE}
--- The floater rule, SQL half: a driver with no links to a live service area
--- covers everywhere. Links to retired areas are kept for un-retiring and do
--- not count, see applyFloaterRule(). Returned ONCE, with a null point_index,
--- rather than joined against every point: the answer does not depend on the
--- point, and cross-joining it would multiply the result set by the batch size
--- for no information. applyFloaterRule() merges it in.
-SELECT NULL::int AS point_index,
+/**
+ * The floater rule, SQL half: a driver with no links to a live service area
+ * covers everywhere. Links to retired areas are kept for un-retiring and do
+ * not count, see applyFloaterRule(). Returned ONCE, with a null point_index,
+ * rather than joined against every point: the answer does not depend on the
+ * point, and cross-joining it would multiply the result set by the batch size
+ * for no information. applyFloaterRule() merges it in.
+ *
+ * Shared by COVERING_DRIVERS_SQL and FLOATER_DRIVERS_SQL, so the static
+ * checkout coverage export cannot disagree with dispatch about "everywhere".
+ */
+const FLOATER_SELECT = `SELECT NULL::int AS point_index,
        e.id      AS driver_id,
        true      AS is_floater
   FROM eligible e
@@ -499,7 +500,13 @@ SELECT NULL::int AS point_index,
                ON  live.id         = dsa.service_area_id
                AND live.is_deleted = false
             WHERE dsa.driver_id = e.id
-       )
+       )`;
+
+export const COVERING_DRIVERS_SQL = `
+WITH ${pointsCte('$3', '$4')},
+${ELIGIBLE_DRIVERS_CTE},
+${COVERING_AREAS_CTE}
+${FLOATER_SELECT}
 UNION ALL
 -- Explicit coverage. DISTINCT because a driver assigned to two overlapping
 -- areas that both contain the point must be returned once for that point, not
@@ -633,6 +640,34 @@ export async function coveringDriversForPoint(
         );
     }
     return coverage;
+}
+
+/**
+ * The floaters alone, for one organisation/warehouse pair: $1 organisation
+ * id, $2 warehouse id. No points: the floater half of COVERING_DRIVERS_SQL
+ * does not depend on one.
+ */
+export const FLOATER_DRIVERS_SQL = `
+WITH ${ELIGIBLE_DRIVERS_CTE}
+${FLOATER_SELECT}
+`;
+
+/**
+ * The drivers who cover everywhere at this warehouse under the floater rule,
+ * sorted. Non-empty means any point is covered, which is what the static
+ * checkout coverage export calls "everywhere".
+ */
+export async function floaterDrivers(
+    executor: CoverageQueryExecutor,
+    query: CoverageQuery,
+): Promise<string[]> {
+    const rows = parseCoverageRows(
+        await executor.query(FLOATER_DRIVERS_SQL, [
+            query.organisationId,
+            query.warehouseId,
+        ]),
+    );
+    return sortedUnique(rows.map((row) => row.driverId));
 }
 
 /**
