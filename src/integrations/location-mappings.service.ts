@@ -92,6 +92,26 @@ export class LocationMappingsService {
     }
 
     /**
+     * The shop's locations as the carrier callback matches its origin: mode,
+     * warehouse, address and staleness, nothing else.
+     */
+    async originCandidates(
+        organisationId: string,
+        platform: string,
+        shopDomain: string,
+    ): Promise<
+        Pick<MappingRow, 'mode' | 'warehouse_id' | 'address' | 'stale_at'>[]
+    > {
+        return this.dataSource.query(
+            `SELECT mode, warehouse_id, address, stale_at
+               FROM public.integration_location_mapping
+              WHERE organisation_id = $1 AND platform = $2 AND shop_domain = $3
+                AND address IS NOT NULL`,
+            [organisationId, platform, normaliseShopDomain(shopDomain)],
+        );
+    }
+
+    /**
      * Upserts one shop's locations. Returns all the shop's locations, stale
      * ones included.
      *

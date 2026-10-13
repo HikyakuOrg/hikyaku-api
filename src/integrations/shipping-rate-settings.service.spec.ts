@@ -83,7 +83,10 @@ describe('ShippingRateSettingsService', () => {
             );
         service = new ShippingRateSettingsService(
             { query } as unknown as DataSource,
-            { getStripeAccount } as unknown as OrganisationsService,
+            {
+                getStripeAccount,
+                findById: jest.fn().mockResolvedValue({ slug: 'acme' }),
+            } as unknown as OrganisationsService,
             { fetchActiveProductMap } as unknown as ServicesService,
         );
         delete process.env.APP_URL;
@@ -146,7 +149,7 @@ describe('ShippingRateSettingsService', () => {
                 },
             ]);
             expect(view.dashboard_service_url).toBe(
-                'https://app.hikyaku.org/dashboard/service-rates',
+                'https://app.hikyaku.org/orgs/acme/dashboard/service-rates',
             );
         });
 
