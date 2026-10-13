@@ -5233,6 +5233,277 @@
         ]
       }
     },
+    "/api/v1/integrations/shipping-rates": {
+      "get": {
+        "description": "Settings are the defaults (disabled, no services) when none are stored. `services` lists the catalog with each amount in `currency`, or the stored shop currency when omitted.",
+        "operationId": "ShippingRateSettingsController_get",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "platform",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "example": "shopify",
+              "type": "string"
+            }
+          },
+          {
+            "name": "shop_domain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "example": "store.myshopify.com",
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "AUD",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShippingRateSettingsViewResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A shop's checkout rate settings and the services it can offer.",
+        "tags": [
+          "integrations"
+        ]
+      },
+      "put": {
+        "description": "Enabling needs a connected Stripe account, at least one chosen service, and an amount in `shop_currency` on each (main price or `currency_options`). Disabling always succeeds. A 422 carries a `code` the connector can show.",
+        "operationId": "ShippingRateSettingsController_put",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutShippingRateSettingsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShippingRateSettingsResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another organisation holds this shop.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The settings cannot be enabled as sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShippingRateErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Store a shop's checkout rate settings.",
+        "tags": [
+          "integrations"
+        ]
+      },
+      "delete": {
+        "description": "For disconnect and shop redact. Checkout stops getting rates at once. 204 even when nothing was stored.",
+        "operationId": "ShippingRateSettingsController_remove",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "platform",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "example": "shopify",
+              "type": "string"
+            }
+          },
+          {
+            "name": "shop_domain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "example": "store.myshopify.com",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a shop's checkout rate settings.",
+        "tags": [
+          "integrations"
+        ]
+      }
+    },
     "/api/v1/warehouses": {
       "get": {
         "description": "Ordered by name. Storefront connectors use it to map locations to warehouses (PUT /api/v1/integrations/locations).",
@@ -9896,6 +10167,41 @@
           "data"
         ]
       },
+      "LocationAddressDto": {
+        "type": "object",
+        "properties": {
+          "address1": {
+            "type": "string",
+            "nullable": true,
+            "example": "1 Main St"
+          },
+          "address2": {
+            "type": "string",
+            "nullable": true
+          },
+          "city": {
+            "type": "string",
+            "nullable": true,
+            "example": "Melbourne"
+          },
+          "province_code": {
+            "type": "string",
+            "nullable": true,
+            "example": "VIC"
+          },
+          "zip": {
+            "type": "string",
+            "nullable": true,
+            "example": "3000"
+          },
+          "country_code": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO 3166-1 alpha-2.",
+            "example": "AU"
+          }
+        }
+      },
       "IntegrationLocationDto": {
         "type": "object",
         "properties": {
@@ -9939,6 +10245,16 @@
             "nullable": true,
             "description": "Set only when `mode` is `warehouse`. Deleting the warehouse sets `mode` to `unmapped`."
           },
+          "address": {
+            "nullable": true,
+            "description": "Street address as the connector last sent it.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LocationAddressDto"
+              }
+            ]
+          },
           "stale_at": {
             "type": "string",
             "format": "date-time",
@@ -9965,6 +10281,7 @@
           "country_code",
           "mode",
           "warehouse_id",
+          "address",
           "stale_at",
           "updated_at",
           "updated_by"
@@ -10018,6 +10335,16 @@
             "format": "uuid",
             "nullable": true,
             "description": "Required when `mode` is `warehouse`, and only then. Must belong to the organisation in `X-Organisation-Slug`."
+          },
+          "address": {
+            "nullable": true,
+            "description": "The location's street address. A carrier rate request names its origin only by address, so this is how checkout finds the location. Omit to keep the stored address; null clears it.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LocationAddressDto"
+              }
+            ]
           }
         },
         "required": [
@@ -10054,6 +10381,259 @@
           "platform",
           "shop_domain",
           "locations"
+        ]
+      },
+      "BandSettingDto": {
+        "type": "object",
+        "properties": {
+          "band_width": {
+            "type": "number",
+            "description": "Band size in the service unit: km for per_km, mi for per_mi, kg for per_kg, lb for per_lb.",
+            "example": 5
+          },
+          "max": {
+            "type": "number",
+            "description": "Largest distance or weight offered, same unit. Above it the shopper gets no Hikyaku rate.",
+            "example": 30
+          }
+        },
+        "required": [
+          "band_width",
+          "max"
+        ]
+      },
+      "ShippingRateSettingsDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Rates are offered at checkout."
+          },
+          "service_ids": {
+            "description": "Stripe product ids of the catalog services offered, in display order.",
+            "example": [
+              "prod_QhX1a2B3c4D5e6"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "shop_currency": {
+            "type": "string",
+            "nullable": true,
+            "description": "Upper-case ISO 4217 currency of the shop.",
+            "example": "AUD"
+          },
+          "path": {
+            "type": "string",
+            "enum": [
+              "live",
+              "static"
+            ],
+            "nullable": true,
+            "description": "`live`: the storefront asks per checkout. `static`: rates are written into the storefront."
+          },
+          "band_settings": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BandSettingDto"
+            },
+            "description": "Static path band sizes by service id."
+          }
+        },
+        "required": [
+          "enabled",
+          "service_ids",
+          "shop_currency",
+          "path",
+          "band_settings"
+        ]
+      },
+      "ShippingRateServiceDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stripe product id."
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "per_delivery",
+              "per_km",
+              "per_mi",
+              "per_kg",
+              "per_lb",
+              "per_recipient"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "nullable": true,
+            "description": "Per-unit rate in `currency` as a decimal string, e.g. \"1.50\". Null when the price has no amount in that currency; such a service cannot be enabled.",
+            "example": "1.50"
+          },
+          "currency": {
+            "type": "string",
+            "description": "Upper-case ISO 4217 currency `amount` is in.",
+            "example": "AUD"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "unit",
+          "amount",
+          "currency"
+        ]
+      },
+      "ShippingRateSettingsViewDto": {
+        "type": "object",
+        "properties": {
+          "settings": {
+            "description": "Stored settings, or the defaults (disabled, no services) when none are stored.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ShippingRateSettingsDto"
+              }
+            ]
+          },
+          "stripe_connected": {
+            "type": "boolean",
+            "description": "The organisation has a Stripe account connected."
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShippingRateServiceDto"
+            }
+          },
+          "dashboard_service_url": {
+            "type": "string",
+            "nullable": true,
+            "description": "Dashboard page where a merchant adds a price in another currency. Null when the API has no dashboard URL configured."
+          }
+        },
+        "required": [
+          "settings",
+          "stripe_connected",
+          "services",
+          "dashboard_service_url"
+        ]
+      },
+      "ShippingRateSettingsViewResponseDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ShippingRateSettingsViewDto"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "PutShippingRateSettingsDto": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "example": "shopify"
+          },
+          "shop_domain": {
+            "type": "string",
+            "example": "store.myshopify.com"
+          },
+          "shop_currency": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO 4217, any case. Required to enable.",
+            "example": "AUD"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "service_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "path": {
+            "type": "string",
+            "enum": [
+              "live",
+              "static"
+            ],
+            "nullable": true
+          },
+          "band_settings": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BandSettingDto"
+            },
+            "description": "Required for each distance and weight service when `path` is `static` and rates are enabled. Entries for other services are dropped."
+          }
+        },
+        "required": [
+          "platform",
+          "shop_domain",
+          "enabled",
+          "service_ids"
+        ]
+      },
+      "ShippingRateSettingsResponseDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ShippingRateSettingsDto"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "ShippingRateErrorDto": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "example": 422
+          },
+          "message": {
+            "type": "string",
+            "example": "Same-day has no price in AUD."
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "stripe_not_connected",
+              "no_services",
+              "service_missing_currency",
+              "unknown_service",
+              "band_settings_invalid"
+            ]
+          },
+          "service_ids": {
+            "description": "The services the error is about.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "statusCode",
+          "message",
+          "code"
         ]
       },
       "WarehouseDto": {

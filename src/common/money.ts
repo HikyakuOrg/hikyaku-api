@@ -104,3 +104,30 @@ export function fromStripeMinorUnits(
     const factor = exponent === 0 ? 1 : exponent === 3 ? 1000 : 100;
     return amountMinor / factor;
 }
+
+/**
+ * Minor units as a fixed-point decimal string with the currency's Stripe
+ * exponent, the way storefronts send prices:
+ *
+ *   (150, 'AUD') -> "1.50"
+ *   (500, 'JPY') -> "500"
+ */
+export function minorToDecimalString(
+    amountMinor: number,
+    currency: string,
+): string {
+    const exponent = currencyExponent(currency);
+    return fromStripeMinorUnits(amountMinor, currency).toFixed(exponent);
+}
+
+/**
+ * Inverse of {@link minorToDecimalString}: a decimal string such as "12.50"
+ * to minor units, or null when it is not a non-negative decimal.
+ */
+export function decimalStringToMinor(
+    amount: string,
+    currency: string,
+): number | null {
+    if (!/^\d+(\.\d+)?$/.test(amount.trim())) return null;
+    return toStripeMinorUnits(Number(amount), currency);
+}

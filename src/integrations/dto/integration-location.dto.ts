@@ -88,6 +88,64 @@ export class IntegrationLocationInputDto {
     @IsOptional()
     @IsUUID()
     warehouse_id?: string | null;
+
+    @ApiPropertyOptional({
+        type: () => LocationAddressDto,
+        nullable: true,
+        description:
+            "The location's street address. A carrier rate request names its " +
+            'origin only by address, so this is how checkout finds the ' +
+            'location. Omit to keep the stored address; null clears it.',
+    })
+    @IsOptional()
+    @ValidateNested()
+    @Type(() => LocationAddressDto)
+    address?: LocationAddressDto | null;
+}
+
+/** A storefront location's street address. Every field may be null. */
+export class LocationAddressDto {
+    @ApiPropertyOptional({ type: String, nullable: true, example: '1 Main St' })
+    @IsOptional()
+    @IsString()
+    @MaxLength(255)
+    address1?: string | null;
+
+    @ApiPropertyOptional({ type: String, nullable: true })
+    @IsOptional()
+    @IsString()
+    @MaxLength(255)
+    address2?: string | null;
+
+    @ApiPropertyOptional({ type: String, nullable: true, example: 'Melbourne' })
+    @IsOptional()
+    @IsString()
+    @MaxLength(255)
+    city?: string | null;
+
+    @ApiPropertyOptional({ type: String, nullable: true, example: 'VIC' })
+    @IsOptional()
+    @IsString()
+    @MaxLength(64)
+    province_code?: string | null;
+
+    @ApiPropertyOptional({ type: String, nullable: true, example: '3000' })
+    @IsOptional()
+    @IsString()
+    @MaxLength(32)
+    zip?: string | null;
+
+    @ApiPropertyOptional({
+        type: String,
+        nullable: true,
+        description: 'ISO 3166-1 alpha-2.',
+        example: 'AU',
+    })
+    @IsOptional()
+    @Matches(/^[A-Za-z]{2}$/, {
+        message: 'address.country_code must be an ISO 3166-1 alpha-2 code',
+    })
+    country_code?: string | null;
 }
 
 /** Body of PUT /api/v1/integrations/locations. */
@@ -168,6 +226,13 @@ export class IntegrationLocationDto {
             '`mode` to `unmapped`.',
     })
     warehouse_id: string | null;
+
+    @ApiProperty({
+        type: () => LocationAddressDto,
+        nullable: true,
+        description: 'Street address as the connector last sent it.',
+    })
+    address: LocationAddressDto | null;
 
     @ApiProperty({
         type: String,
