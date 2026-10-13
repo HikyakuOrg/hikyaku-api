@@ -194,6 +194,45 @@ describe('IntegrationsController (integration)', () => {
             expect(JSON.parse(JSON.stringify(recorded()))).toEqual(body);
         });
 
+        it('records the Hikyaku checkout rate, and accepts null', async () => {
+            const shipping_rate = {
+                service_id: 'prod_km',
+                path: 'live',
+                price: '12.50',
+                discounted_price: '10.00',
+                currency: 'AUD',
+                title: 'Same-day',
+            };
+            await post()
+                .send({ ...body, shipping_rate })
+                .expect(201);
+            expect(JSON.parse(JSON.stringify(recorded()))).toEqual({
+                ...body,
+                shipping_rate,
+            });
+
+            await post()
+                .send({ ...body, shipping_rate: null })
+                .expect(201);
+        });
+
+        it('returns 400 for a malformed checkout rate', async () => {
+            const res = await post().send({
+                ...body,
+                shipping_rate: {
+                    service_id: 'prod_km',
+                    path: 'sideways',
+                    price: '12,50',
+                    discounted_price: '10.00',
+                    currency: 'AUD',
+                    title: 'x',
+                },
+            });
+            expect(res.status).toBe(400);
+            expect(JSON.stringify(res.body)).toContain('path');
+            expect(JSON.stringify(res.body)).toContain('price');
+        });
+
         it('records an event with an empty fulfillment_groups', async () => {
             await post()
                 .send({ ...body, fulfillment_groups: [] })

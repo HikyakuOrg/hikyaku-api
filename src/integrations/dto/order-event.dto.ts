@@ -624,6 +624,73 @@ export class OrderEventDto {
     @IsString({ each: true })
     @IsNotEmpty({ each: true })
     released_group_ids?: string[];
+
+    @ApiPropertyOptional({
+        type: () => OrderShippingRateDto,
+        nullable: true,
+        description:
+            'On `order.paid`, the Hikyaku checkout rate the shopper chose, ' +
+            'when the shop offers them. Stored on every package the order ' +
+            'makes. Ignored on other events.',
+    })
+    @IsOptional()
+    @ValidateNested()
+    @Type(() => OrderShippingRateDto)
+    shipping_rate?: OrderShippingRateDto | null;
+}
+
+/** The two ways a storefront carries Hikyaku checkout rates. */
+export const SHIPPING_RATE_PATHS = ['live', 'static'] as const;
+
+/** The Hikyaku checkout rate on a paid order's shipping line. */
+export class OrderShippingRateDto {
+    @ApiProperty({
+        description: 'Stripe product id of the catalog service.',
+        example: 'prod_QhX1a2B3c4D5e6',
+    })
+    @IsString()
+    @IsNotEmpty()
+    service_id: string;
+
+    @ApiProperty({
+        enum: SHIPPING_RATE_PATHS,
+        description:
+            '`live`: priced by the carrier callback. `static`: a rate the ' +
+            'connector wrote into the storefront.',
+    })
+    @IsIn(SHIPPING_RATE_PATHS)
+    path: (typeof SHIPPING_RATE_PATHS)[number];
+
+    @ApiProperty({
+        description:
+            'Shipping charged for the order before discounts, decimal, in ' +
+            '`currency`.',
+        example: '12.50',
+    })
+    @Matches(/^\d+(\.\d+)?$/, { message: 'price must be a decimal string' })
+    price: string;
+
+    @ApiProperty({
+        description: 'Shipping charged after discounts, decimal.',
+        example: '10.00',
+    })
+    @Matches(/^\d+(\.\d+)?$/, {
+        message: 'discounted_price must be a decimal string',
+    })
+    discounted_price: string;
+
+    @ApiProperty({ description: 'ISO 4217, any case.', example: 'AUD' })
+    @Matches(/^[A-Za-z]{3}$/, {
+        message: 'currency must be a three-letter ISO 4217 code',
+    })
+    currency: string;
+
+    @ApiProperty({
+        description: 'The shipping line title the shopper saw.',
+        example: 'Same-day delivery',
+    })
+    @IsString()
+    title: string;
 }
 
 /** An `order.paid` body, which validation guarantees carries the whole order. */

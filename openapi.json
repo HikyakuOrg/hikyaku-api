@@ -9993,6 +9993,52 @@
           "total_weight_grams"
         ]
       },
+      "OrderShippingRateDto": {
+        "type": "object",
+        "properties": {
+          "service_id": {
+            "type": "string",
+            "description": "Stripe product id of the catalog service.",
+            "example": "prod_QhX1a2B3c4D5e6"
+          },
+          "path": {
+            "type": "string",
+            "enum": [
+              "live",
+              "static"
+            ],
+            "description": "`live`: priced by the carrier callback. `static`: a rate the connector wrote into the storefront."
+          },
+          "price": {
+            "type": "string",
+            "description": "Shipping charged for the order before discounts, decimal, in `currency`.",
+            "example": "12.50"
+          },
+          "discounted_price": {
+            "type": "string",
+            "description": "Shipping charged after discounts, decimal.",
+            "example": "10.00"
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217, any case.",
+            "example": "AUD"
+          },
+          "title": {
+            "type": "string",
+            "description": "The shipping line title the shopper saw.",
+            "example": "Same-day delivery"
+          }
+        },
+        "required": [
+          "service_id",
+          "path",
+          "price",
+          "discounted_price",
+          "currency",
+          "title"
+        ]
+      },
       "OrderEventDto": {
         "type": "object",
         "properties": {
@@ -10042,6 +10088,16 @@
             "items": {
               "type": "string"
             }
+          },
+          "shipping_rate": {
+            "nullable": true,
+            "description": "On `order.paid`, the Hikyaku checkout rate the shopper chose, when the shop offers them. Stored on every package the order makes. Ignored on other events.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OrderShippingRateDto"
+              }
+            ]
           }
         },
         "required": [
