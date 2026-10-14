@@ -11,6 +11,7 @@ import { OrganisationsService } from 'src/organisations/organisations.service';
 import { ServicesService } from 'src/services/services.service';
 import type { CatalogProduct } from 'src/services/services.service';
 import { amountFor } from 'src/services/price-amount';
+import { MAX_BANDS_PER_SERVICE, bandCount } from './static-rates/band-plan';
 import type {
     BandSettingDto,
     PutShippingRateSettingsDto,
@@ -213,7 +214,7 @@ export class ShippingRateSettingsService {
             if (invalid.length > 0) {
                 throw rateError(
                     'band_settings_invalid',
-                    `Set a band width and a maximum for ${invalid.map((s) => s.name).join(', ')}.`,
+                    `Set a band width and a maximum, at most ${MAX_BANDS_PER_SERVICE} bands, for ${invalid.map((s) => s.name).join(', ')}.`,
                     invalid.map((s) => s.productId),
                 );
             }
@@ -286,7 +287,8 @@ export class ShippingRateSettingsService {
         return rows[0] ?? null;
     }
 
-    private async findOwn(
+    /** This organisation's settings for the shop, or null. */
+    async findOwn(
         organisationId: string,
         platform: string,
         shopDomain: string,
@@ -300,7 +302,7 @@ export class ShippingRateSettingsService {
     }
 
     /** The org's catalog services, oldest first, or none without Stripe. */
-    private async loadCatalog(
+    async loadCatalog(
         organisationId: string,
     ): Promise<{ connected: boolean; catalog: CatalogProduct[] }> {
         const account = await this.orgs.getStripeAccount(organisationId);
@@ -330,7 +332,8 @@ function pickBandSettings(
             Number.isFinite(width) &&
             Number.isFinite(max) &&
             width > 0 &&
-            max > 0
+            max > 0 &&
+            bandCount({ band_width: width, max }) <= MAX_BANDS_PER_SERVICE
         ) {
             out[s.productId] = { band_width: width, max };
         }

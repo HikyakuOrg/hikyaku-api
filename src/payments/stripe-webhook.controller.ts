@@ -8,6 +8,10 @@ import {
     Req,
 } from '@nestjs/common';
 import { ApiExcludeEndpoint } from '@nestjs/swagger';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { notifyStaticRatesChanged } from 'src/integrations/static-rates/notify';
+import { OrganisationsService } from 'src/organisations/organisations.service';
 import { STRIPE_CLIENT } from 'src/stripe/stripe.provider';
 import type { StripeClient } from 'src/stripe/stripe.provider';
 import { BillingService } from 'src/billing/billing.service';
@@ -35,6 +39,8 @@ export class StripeWebhookController {
         @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient,
         private readonly paymentsService: PaymentsService,
         private readonly billingService: BillingService,
+        private readonly organisations: OrganisationsService,
+        @InjectDataSource() private readonly dataSource: DataSource,
     ) {}
 
     /**
@@ -134,6 +140,27 @@ export class StripeWebhookController {
             await this.billingService.syncVanityUrlEntitlementFromStripe(
                 summary,
             );
+        }
+
+        // A connected account's catalog changed: shops on the static checkout
+        // path have its prices written into the storefront, so wake the
+        // static rate push. Needs product.* and price.* subscribed for
+        // connected accounts on this endpoint.
+        if (
+            event.account &&
+            (event.type.startsWith('product.') ||
+                event.type.startsWith('price.'))
+        ) {
+            const account = await this.organisations.findByStripeAccountId(
+                event.account,
+            );
+            if (account) {
+                await notifyStaticRatesChanged(
+                    this.dataSource,
+                    account.organisationId,
+                    'catalog',
+                );
+            }
         }
 
         return { received: true };

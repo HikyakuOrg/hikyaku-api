@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CustomersModule } from 'src/customers/customers.module';
 import { BillingModule } from 'src/billing/billing.module';
+import { OrganisationsModule } from 'src/organisations/organisations.module';
 import { PackagesModule } from 'src/packages/packages.module';
 import { Payment } from './entities/payment.entity';
 import { PaymentsService } from './payments.service';
@@ -18,6 +19,8 @@ import { StripeWebhookController } from './stripe-webhook.controller';
         TypeOrmModule.forFeature([Payment]),
         CustomersModule,
         BillingModule,
+        // Maps a connected account's catalog webhooks to its organisation.
+        OrganisationsModule,
         // Fulfillment creates packages, and it needs them on the same
         // transaction that marks the payment completed.
         PackagesModule,

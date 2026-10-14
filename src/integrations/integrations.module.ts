@@ -17,6 +17,9 @@ import { OrderEventWorker } from './order-event.worker';
 import { OrderGeocoder } from './order-geocoder';
 import { ShippingRateSettingsController } from './shipping-rate-settings.controller';
 import { ShippingRateSettingsService } from './shipping-rate-settings.service';
+import { StaticRatesController } from './static-rates/static-rates.controller';
+import { StaticRatesPushService } from './static-rates/static-rates-push.service';
+import { StaticRatesService } from './static-rates/static-rates.service';
 
 /**
  * Storefront orders in, packages out. IntegrationsController records events.
@@ -24,7 +27,9 @@ import { ShippingRateSettingsService } from './shipping-rate-settings.service';
  * turns them into packages. LocationMappingsController maps storefront
  * locations to warehouses. ShippingRateSettingsController stores which
  * services each shop offers as checkout rates, and
- * ShopifyCarrierRatesController prices them at checkout.
+ * ShopifyCarrierRatesController prices them at checkout. For shops that
+ * can't call back, StaticRatesController serves fixed rates and coverage, and
+ * StaticRatesPushService tells the app when to fetch them again.
  */
 @Module({
     imports: [
@@ -41,6 +46,7 @@ import { ShippingRateSettingsService } from './shipping-rate-settings.service';
         LocationMappingsController,
         ShippingRateSettingsController,
         ShopifyCarrierRatesController,
+        StaticRatesController,
     ],
     providers: [
         CarrierRatesService,
@@ -50,6 +56,8 @@ import { ShippingRateSettingsService } from './shipping-rate-settings.service';
         OrderEventProcessor,
         OrderEventWorker,
         ShippingRateSettingsService,
+        StaticRatesPushService,
+        StaticRatesService,
     ],
 })
 export class IntegrationsModule {}
