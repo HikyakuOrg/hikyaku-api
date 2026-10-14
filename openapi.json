@@ -5504,6 +5504,123 @@
         ]
       }
     },
+    "/api/v1/integrations/shipping-rates/static-plan": {
+      "get": {
+        "description": "For storefronts that cannot call the carrier callback. The connector writes `rates` into the delivery profiles and `coverage` into the Function metafield. Re-fetch on every push.",
+        "operationId": "StaticRatesController_get",
+        "parameters": [
+          {
+            "name": "X-Organisation-Slug",
+            "in": "header",
+            "description": "Slug of the organisation the request acts on. The caller must be a member of it. Required — the request is rejected without it.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "acme-logistics"
+            }
+          },
+          {
+            "name": "platform",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "example": "shopify",
+              "type": "string"
+            }
+          },
+          {
+            "name": "shop_domain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "example": "store.myshopify.com",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaticPlanResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `X-Organisation-Slug` header, or the request body failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, malformed or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Unknown organisation, the caller is not a member of it, or the required permission is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No rate settings for this shop.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The settings have no shop currency yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Coverage cannot fit 10 KB, even as boxes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A shop's static rates and checkout coverage.",
+        "tags": [
+          "integrations"
+        ]
+      }
+    },
     "/api/v1/warehouses": {
       "get": {
         "description": "Ordered by name. Storefront connectors use it to map locations to warehouses (PUT /api/v1/integrations/locations).",
@@ -10695,6 +10812,127 @@
           "statusCode",
           "message",
           "code"
+        ]
+      },
+      "StaticRateDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable while the service and its bands are unchanged: `hikyaku:<service_id>`, `…:d:<min>-<max>` (distance, in `unit`) or `…:w:<min_grams>-<max_grams>` (weight).",
+            "example": "hikyaku:prod_QhX1a2B3c4D5e6:d:5-10"
+          },
+          "service_id": {
+            "type": "string"
+          },
+          "service_name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "flat",
+              "distance",
+              "weight"
+            ]
+          },
+          "price": {
+            "type": "string",
+            "description": "Decimal in the shop currency, priced at the upper band edge.",
+            "example": "15.00"
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "km",
+              "mi",
+              "kg",
+              "lb"
+            ],
+            "nullable": true,
+            "description": "The service unit; null for flat rates."
+          },
+          "band_min": {
+            "type": "number",
+            "nullable": true
+          },
+          "band_max": {
+            "type": "number",
+            "nullable": true
+          },
+          "min_km": {
+            "type": "number",
+            "description": "Distance bands only, in km."
+          },
+          "max_km": {
+            "type": "number",
+            "description": "Distance bands only, in km."
+          },
+          "min_grams": {
+            "type": "number",
+            "description": "Weight bands only, in grams."
+          },
+          "max_grams": {
+            "type": "number",
+            "description": "Weight bands only, in grams."
+          }
+        },
+        "required": [
+          "code",
+          "service_id",
+          "service_name",
+          "description",
+          "kind",
+          "price",
+          "unit",
+          "band_min",
+          "band_max"
+        ]
+      },
+      "StaticPlanDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "AUD"
+          },
+          "rates": {
+            "description": "Empty while rates are off.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StaticRateDto"
+            }
+          },
+          "coverage": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Write verbatim to the Function metafield (at most 10 KB): `{ v: 1, w: [{ id, la, ln, e, p: [[lng,lat,…]], b: [[minLng,minLat,maxLng,maxLat]] }] }`, one entry per mapped warehouse. `e`: covered everywhere (the floater rule, or matching off)."
+          },
+          "bbox_fallback": {
+            "type": "boolean",
+            "description": "Some areas are bounding boxes because the polygons did not fit, so checkout may offer rates slightly outside them."
+          }
+        },
+        "required": [
+          "currency",
+          "rates",
+          "coverage",
+          "bbox_fallback"
+        ]
+      },
+      "StaticPlanResponseDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/StaticPlanDto"
+          }
+        },
+        "required": [
+          "data"
         ]
       },
       "WarehouseDto": {

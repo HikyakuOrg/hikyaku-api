@@ -10,6 +10,8 @@ import {
     COVERING_AREAS_SQL,
     COVERING_DRIVERS_SQL,
     ELIGIBLE_DRIVERS_SQL,
+    FLOATER_DRIVERS_SQL,
+    floaterDrivers,
     isPlausibleLonLat,
     parseCoverageRows,
     type CoveragePoint,
@@ -368,6 +370,37 @@ describe('coveringDriversForPoint', () => {
     });
 });
 
+describe('floaterDrivers', () => {
+    it('returns the floaters, sorted and once each', async () => {
+        const executor = fakeExecutor([
+            floaterRow('driver-b'),
+            floaterRow('driver-a'),
+            floaterRow('driver-b'),
+        ]);
+
+        expect(await floaterDrivers(executor, QUERY)).toEqual([
+            'driver-a',
+            'driver-b',
+        ]);
+        expect(executor.calls[0].parameters).toEqual([ORG, WAREHOUSE]);
+    });
+
+    it('runs the same floater rule as dispatch', () => {
+        // The static checkout export and dispatch must agree on "everywhere".
+        const floaterBranch = (sql: string) =>
+            sql.slice(
+                sql.indexOf('SELECT NULL::int AS point_index'),
+                sql.indexOf('UNION ALL') === -1
+                    ? undefined
+                    : sql.indexOf('UNION ALL'),
+            );
+        expect(floaterBranch(FLOATER_DRIVERS_SQL).trim()).toBe(
+            floaterBranch(COVERING_DRIVERS_SQL).trim(),
+        );
+        expect(FLOATER_DRIVERS_SQL).toContain('d.organisation_id = $1::uuid');
+    });
+});
+
 /**
  * Guards on the SQL text itself.
  *
@@ -457,6 +490,12 @@ describe('the bound parameters', () => {
             ELIGIBLE_DRIVERS_SQL,
             (executor: CoverageQueryExecutor) =>
                 allDriversAsFloaters(executor, QUERY, 1),
+        ],
+        [
+            'FLOATER_DRIVERS_SQL',
+            FLOATER_DRIVERS_SQL,
+            (executor: CoverageQueryExecutor) =>
+                floaterDrivers(executor, QUERY),
         ],
     ])(
         '%s references exactly the parameters it is sent',
