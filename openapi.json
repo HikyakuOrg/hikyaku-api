@@ -5600,7 +5600,7 @@
             }
           },
           "422": {
-            "description": "Coverage cannot fit 10 KB, even as boxes.",
+            "description": "Coverage cannot fit 10 KB, even as boxes; or the services make more rates than a Shopify zone has room for (code `too_many_rates`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -10797,7 +10797,8 @@
               "no_services",
               "service_missing_currency",
               "unknown_service",
-              "band_settings_invalid"
+              "band_settings_invalid",
+              "too_many_rates"
             ]
           },
           "service_ids": {

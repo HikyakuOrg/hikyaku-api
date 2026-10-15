@@ -15,7 +15,7 @@
  * tries ever coarser simplifications until one fits, then bounding boxes.
  */
 
-/** Shopify's limit on a Function input metafield, with a little headroom. */
+/** Shopify's limit on a Function input metafield; a larger value isn't returned. */
 export const COVERAGE_BUDGET_BYTES = 10_000;
 
 /** One warehouse's coverage before encoding. */

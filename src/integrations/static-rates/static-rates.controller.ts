@@ -148,7 +148,10 @@ export class StaticRatesController {
     })
     @ApiResponse({
         status: 422,
-        description: 'Coverage cannot fit 10 KB, even as boxes.',
+        description:
+            'Coverage cannot fit 10 KB, even as boxes; or the services make ' +
+            'more rates than a Shopify zone has room for (code ' +
+            '`too_many_rates`).',
         type: ApiErrorDto,
     })
     async get(

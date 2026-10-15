@@ -11,7 +11,12 @@ import { OrganisationsService } from 'src/organisations/organisations.service';
 import { ServicesService } from 'src/services/services.service';
 import type { CatalogProduct } from 'src/services/services.service';
 import { amountFor } from 'src/services/price-amount';
-import { MAX_BANDS_PER_SERVICE, bandCount } from './static-rates/band-plan';
+import {
+    MAX_BANDS_PER_SERVICE,
+    MAX_STATIC_RATES,
+    bandCount,
+    buildStaticRates,
+} from './static-rates/band-plan';
 import type {
     BandSettingDto,
     PutShippingRateSettingsDto,
@@ -218,6 +223,19 @@ export class ShippingRateSettingsService {
                     invalid.map((s) => s.productId),
                 );
             }
+            const count = buildStaticRates(
+                chosen,
+                bandSettings,
+                shopCurrency!,
+            ).length;
+            if (count > MAX_STATIC_RATES) {
+                throw tooManyRatesError(
+                    count,
+                    chosen
+                        .filter((s) => BANDED_UNITS.has(s.pricingUnit))
+                        .map((s) => s.productId),
+                );
+            }
         }
 
         const rows: ShippingRateSettingsRow[] = await this.dataSource.query(
@@ -352,6 +370,18 @@ function rateError(
         code,
         ...(serviceIds ? { service_ids: serviceIds } : {}),
     });
+}
+
+/** More static rates than one Shopify zone leaves room for. */
+export function tooManyRatesError(
+    count: number,
+    serviceIds?: string[],
+): UnprocessableEntityException {
+    return rateError(
+        'too_many_rates',
+        `These services make ${count} checkout rates, and Shopify has room for ${MAX_STATIC_RATES}. Use wider bands, a lower maximum or fewer services.`,
+        serviceIds,
+    );
 }
 
 export function normaliseShopDomain(domain: string): string {

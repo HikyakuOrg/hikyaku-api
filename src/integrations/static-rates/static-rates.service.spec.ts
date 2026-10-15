@@ -166,6 +166,35 @@ describe('StaticRatesService', () => {
             expect(plan.rates).toEqual([]);
             expect(plan.coverage.w).toHaveLength(1);
         });
+
+        it('422s when the services make more rates than a zone has room for', async () => {
+            // Five services at 50 bands each: 250 rates, over MAX_STATIC_RATES.
+            const banded = Array.from({ length: 5 }, (_, i) => ({
+                ...FLAT,
+                productId: `prod_km${i}`,
+                pricingUnit: 'per_km' as const,
+            }));
+            loadCatalog.mockResolvedValue({ connected: true, catalog: banded });
+            findOwn.mockResolvedValue({
+                shop_domain: SHOP,
+                enabled: true,
+                shop_currency: 'AUD',
+                service_ids: banded.map((s) => s.productId),
+                band_settings: Object.fromEntries(
+                    banded.map((s) => [
+                        s.productId,
+                        { band_width: 1, max: 50 },
+                    ]),
+                ),
+            });
+            const err: unknown = await service
+                .plan(ORG, 'shopify', SHOP)
+                .catch((e: unknown) => e);
+            expect(err).toBeInstanceOf(UnprocessableEntityException);
+            expect((err as UnprocessableEntityException).getResponse()).toEqual(
+                expect.objectContaining({ code: 'too_many_rates' }),
+            );
+        });
     });
 
     describe('coverage', () => {
