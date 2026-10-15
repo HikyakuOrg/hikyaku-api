@@ -23,6 +23,13 @@ export const GRAMS_PER_LB = 453.59237;
 /** The most bands one service may produce; PUT refuses settings above it. */
 export const MAX_BANDS_PER_SERVICE = 50;
 
+/**
+ * The most static rates one shop may have, across all its services. Shopify
+ * refuses a zone past 250 methods, the merchant's own included, and every
+ * Hikyaku rate goes into the same zone; the other 50 are left to the merchant.
+ */
+export const MAX_STATIC_RATES = 200;
+
 export type StaticRateKind = 'flat' | 'distance' | 'weight';
 export type StaticRateUnit = 'km' | 'mi' | 'kg' | 'lb';
 

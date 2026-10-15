@@ -12,8 +12,15 @@ import {
 } from 'src/dispatch/coverage';
 import { resolveDispatchSettings } from 'src/dispatch/dispatch-settings';
 import { priceableServices } from '../carrier-rates/carrier-rates';
-import { ShippingRateSettingsService } from '../shipping-rate-settings.service';
-import { buildStaticRates, type StaticRate } from './band-plan';
+import {
+    ShippingRateSettingsService,
+    tooManyRatesError,
+} from '../shipping-rate-settings.service';
+import {
+    MAX_STATIC_RATES,
+    buildStaticRates,
+    type StaticRate,
+} from './band-plan';
 import {
     COVERAGE_BUDGET_BYTES,
     byteLength,
@@ -95,6 +102,11 @@ export class StaticRatesService {
                 currency,
             );
             rates = buildStaticRates(services, row.band_settings, currency);
+            // PUT refuses this on the static path, but settings saved for
+            // the live path can land here when the shop can't use it.
+            if (rates.length > MAX_STATIC_RATES) {
+                throw tooManyRatesError(rates.length);
+            }
         }
 
         const { coverage, bboxFallback } = await this.coverage(

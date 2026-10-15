@@ -322,6 +322,44 @@ describe('ShippingRateSettingsService', () => {
             );
         });
 
+        it('refuses more static rates than a Shopify zone has room for', async () => {
+            // Five per-km services at 50 bands each, plus a flat one: 251.
+            const banded = Array.from({ length: 5 }, (_, i) =>
+                catalogItem({ productId: `prod_km${i}`, created: 10 + i }),
+            );
+            fetchActiveProductMap.mockResolvedValueOnce(
+                new Map(
+                    [FLAT, ...banded].map((p) => [p.productId, p] as const),
+                ),
+            );
+            const body = await codeOf(
+                service.put(
+                    ORG,
+                    USER,
+                    put({
+                        path: 'static',
+                        service_ids: [
+                            'prod_flat',
+                            ...banded.map((s) => s.productId),
+                        ],
+                        band_settings: Object.fromEntries(
+                            banded.map((s) => [
+                                s.productId,
+                                { band_width: 1, max: 50 },
+                            ]),
+                        ),
+                    }),
+                ),
+            );
+            expect(body).toEqual(
+                expect.objectContaining({
+                    code: 'too_many_rates',
+                    service_ids: banded.map((s) => s.productId),
+                }),
+            );
+            expect(query).not.toHaveBeenCalled();
+        });
+
         it('stores bands only for chosen banded services', async () => {
             query.mockResolvedValueOnce([storedRow()]);
             await service.put(

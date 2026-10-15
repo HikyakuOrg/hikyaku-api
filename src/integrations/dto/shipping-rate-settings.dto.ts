@@ -20,13 +20,17 @@ export type ShippingRatePath = (typeof SHIPPING_RATE_PATHS)[number];
 /** The most services one shop can offer as rates. */
 export const MAX_RATE_SERVICES = 20;
 
-/** Error codes a 422 from PUT /api/v1/integrations/shipping-rates carries. */
+/**
+ * Error codes a 422 from PUT /api/v1/integrations/shipping-rates carries.
+ * GET .../static-plan uses `too_many_rates` too.
+ */
 export const SHIPPING_RATE_ERROR_CODES = [
     'stripe_not_connected',
     'no_services',
     'service_missing_currency',
     'unknown_service',
     'band_settings_invalid',
+    'too_many_rates',
 ] as const;
 export type ShippingRateErrorCode = (typeof SHIPPING_RATE_ERROR_CODES)[number];
 
